@@ -1,0 +1,30 @@
+# Claude Code
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build artifacts
+build/
+dist/
+__pycache__/
+*.pyc
+*.o
+*.elf
+*.bin
+*.hex
+
+# Secrets / credentials
+*.env
+.env*
+secrets/
+
+# Logs
+*.log
