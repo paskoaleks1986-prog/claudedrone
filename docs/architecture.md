@@ -38,6 +38,7 @@ claudedrone/
 │   ├── architecture.md
 │   ├── roadmap.md
 │   ├── sensors.md
+│   ├── components/          # Документация по компонентам (ESC, PDB, TF-Luna, ...)
 │   └── notes/
 ├── firmware/
 │   ├── esp32/
@@ -221,6 +222,7 @@ ros2 launch simulation indoor_room.launch.py
 | `architecture.md` | Этот файл — объясняет структуру репо и архитектурные решения |
 | `roadmap.md` | Фазы проекта, прогресс, milestone'ы |
 | `sensors.md` | Описание каждого сенсора: принцип работы, характеристики, подключение |
+| `components/` | Документация по компонентам: ESC, PDB, TF-Luna — спеки, фото, роль в системе |
 | `notes/` | Рабочий дневник: заметки по инструментам, наблюдения, эксперименты |
 
 #### `docs/notes/`

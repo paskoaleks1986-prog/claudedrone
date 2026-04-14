@@ -1,0 +1,23 @@
+Physical:
+- Dimensions: 36 x 50 x 4 mm (without XT60)
+- Mounting: 30.5 x 30.5mm, 3mm
+- Weight: 7.5g(w/o XT60), 11g(w/ XT60)
+
+
+Support 2S---6S input, 2oz copper foil to ensure high current flow;
+4-layer PCB, high power current and BEC layered, to avoid the interference of BEC ground wire by power current;
+6 pairs of ESC power supply pads, suitable for X-shaped or H-shaped rack ESC arrangement;
+Dual BEC: 5V/3A synchronous rectifier switch BEC, 12V/0.5A linear BEC;
+Compatible with racks with upper plate width less than 48mm
+Distributor board withstand current 4*25A, short-term 4*30A (10s)
+BEC 5V ripple: 40mV (Vin=16V, Vout=5V@2A load)
+BEC 12V linear voltage regulator, very low ripple, will not interfere with the image signal;
+52*36*3mm, including XT60 total weight 11g
+Installation hole pitch 30.5mm, bore diameter 3mm
+The package contains a genuine Amass XT60 plug, which needs to be soldered on the distribution board by the user;
+Pay attention to the input polarity, do not reverse or short the input!
+Do not touch the carbon fiber board behind the distributor board, it may cause a short circuit;
+ 
+When using 4S, the 12V regulated output can last 500mA; the precision of regulated voltage is 2.5%;
+The 12V voltage regulator chip also supports 3S battery input, but the output voltage = 3S real-time voltage -1V;
+BEC 12V can provide a 12V camera and a 600mW image transmission;

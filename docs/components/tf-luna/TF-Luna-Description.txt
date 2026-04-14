@@ -1,0 +1,37 @@
+Description
+report
+TF-Luna Lidar Ranging Sensor Module Range Finder Sensor Single-Point Micro Ranging Module for Arduino Pixhawk 5V UART IIC
+
+Description:
+Operating range: 0.2m~8m
+Frame rate: 1~250Hz( adjustable )
+Supply voltage: 5V±0.1V
+Average current: ≤70mA
+Peak current: 150mA
+Average power: 350mW
+Communication level: LVTTL(3.3V)
+Communication interface: UART/IIC
+Default baud rate: 115200
+Data bit: 8
+Stop bit: 1
+Parity check: None
+Light source:VCSEL
+Wavelength:850nm
+Operating temperature : -20°C~75°C
+Certification:CE,FCC,ROHS
+
+Major Applications:
+Traffic Monitoring
+Obstacle detection
+Level measurement
+Smart device
+Security and obstacle avoidance
+Drone altitude holding and terrain following
+Machine control and safety sensors
+Distance measuring instrument
+
+Package Includes ( 1 set) :
+1 X TF-Luna LiDAR Module
+1 X MALE Cable
+1 X Famale Cable
+1 X Cable for TF-Luna 1.25mm 6P

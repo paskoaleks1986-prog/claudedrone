@@ -71,14 +71,14 @@ ClaudeDrone — открытый исследовательский проект
 | **Frame** | Source Two 6" Rack (carbon fiber) |
 | **Motors** | MT2204 2300KV × 4 |
 | **Props** | 6" tri-blade |
-| **ESC** | 4-in-1 ESC stack |
+| **ESC** | [4-in-1 ESC AirSelfie 45A](docs/components/esc-4in1/README.md) |
 | **Flight Controller** | F4/F7 FC |
 | **Onboard Computer** | Raspberry Pi Zero 2W (WiFi bridge + sensor hub) |
 | **Microcontroller** | ESP32 DevKit (real-time: servo, sensors, FC bridge) |
 | **PWM Driver** | PCA9685 16-ch |
-| **Power** | LiPo 2200mAh XT60 + PDB-XT60 BEC 5V/12V |
-| **LiDAR (scanning)** | TF-Luna × 1 on SG90 servo (2D horizontal sweep) |
-| **LiDAR (altimeter)** | TF-Luna × 1 downward (altitude hold) |
+| **Power** | LiPo 2200mAh XT60 + [PDB-XT60 Dual BEC 5V/12V](docs/components/pdb/README.md) |
+| **LiDAR (scanning)** | [TF-Luna](docs/components/tf-luna/README.md) × 1 on SG90 servo (2D horizontal sweep) |
+| **LiDAR (altimeter)** | [TF-Luna](docs/components/tf-luna/README.md) × 1 downward (altitude hold) |
 | **ToF sensors** | VL53L0X × 6 (360° obstacle detection) |
 | **Optical Flow** | PMW3901 (X/Y velocity estimation) |
 | **I2C Multiplexer** | TCA9548A 8-channel |
@@ -126,15 +126,21 @@ claudedrone/
 │   ├── compute/         # External: SLAM, mapping, path planning
 │   └── sensors/         # Sensor drivers and calibration
 ├── hardware/
-│   ├── schematics/      # Wiring diagrams
+│   ├── schematics/      # Wiring diagrams (Fritzing + PNG/SVG)
 │   └── mounts/          # 3D printable mounts (STL)
 ├── docs/
-│   ├── architecture.md
-│   ├── sensors.md
-│   └── roadmap.md
+│   ├── architecture.md  # Repo structure and design decisions
+│   ├── sensors.md       # Sensor overview and I²C bus map
+│   ├── roadmap.md       # Project phases and milestones
+│   ├── components/      # Component datasheets and specs
+│   │   ├── esc-4in1/    # 4-in-1 ESC AirSelfie 45A
+│   │   ├── pdb/         # Power Distribution Board + Dual BEC
+│   │   └── tf-luna/     # TF-Luna LiDAR module
+│   └── notes/           # Dev notes and research log
 └── media/
     ├── logo/
     └── photos/
+        └── components/  # Component photos
 ```
 
 ## 📹 Development Log

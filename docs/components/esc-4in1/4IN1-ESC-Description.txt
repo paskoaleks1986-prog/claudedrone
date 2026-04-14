@@ -1,0 +1,32 @@
+4IN1-ESC brushless Electronic Speed Controller (ESC) motor drive scheme
+
+This product uses 8-bit highly integrated controller, which has the advantages of small size, excellent performance and high driving efficiency. The product adopts 4 in 1 integrated design, which can simplify the structural design of the aircraft arm and greatly improve the assembly efficiency of the whole machine. It is an upgraded alternative
+
+Product characteristics
+
+1.The main control uses 8-bit high-speed MCU.
+
+2.Ultra-fast speed and excellent performance.
+
+3.Support high frequency PWM
+
+4.Support hardware synchronous rectification, regenerative braking and higher battery energy recovery efficiency.
+
+5.Throttle linearity is excellent, deceleration response is more sensitive, and the flexibility of aircraft is significantly improved.
+
+6.4 in 1 integrated design
+
+Specifications:
+Material: High-quality PCB and electronic components
+Design and Style: 4 in 1 integrated design for simplified structural assembly
+Usage and Purpose: Ideal for small unmanned aerial vehicles (UAVs) and crossing drones
+Performance and Property: 8-bit high-speed MCU for ultra-fast speed and excellent performance
+Parts and Accessories: Lightweight at 12.5g, enhancing aircraft flexibility
+Applicable People: Designed for hobbyists and enthusiasts seeking to upgrade their UAVs
+Features:
+**Advanced Technology for Aerial Precision**
+The AirSelfie 45A 4 in 1 brushless electronic speed controller (ESC) is a cutting-edge component for small unmanned aerial vehicles (UAVs) and crossing drones. Engineered with a 4 in 1 integrated design, this ESC simplifies the structural design of the aircraft arm, thereby improving the assembly efficiency of the whole machine. The lightweight build at just 12.5g not only reduces the overall weight of the drone but also enhances its flexibility, allowing for more dynamic maneuvers and precise control.
+**Optimized Performance for UAV Enthusiasts**
+Equipped with an 8-bit high-speed MCU, the AirSelfie 45A ESC boasts ultra-fast speed and excellent performance, making it an upgraded alternative for consumer-grade UAVs. The controller supports high frequency PWM, ensuring smooth and responsive control. Hardware synchronous rectification and regenerative braking contribute to higher battery energy recovery efficiency, enhancing the drone's overall efficiency and endurance. With its superior throttle linearity and sensitive deceleration response, the ESC elevates the drone's flexibility, providing a more responsive and agile flying experience.
+**Versatile Application for Aerial Adventures**
+Whether you're capturing aerial footage or navigating through challenging terrains, the AirSelfie 45A ESC is designed to meet the demands of small aerial drones and crossing unmanned aerial vehicles. Its compact size and lightweight design make it an ideal choice for hobbyists and enthusiasts looking to upgrade their UAVs for improved performance and reliability. The ESC's compatibility with a wide range of small UAVs ensures that it can be easily integrated into various projects, making it a versatile and essential component for those passionate about aerial exploration.
