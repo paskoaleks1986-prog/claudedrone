@@ -1,0 +1,49 @@
+NOTES:
+commit b896c539c5ad39e85a7a496a2bba81af0c27d4ce (HEAD -> main)
+
+1. run
+source /opt/ros/jazzy/setup.bash
+2. check
+printenv ROS_DISTRO
+>>>jazzy
+3. create proj
+ros2 pkg create dron_sim --build-type ament_cmake --dependencies rclpy std_msgs sensor_msgs
+4. make proj tree
+/simulation/src$ tree
+.
+└── drone_sim
+    ├── CMakeLists.txt
+    ├── config
+    ├── drone_sim
+    │   └── __init__.py
+    ├── include
+    │   └── drone_sim
+    ├── launch
+    ├── models
+    ├── package.xml
+    ├── src
+    └── worlds
+5. Create test Node. here some code
+nano /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/drone_sim/hello.py
+
+6. Build node
+cd /home/aleks/git/proj/claudedrone/simulation
+
+# Собрать всё
+colcon build
+
+# Собрать с симлинками — не надо пересобирать при изменении Python файлов
+colcon build --symlink-install
+
+# Собрать только один пакет
+colcon build --packages-select drone_sim
+
+После сборки всегда:
+bashsource install/setup.bash
+
+we can run our Test node
+claudedrone/simulation$ ros2 run drone_sim hello
+to see our nodes  
+claudedrone/simulation$ ros2 node list
+see node info 
+claudedrone/simulation$ ros2 node info /hello_drone
