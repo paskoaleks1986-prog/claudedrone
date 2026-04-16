@@ -21,7 +21,11 @@ install(PROGRAMS
   RENAME hello
   DESTINATION lib/${PROJECT_NAME}
 )
-
+install(PROGRAMS
+  drone_sim/sensor_monitor.py
+  RENAME sensor_monitor
+  DESTINATION lib/${PROJECT_NAME}
+)
 # Ресурсы — launch, models, worlds, config
 install(DIRECTORY
   launch

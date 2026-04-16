@@ -30,7 +30,7 @@ class HelloDrone(Node):
     def tick(self):
         # Мок данные VL53L0X x6 (в метрах)
         perimeter = Float32MultiArray()
-        perimeter.data = [1.2, 0.8, 1.5, 2.0, 1.1, 0.9]
+        perimeter.data = [1.2, 0.25, 1.5, 2.0, 1.1, 0.9]
         self.pub_perimeter.publish(perimeter)
 
         # Мок высота TF Luna (в метрах)
