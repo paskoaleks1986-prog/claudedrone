@@ -13,6 +13,10 @@
             name="gz::sim::systems::SceneBroadcaster"/>
     <plugin filename="gz-sim-user-commands-system"
             name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-sensors-system"
+            name="gz::sim::systems::Sensors">
+      <render_engine>ogre</render_engine>
+    </plugin>
 
     <!-- Основной свет -->
     <light type="directional" name="sun">

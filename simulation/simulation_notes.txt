@@ -117,6 +117,8 @@ ros2 launch drone_sim drone.launch.py
 you can set it
 RCUTILS_COLORIZED_OUTPUT=1 
 #################################################################################
+commit 915d761842c6f2b79e8d66d3b2404282f9164fed (HEAD -> main)
+
 1 check Gazebo
 gz sim --version
 2 check ros2 pkgs for gazebo
@@ -306,4 +308,77 @@ indoor_room.sdf
 12 run
 export GZ_SIM_RESOURCE_PATH=/home/aleks/git/proj/claudedrone/simulation/src/drone_sim/models
 gz sim /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/worlds/indoor_room.sdf
+#################################################################################
+commit 452f2a082a5f12d756ae7be52917125b34b98c5d (HEAD -> main, origin/main, origin/HEAD)
+START SIMUILATION
+1.
+cd /home/aleks/git/proj/claudedrone/simulation
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ros2 launch drone_sim drone.launch.py
+
+2. check topic lists
+GAZEBO
+gz topic -l
+ROS2
+source /opt/ros/jazzy/setup.bash
+ros2 topic list
+
+3. set communication ROS2<-->GZ
+/world/indoor_room/pose/info — позиция дрона
+
+Запускаем bridge для этого топика:
+ros2 run ros_gz_bridge parameter_bridge \
+  /world/indoor_room/pose/info@geometry_msgs/msg/PoseArray[gz.msgs.Pose_V
+Разбор команды:
+
+parameter_bridge — программа моста
+/world/indoor_room/pose/info — топик в Gazebo
+@ — разделитель
+geometry_msgs/msg/PoseArray — тип в ROS2
+[ — направление: из Gazebo в ROS2
+gz.msgs.Pose_V — тип в Gazebo
+
+4. can see toppic in ROS2 list
+ros2 topic echo /world/indoor_room/pose/info
+
+5. Теперь добавим bridge в launch файл чтобы он запускался автоматически
+
+nano /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/launch/drone.launch.py
+
+# Bridge — Gazebo <-> ROS2
+Node(
+    package='ros_gz_bridge',
+    executable='parameter_bridge',
+    name='gz_bridge',
+    arguments=[
+        '/world/indoor_room/pose/info'
+        '@geometry_msgs/msg/PoseArray'
+        '[gz.msgs.Pose_V',
+        '/clock'
+        '@rosgraph_msgs/msg/Clock'
+        '[gz.msgs.Clock',
+    ],
+    output='screen'
+),
+
+now everything set up in launcher
+#################################################################################
+
+1. add sensors to Drone
+subl /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/models/claudedrone/model.sdf
+
+2. add it our simulation
+subl /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/worlds/indoor_room.sdf
+
+<plugin filename="gz-sim-sensors-system"
+        name="gz::sim::systems::Sensors">
+  <render_engine>ogre2</render_engine>
+</plugin>
+3. test
+#################################################################################
+
+
+
+
 
