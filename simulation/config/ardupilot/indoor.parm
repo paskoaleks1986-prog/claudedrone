@@ -1,0 +1,18 @@
+# Claude Drone — indoor параметры без GPS
+# GPS отключён
+GPS1_TYPE 0
+
+# Арминг без проверок
+ARMING_SKIPCHK 1
+
+# Высота с rangefinder
+EK3_SRC1_POSZ 2
+
+# Оптический поток
+FLOW_TYPE 6
+EK3_SRC1_VELXY 5
+EK3_SRC1_POSXY 0
+
+# Медленный полёт indoor
+LOIT_SPEED_MS 3.0
+PILOT_SPD_UP 1.0

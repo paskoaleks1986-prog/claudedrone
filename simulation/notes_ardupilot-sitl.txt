@@ -1,5 +1,7 @@
 ~/ardupilot/          ← ArduPilot SITL
 ~/ardupilot_gazebo/   ← плагин для Gazebo
+########################################################################################################
+ommit 065053c709af3886ae857dd48f421d198a1d4e7c (HEAD -> feat/ardupilot-sitl, origin/feat/ardupilot-sitl)
 
 1. install ardupilot
 git clone https://github.com/ArduPilot/ardupilot.git
@@ -74,3 +76,101 @@ sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --console
 
 if gazebo has no pic, this can fix if GeForce GPU
 sudo nvidia-settings --assign CurrentMetaMode="nvidia-auto-select +0+0 { ForceFullCompositionPipeline = On }"
+########################################################################################################
+commit 16b95f3ec090599d768b6f67e871ac42d26f90a8 (HEAD -> feat/ardupilot-sitl, origin/feat/ardupilot-sitl)
+
+gz sim (тело)
+    ↕ UDP 9002/9003
+sim_vehicle.py (мозг)
+    ↕ ros_gz_bridge (переводчик)
+sensor_monitor.py (наш код)
+
+1. copy iris model to our prj
+cp -r ~/ardupilot_gazebo/models/iris_with_ardupilot \
+  /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/models/iris_claudedrone
+
+add sensors to model.sdf добавили TOF TFLuna
+
+2. change params for Drone
+/home/aleks/git/proj/claudedrone/simulation/config/ardupilot/indoor.parm
+
+TESTING OUR PARAMS with IRIS DRONE
+Терминал 1:
+bash
+gz sim ~/ardupilot_gazebo/worlds/iris_runway.sdf -r
+Терминал 2 — после загрузки Gazebo:
+bash
+cd ~/ardupilot/ArduCopter
+sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --console \
+  --add-param-file=/home/aleks/git/proj/claudedrone/simulation/config/ardupilot/indoor.parm
+
+
+
+```bash
+cp ~/ardupilot_gazebo/worlds/iris_runway.sdf \
+  /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/worlds/claudedrone_runway.sdf
+```
+Указываем нашу модель дрона в этом мире
+Потом открой в VS Code:
+
+```bash
+code /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/worlds/claudedrone_runway.sdf
+```
+
+Найди строку:
+```xml
+<uri>model://iris_with_gimbal</uri>
+```
+
+Замени на:
+```xml
+<uri>model://iris_claudedrone</uri>
+```
+
+
+**Терминал 1 — Gazebo с нашим world файлом
+
+
+```bash
+GZ_SIM_RESOURCE_PATH=/home/aleks/git/proj/claudedrone/simulation/src/drone_sim/models:~/ardupilot_gazebo/models:$GZ_SIM_RESOURCE_PATH \
+gz sim /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/worlds/claudedrone_runway.sdf -r
+```
+
+**Разбор:**
+- `GZ_SIM_RESOURCE_PATH` — добавляем наши модели в путь поиска
+- Gazebo найдёт `iris_claudedrone` в нашем проекте
+- И `runway` в ardupilot_gazebo
+
+**Терминал 2 — SITL:**
+
+```bash
+cd ~/ardupilot/ArduCopter
+sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --console \
+  --add-param-file=/home/aleks/git/proj/claudedrone/simulation/config/ardupilot/indoor.parm
+```
+
+
+Активируем Ros в текущем терминале
+source /opt/ros/jazzy/setup.bash
+
+Добавь в ~/.bashrc чтобы не писать каждый раз:
+bashecho "source /opt/ros/jazzy/setup.bash" >> ~/.bashrc
+
+
+
+ros_gz_bridge — зачем нужен
+bashros2 run ros_gz_bridge parameter_bridge \
+  /drone/tf_luna_down@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan
+Ты прав — вывод нечитаемый для человека. Но это не для тебя — это для ROS2 нод.
+Проблема: Gazebo и ROS2 говорят на разных языках:
+Gazebo:  gz.msgs.LaserScan  ← свой формат
+ROS2:    sensor_msgs/LaserScan ← свой формат
+Bridge — переводчик между ними:
+Gazebo топик → bridge переводит → ROS2 топик
+/drone/tf_luna_down (Gazebo) → /drone/tf_luna_down (ROS2)
+После bridge твой sensor_monitor.py может читать данные датчиков из Gazebo
+
+Трекам поток данных
+ros2 run ros_gz_bridge parameter_bridge \
+  /drone/tf_luna_down@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan \
+  /drone/vl53l0x/ch0@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan
