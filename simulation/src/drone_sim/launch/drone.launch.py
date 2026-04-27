@@ -25,15 +25,6 @@ def generate_launch_description():
             },
             output='screen'
         ),
-
-        # Нода публикатор — мок датчиков
-        Node(
-            package='drone_sim',
-            executable='hello',
-            name='hello_drone',
-            output='screen'
-        ),
-
         # Нода монитор
         Node(
             package='drone_sim',
@@ -46,12 +37,50 @@ def generate_launch_description():
             executable='parameter_bridge',
             name='gz_bridge',
             arguments=[
+                # Позиция дрона
                 '/world/indoor_room/pose/info'
                 '@geometry_msgs/msg/PoseArray'
                 '[gz.msgs.Pose_V',
+
+                # Часы симуляции
                 '/clock'
                 '@rosgraph_msgs/msg/Clock'
                 '[gz.msgs.Clock',
+
+                # TF Luna вниз
+                '/drone/tf_luna_down'
+                '@sensor_msgs/msg/LaserScan'
+                '[gz.msgs.LaserScan',
+
+                # TF Luna скан
+                '/drone/tf_luna_scan'
+                '@sensor_msgs/msg/LaserScan'
+                '[gz.msgs.LaserScan',
+
+                # VL53L0X x6
+                '/drone/vl53l0x/ch0'
+                '@sensor_msgs/msg/LaserScan'
+                '[gz.msgs.LaserScan',
+
+                '/drone/vl53l0x/ch1'
+                '@sensor_msgs/msg/LaserScan'
+                '[gz.msgs.LaserScan',
+
+                '/drone/vl53l0x/ch2'
+                '@sensor_msgs/msg/LaserScan'
+                '[gz.msgs.LaserScan',
+
+                '/drone/vl53l0x/ch3'
+                '@sensor_msgs/msg/LaserScan'
+                '[gz.msgs.LaserScan',
+
+                '/drone/vl53l0x/ch4'
+                '@sensor_msgs/msg/LaserScan'
+                '[gz.msgs.LaserScan',
+
+                '/drone/vl53l0x/ch5'
+                '@sensor_msgs/msg/LaserScan'
+                '[gz.msgs.LaserScan',
             ],
             output='screen'
         ),
