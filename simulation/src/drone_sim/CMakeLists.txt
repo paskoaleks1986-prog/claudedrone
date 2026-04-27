@@ -17,13 +17,13 @@ ament_python_install_package(${PROJECT_NAME})
 
 # Регистрируем ноды
 install(PROGRAMS
-  drone_sim/hello.py
-  RENAME hello
+  drone_sim/sensor_monitor.py
+  RENAME sensor_monitor
   DESTINATION lib/${PROJECT_NAME}
 )
 install(PROGRAMS
-  drone_sim/sensor_monitor.py
-  RENAME sensor_monitor
+  drone_sim/takeoff_node.py
+  RENAME takeoff
   DESTINATION lib/${PROJECT_NAME}
 )
 # Ресурсы — launch, models, worlds, config

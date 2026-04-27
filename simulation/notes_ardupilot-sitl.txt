@@ -1,0 +1,318 @@
+~/ardupilot/          ← ArduPilot SITL
+~/ardupilot_gazebo/   ← плагин для Gazebo
+########################################################################################################
+ommit 065053c709af3886ae857dd48f421d198a1d4e7c (HEAD -> feat/ardupilot-sitl, origin/feat/ardupilot-sitl)
+
+1. install ardupilot
+git clone https://github.com/ArduPilot/ardupilot.git
+cd ardupilot
+git submodule update --init --recursive
+
+Важнейший этап: установка зависимостей (Python, компиляторы)
+# Этот скрипт настроит переменные окружения и установит нужные пакеты
+Tools/environment_install/install-prereqs-ubuntu.sh -y
+
+Перезагрузи терминал, чтобы подтянулись пути (PATH)
+source ~/.bashrc
+
+WARN!!!
+sim_vehicle.py не найден в PATH. Добавляем вручную:
+bashecho 'export PATH=$PATH:$HOME/ardupilot/Tools/autotest' >> ~/.bashrc
+source ~/.bashrc
+which sim_vehicle.py
+
+Переходим в директорию коптера и собираем проект (первая сборка долгая)
+cd ArduCopter
+sim_vehicle.py -w
+flag -w refresh default drone schema. for prj not use
+
+2. run 
+sim_vehicle.py -w --console
+
+
+команды
+GUIDED  Переводит дрон в управляемый режим (необходим для взлета по команде).
+arm throttle Снимает защиту и запускает моторы.
+takeoff [высота]  Взлет на указанную высоту в метрах.
+mode RTL  Автоматический возврат в точку взлета и посадка.
+mode LANDПосадка в текущей точке.statusВыводит текущее состояние всех параметров MAVLink.
+
+Пример смены режима через MAVROS
+ros2 service call /mavros/set_mode \
+  mavros_msgs/srv/SetMode \
+  "{custom_mode: 'GUIDED'}
+
+3 install gazebo plagins
+cd ~
+git clone https://github.com/ArduPilot/ardupilot_gazebo.git
+
+cd ~/ardupilot_gazebo
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=RelWithDebInfo
+make -j4
+
+Устанавливаем gstreamer:
+bashsudo apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+
+Плагин собран успешно! Добавляем пути:
+bashecho 'export GZ_SIM_SYSTEM_PLUGIN_PATH=$HOME/ardupilot_gazebo/build:${GZ_SIM_SYSTEM_PLUGIN_PATH}' >> ~/.bashrc
+echo 'export GZ_SIM_RESOURCE_PATH=$HOME/ardupilot_gazebo/models:$HOME/ardupilot_gazebo/worlds:${GZ_SIM_RESOURCE_PATH}' >> ~/.bashrc
+source ~/.bashrc
+
+ls ~/ardupilot_gazebo/models
+Видим готовые модели — iris_with_ardupilot
+
+gz sim ~/ardupilot_gazebo/worlds/iris_runway.sdf -r
+-r flag run simulation! same you push play in Gazebo layout
+
+Теперь подключаем SITL к этому Gazebo. Открой новый терминал:
+bashcd ~/ardupilot/ArduCopter
+sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --console
+
+Разбор:
+
+-f gazebo-iris — используем модель iris для Gazebo
+--model JSON — SITL общается с Gazebo через JSON протокол
+
+if gazebo has no pic, this can fix if GeForce GPU
+sudo nvidia-settings --assign CurrentMetaMode="nvidia-auto-select +0+0 { ForceFullCompositionPipeline = On }"
+########################################################################################################
+commit 16b95f3ec090599d768b6f67e871ac42d26f90a8 (HEAD -> feat/ardupilot-sitl, origin/feat/ardupilot-sitl)
+
+gz sim (тело)
+    ↕ UDP 9002/9003
+sim_vehicle.py (мозг)
+    ↕ ros_gz_bridge (переводчик)
+sensor_monitor.py (наш код)
+
+1. copy iris model to our prj
+cp -r ~/ardupilot_gazebo/models/iris_with_ardupilot \
+  /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/models/iris_claudedrone
+
+add sensors to model.sdf добавили TOF TFLuna
+
+2. change params for Drone
+/home/aleks/git/proj/claudedrone/simulation/config/ardupilot/indoor.parm
+
+TESTING OUR PARAMS with IRIS DRONE
+Терминал 1:
+bash
+gz sim ~/ardupilot_gazebo/worlds/iris_runway.sdf -r
+Терминал 2 — после загрузки Gazebo:
+bash
+cd ~/ardupilot/ArduCopter
+sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --console \
+  --add-param-file=/home/aleks/git/proj/claudedrone/simulation/config/ardupilot/indoor.parm
+
+
+
+```bash
+cp ~/ardupilot_gazebo/worlds/iris_runway.sdf \
+  /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/worlds/claudedrone_runway.sdf
+```
+Указываем нашу модель дрона в этом мире
+Потом открой в VS Code:
+
+```bash
+code /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/worlds/claudedrone_runway.sdf
+```
+
+Найди строку:
+```xml
+<uri>model://iris_with_gimbal</uri>
+```
+
+Замени на:
+```xml
+<uri>model://iris_claudedrone</uri>
+```
+
+
+**Терминал 1 — Gazebo с нашим world файлом
+```bash
+GZ_SIM_RESOURCE_PATH=/home/aleks/git/proj/claudedrone/simulation/src/drone_sim/models:~/ardupilot_gazebo/models:$GZ_SIM_RESOURCE_PATH \
+gz sim /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/worlds/claudedrone_runway.sdf -r
+```
+
+**Разбор:**
+- `GZ_SIM_RESOURCE_PATH` — добавляем наши модели в путь поиска
+- Gazebo найдёт `iris_claudedrone` в нашем проекте
+- И `runway` в ardupilot_gazebo
+
+**Терминал 2 — SITL:**
+```bash
+cd ~/ardupilot/ArduCopter
+sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --console \
+  --add-param-file=/home/aleks/git/proj/claudedrone/simulation/config/ardupilot/indoor.parm
+```
+
+Активируем Ros в текущем терминале
+source /opt/ros/jazzy/setup.bash
+
+Добавь в ~/.bashrc чтобы не писать каждый раз:
+bashecho "source /opt/ros/jazzy/setup.bash" >> ~/.bashrc
+
+ros_gz_bridge — зачем нужен
+bashros2 run ros_gz_bridge parameter_bridge \
+  /drone/tf_luna_down@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan
+Ты прав — вывод нечитаемый для человека. Но это не для тебя — это для ROS2 нод.
+Проблема: Gazebo и ROS2 говорят на разных языках:
+Gazebo:  gz.msgs.LaserScan  ← свой формат
+ROS2:    sensor_msgs/LaserScan ← свой формат
+Bridge — переводчик между ними:
+Gazebo топик → bridge переводит → ROS2 топик
+/drone/tf_luna_down (Gazebo) → /drone/tf_luna_down (ROS2)
+После bridge твой sensor_monitor.py может читать данные датчиков из Gazebo
+
+Трекам поток данных
+ros2 run ros_gz_bridge parameter_bridge \
+  /drone/tf_luna_down@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan \
+  /drone/vl53l0x/ch0@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan
+
+########################################################################################################
+commit aacbeb276161f475748045e929f71dabf64b75f9 (HEAD -> feat/ardupilot-map-world)
+
+Делаем нашу комнату
+Ставим дрон в комнату с нашим скином
+1. include your model in your world map
+<uri>model://iris_claudedrone</uri>
+
+2. set params for sim
+ArduPilot имеет встроенное ограничение высоты. (пока не работает) Параметр называется FENCE_ALT_MAX
+
+режимы для FENCE 
+FENCE_TYPE = 1  → только круговой (радиус)
+FENCE_TYPE = 2  → только высота
+FENCE_TYPE = 3  → круг + высота
+
+3. меняем расцветку винтов
+моель iris_claudedrone ссылается на  iris_with_standoffs
+копируем себе в проект
+
+cp -r ~/ardupilot_gazebo/models/iris_with_standoffs \
+  ~/git/proj/claudedrone/simulation/src/drone_sim/models/
+
+/mesges
+iris.dae          → корпус iris (крест + стойки)
+iris_collision.stl → физическая форма для столкновений
+iris_prop_cw.dae  → пропеллер по часовой (clockwise)     → моторы 0 и 1
+iris_prop_ccw.dae → пропеллер против часовой (counter-clockwise) → моторы 2 и 3
+
+все правки добавляем в модель дрона
+меняем цвет винтов
+  <link name='rotor_2'>
+    <pose>0.13 0.22 0.023 0 0 0</pose>
+      <visual name='visual'>
+        <material>
++         <ambient>0.8 0.1 0.1 1</ambient>
++         <diffuse>0.8 0.1 0.1 1</diffuse>
+добавляем плагины, что бы можно было взлетать в нашу карту
++
++   <plugin filename="gz-sim-imu-system"
++           name="gz::sim::systems::Imu"/>
++
++   <plugin filename="gz-sim-navsat-system"
++           name="gz::sim::systems::NavSat"/>
+#####################################################################
+ — теория.
+
+---
+
+## Что такое MAVROS и зачем он нужен
+
+Вспомни архитектуру из roadmap:
+
+```
+ROS2 ноды          MAVROS          ArduPilot SITL
+(наш код)    ←——————————————→    (полётный контроллер)
+             переводчик
+```
+
+**Проблема:** ROS2 и ArduPilot говорят на разных языках.
+
+- ROS2 использует свои типы сообщений: `geometry_msgs/PoseStamped`, `sensor_msgs/Imu` и т.д.
+- ArduPilot говорит на **MAVLink** — это бинарный протокол, разработанный специально для дронов. Не JSON, не HTTP — свой формат байт, очень компактный и быстрый.
+
+**MAVROS** — это ROS2 нода-переводчик. Она сидит посередине и делает два дела:
+
+```
+ArduPilot                    MAVROS                    Наш код
+─────────                   ────────                  ─────────
+MAVLink пакет   ──────→   переводит   ──────→   ROS2 топик
+"высота 1.5м"              в PoseStamped         /mavros/local_position/pose
+
+ROS2 топик      ←──────   переводит   ←──────   MAVLink пакет
+/mavros/cmd/arming         в CMD_COMPONENT_ARM   "arm throttle"
+```
+
+*Аналогия:* ты приехал в Японию и не знаешь японский. MAVROS — это твой переводчик. Ты говоришь ему "взлети на 2 метра" на русском (ROS2), он переводит это на японский (MAVLink) и передаёт пилоту (ArduPilot).
+
+---
+
+## Ключевые топики MAVROS которые будем использовать
+
+**Читаем** (ArduPilot → наш код):
+
+| Топик | Что содержит |
+|---|---|
+| `/mavros/state` | armed, mode, connected |
+| `/mavros/local_position/pose` | позиция XYZ + ориентация |
+| `/mavros/imu/data` | данные IMU |
+| `/mavros/battery` | заряд батареи |
+
+**Пишем** (наш код → ArduPilot):
+
+| Топик | Что делает |
+|---|---|
+| `/mavros/setpoint_position/local` | лети в эту точку XYZ |
+| `/mavros/setpoint_velocity/cmd_vel` | лети с этой скоростью |
+| `/mavros/cmd/arming` | включить/выключить моторы |
+| `/mavros/set_mode` | сменить режим (GUIDED, LOITER...) |
+
+---
+
+## Почему не просто MAVProxy?
+
+MAVProxy — это консоль для человека. Ты вводишь руками `takeoff 2`. MAVROS — это для **программного** управления. Твой Python скрипт публикует в топик, MAVROS переводит, ArduPilot исполняет. Никакого человека посередине.
+
+1. install mavros
+deactivate  # если активен venv
+sudo apt install ros-jazzy-mavros ros-jazzy-mavros-extras -y
+После установки — обязательный шаг, без него MAVROS не запустится:
+bashsudo ros2 run mavros install_geographiclib_datasets.sh
+if sudo not provide for ROS
+sudo bash /opt/ros/jazzy/lib/mavros/install_geographiclib_datasets.sh
+
+2. test 
+Терминал 1 — Gazebo (должен быть уже запущен с -r)
+Терминал 2 — SITL (должен быть уже запущен)
+Терминал 3 — MAVROS:
+>>>bashsource /opt/ros/jazzy/setup.bash
+>>>ros2 launch mavros apm.launch.py fcu_url:=udp://:14550@
+если не находит launch фаил, проверяем
+$ ls /opt/ros/jazzy/share/mavros/launch/
+apm_config.yaml       multi_uas.launch  px4.launch
+apm.launch            node.launch       px4_pluginlists.yaml
+apm_pluginlists.yaml  px4_config.yaml   test_compose.launch.py
+
+
+>>>source /opt/ros/jazzy/setup.bash
+>>>ros2 launch mavros apm.launch fcu_url:=udp://:14550@
+Что проверяем — через 5-10 секунд в новом терминале:
+bashsource /opt/ros/jazzy/setup.bash
+ros2 topic echo /mavros/state
+Что должны увидеть:
+connected: true
+armed: false
+mode: GUIDED
+
+
+
+
+
+
+
+
+
+
+

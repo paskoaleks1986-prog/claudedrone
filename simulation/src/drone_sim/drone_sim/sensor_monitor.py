@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
+from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Float32MultiArray, Float32
 
-# Пороги приоритетов
-CRITICAL = 0.30   # 30 см
-HIGH     = 0.80   # 80 см
+CRITICAL = 0.30
+HIGH = 0.80
+
+DIRECTIONS = [
+    'Перед', 'Перед-право', 'Зад-право',
+    'Зад', 'Зад-лево', 'Перед-лево'
+]
 
 
 class SensorMonitor(Node):
@@ -13,47 +18,66 @@ class SensorMonitor(Node):
     def __init__(self):
         super().__init__('sensor_monitor')
 
-        # Подписываемся на периметр
+        self.vl_data = [None] * 6
+
+        # Реальные данные из Gazebo
+        for i in range(6):
+            self.create_subscription(
+                LaserScan,
+                f'/drone/vl53l0x/ch{i}',
+                lambda msg, idx=i: self._vl_callback(msg, idx),
+                10
+            )
+
         self.create_subscription(
-            Float32MultiArray,
-            '/drone/perimeter',
-            self.perimeter_callback,
+            LaserScan,
+            '/drone/tf_luna_down',
+            self._altitude_callback,
             10
         )
 
-        # Подписываемся на высоту
-        self.create_subscription(
-            Float32,
-            '/drone/altitude',
-            self.altitude_callback,
-            10
-        )
+        self.pub_perimeter = self.create_publisher(
+            Float32MultiArray, '/drone/perimeter', 10)
 
-        self.get_logger().info('SensorMonitor запущен — слушаем датчики')
+        self.pub_altitude = self.create_publisher(
+            Float32, '/drone/altitude', 10)
 
-    def perimeter_callback(self, msg):
-        distances = list(msg.data)
-        directions = ['Перед', 'Перед-право', 'Зад-право',
-                      'Зад', 'Зад-лево', 'Перед-лево']
+        self.get_logger().info('SensorMonitor — реальные данные Gazebo')
 
-        for i, dist in enumerate(distances):
-            if dist < CRITICAL:
-                self.get_logger().error(
-                    f'CRITICAL! {directions[i]} = {dist:.2f}м'
-                )
-            elif dist < HIGH:
-                self.get_logger().warn(
-                    f'HIGH: {directions[i]} = {dist:.2f}м'
-                )
+    def _vl_callback(self, msg: LaserScan, idx: int):
+        if not msg.ranges:
+            return
+        dist = msg.ranges[0]
+        if dist == float('inf'):
+            return
 
-    def altitude_callback(self, msg):
-        alt = msg.data
-        if alt < 0.3:
-            self.get_logger().error(f'CRITICAL! Высота = {alt:.2f}м')
-        elif alt < 0.5:
-            self.get_logger().warn(f'HIGH: Высота = {alt:.2f}м')
-        else:
-            self.get_logger().info(f'Высота: {alt:.2f}м')
+        self.vl_data[idx] = dist
+
+        if dist < CRITICAL:
+            self.get_logger().error(
+                f'CRITICAL! {DIRECTIONS[idx]} = {dist:.2f}м'
+            )
+        elif dist < HIGH:
+            self.get_logger().warn(
+                f'HIGH: {DIRECTIONS[idx]} = {dist:.2f}м'
+            )
+
+        msg_out = Float32MultiArray()
+        msg_out.data = [v if v is not None else 0.0 for v in self.vl_data]
+        self.pub_perimeter.publish(msg_out)
+
+    def _altitude_callback(self, msg: LaserScan):
+        if not msg.ranges:
+            return
+        alt = msg.ranges[0]
+        if alt == float('inf'):
+            return
+
+        self.get_logger().info(f'Высота: {alt:.2f}м')
+
+        alt_msg = Float32()
+        alt_msg.data = float(alt)
+        self.pub_altitude.publish(alt_msg)
 
 
 def main():
