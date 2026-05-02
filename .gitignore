@@ -38,3 +38,21 @@ simulation/log/
 
 # ─── Claude Code ──────────────────────────────
 .claude/
+
+# Personal planning documents
+claudedrone_roadmap_v2.md.pdf
+step_7_stop_scan.md.pdf
+*.pdf
+
+# Claude Code agent instructions (local only)
+CLAUDE.md
+.claude/
+
+# Personal planning documents
+claudedrone_roadmap_v2.md.pdf
+step_7_stop_scan.md.pdf
+*.pdf
+
+# Claude Code agent instructions (local only)
+CLAUDE.md
+.claude/

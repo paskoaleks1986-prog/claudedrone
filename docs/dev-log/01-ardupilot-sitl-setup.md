@@ -1,3 +1,23 @@
+# ArduPilot SITL Setup — Dev Log
+
+> **What this is:** raw development notes from integrating ArduPilot SITL with Gazebo for the claudedrone project, written as I worked through it.
+>
+> **Why it's here:** these aren't polished documentation — they're an honest record of the actual engineering process: what I tried, what worked, what broke, and how I figured it out. They're kept in the repository as a journey log rather than rewritten into clean docs.
+>
+> **For polished setup instructions** see [`docs/SETUP.md`](../SETUP.md).
+
+**Date:** late March – early April 2026
+**Topics covered:**
+- ArduPilot SITL installation on Ubuntu 24.04
+- ardupilot_gazebo plugin build
+- gazebo-iris configuration
+- ros_gz_bridge basics
+- iris_claudedrone model derivation
+- Indoor parameter file creation
+- Initial NVIDIA rendering issue and workaround
+
+---
+
 ~/ardupilot/          ← ArduPilot SITL
 ~/ardupilot_gazebo/   ← плагин для Gazebo
 ########################################################################################################

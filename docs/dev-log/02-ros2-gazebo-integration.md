@@ -1,3 +1,25 @@
+# ROS2 + Gazebo Integration — Dev Log
+
+> **What this is:** raw development notes from setting up the ROS2 Jazzy workspace, building the first nodes, creating the indoor world, and integrating sensors with Gazebo. Written as I worked through each step.
+>
+> **Why it's here:** like the first dev log, this is an honest record of the engineering process — including the venv-vs-colcon conflict that took me a while to figure out, and the SDF schema reference I built up while learning Gazebo's world format.
+>
+> **For polished setup instructions** see [`docs/SETUP.md`](../SETUP.md).
+
+**Date:** early – mid April 2026
+**Topics covered:**
+- ROS2 workspace creation and `drone_sim` package
+- First Python nodes (hello, sensor_monitor)
+- venv vs colcon conflict and `COLCON_IGNORE` workaround
+- Mock sensor publishers
+- Launch file creation
+- Gazebo Harmonic install and indoor world creation
+- SDF schema notes (lights, materials, sensors, models)
+- Custom drone model with sensor mounts
+- ros_gz_bridge for sensor data
+
+---
+
 NOTES:
 WARN: venv и ROS2 конфликтуют
 - colcon build → только с активным venv
