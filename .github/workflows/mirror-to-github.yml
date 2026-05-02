@@ -1,0 +1,21 @@
+name: Mirror to GitHub
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push mirror to GitHub
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_MIRROR_TOKEN }}
+        run: |
+          git remote add github https://paskoaleks1986-prog:${GITHUB_TOKEN}@github.com/paskoaleks1986-prog/claudedrone.git
+          git push github main --force-with-lease

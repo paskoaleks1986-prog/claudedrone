@@ -26,6 +26,11 @@ install(PROGRAMS
   RENAME takeoff
   DESTINATION lib/${PROJECT_NAME}
 )
+install(PROGRAMS
+  drone_sim/stop_scan_node.py
+  RENAME stop_scan
+  DESTINATION lib/${PROJECT_NAME}
+)
 # Ресурсы — launch, models, worlds, config
 install(DIRECTORY
   launch
