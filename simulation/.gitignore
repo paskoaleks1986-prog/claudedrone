@@ -1,4 +1,5 @@
 .env_*
+!.env_*.example
 logs/
 
 # Colcon
