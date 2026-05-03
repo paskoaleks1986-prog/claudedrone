@@ -31,12 +31,11 @@ install(PROGRAMS
   RENAME stop_scan
   DESTINATION lib/${PROJECT_NAME}
 )
-# Ресурсы — launch, models, worlds, config
+# Ресурсы — launch, models, worlds
 install(DIRECTORY
   launch
   models
   worlds
-  config
   DESTINATION share/${PROJECT_NAME}
 )
 
