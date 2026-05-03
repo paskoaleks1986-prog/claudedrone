@@ -31,6 +31,11 @@ install(PROGRAMS
   RENAME stop_scan
   DESTINATION lib/${PROJECT_NAME}
 )
+install(PROGRAMS
+  drone_sim/servo_cmd_node.py
+  RENAME servo_cmd
+  DESTINATION lib/${PROJECT_NAME}
+)
 # Ресурсы — launch, models, worlds
 install(DIRECTORY
   launch
