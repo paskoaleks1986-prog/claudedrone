@@ -77,6 +77,41 @@ Presets:
 | `--sim`    | `-gz -r -sitl -bridge`                  |
 | `--full`   | `-gz -r -sitl -bridge -ros`             |
 
+### capture.sh
+
+Mode (pick one):
+
+| Flag             | Effect                                                      |
+|------------------|-------------------------------------------------------------|
+| `--video`        | record a target window via `ffmpeg` + `x11grab` + `xdotool` |
+| `--screenshots`  | loop over tmux panes, screenshot whole screen each tick     |
+
+Common:
+
+| Flag       | Effect                                                                |
+|------------|-----------------------------------------------------------------------|
+| `-o DIR`   | output directory (default: `$MEDIA_DIR` from env)                     |
+
+`--video` only:
+
+| Flag         | Effect                                          |
+|--------------|-------------------------------------------------|
+| `-t SECONDS` | recording length (default 15)                   |
+| `-w NAME`    | window name to focus (default `Gazebo`)         |
+
+`--screenshots` only:
+
+| Flag         | Effect                                                  |
+|--------------|---------------------------------------------------------|
+| `-i SECONDS` | interval between shots (default 3)                      |
+| `-n COUNT`   | total shots (default 0 = run until Ctrl+C)              |
+| `-s NAME`    | tmux session to cycle through (default `sim`)           |
+
+`capture.sh` is a separate script (not a `launch.sh` flag) because the
+two have different lifecycles: launch brings the stack up once and
+exits; capture is a long-running observer that may be started, stopped
+and restarted independently while the stack runs.
+
 ## Examples
 
 ```bash
@@ -97,10 +132,18 @@ Presets:
 
 # 6. Sim + manual MAVProxy pane, custom world picked interactively
 ./launch.sh --sim --manual --ask-world
+
+# 7. Record 15s of the Gazebo window
+./capture.sh --video
+
+# 8. 10 screenshots, 3s apart, while cycling through tmux panes
+./capture.sh --screenshots -i 3 -n 10
 ```
 
 ## Notes
 
 - The scripts read everything from `.env_simulation` — no hardcoded paths.
 - Re-running `launch.sh` with the same `-s` name kills the previous session.
-- `LOG_DIR` is auto-created if missing.
+- `LOG_DIR` and `MEDIA_DIR` are auto-created if missing.
+- `capture.sh --video` requires `xdotool` and `ffmpeg`; `--screenshots`
+  uses `scrot` if present, otherwise falls back to ImageMagick `import`.
