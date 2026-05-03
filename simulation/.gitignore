@@ -1,0 +1,16 @@
+.env_*
+logs/
+
+# Colcon
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.pyc
+
+# SITL artifacts (sim_vehicle.py runtime output)
+mav.parm
+mav.tlog
+mav.tlog.raw
