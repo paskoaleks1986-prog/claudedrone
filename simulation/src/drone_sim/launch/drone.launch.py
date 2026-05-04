@@ -46,6 +46,13 @@ def generate_launch_description():
             name='sweep_node',
             output='screen'
         ),
+        # Autoscan — независимый триггер sweep'ов с cooldown
+        Node(
+            package='drone_sim',
+            executable='autoscan',
+            name='autoscan_node',
+            output='screen'
+        ),
         Node(
             package='ros_gz_bridge',
             executable='parameter_bridge',
