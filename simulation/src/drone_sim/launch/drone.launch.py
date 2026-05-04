@@ -39,6 +39,13 @@ def generate_launch_description():
             name='servo_cmd_node',
             output='screen'
         ),
+        # Sweep — функция скана 0→π минимальным шагом, /drone/sweep/start → /drone/sweep/result
+        Node(
+            package='drone_sim',
+            executable='sweep',
+            name='sweep_node',
+            output='screen'
+        ),
         Node(
             package='ros_gz_bridge',
             executable='parameter_bridge',
