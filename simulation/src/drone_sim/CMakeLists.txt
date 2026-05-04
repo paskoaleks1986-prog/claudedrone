@@ -41,6 +41,11 @@ install(PROGRAMS
   RENAME sweep
   DESTINATION lib/${PROJECT_NAME}
 )
+install(PROGRAMS
+  drone_sim/autoscan_node.py
+  RENAME autoscan
+  DESTINATION lib/${PROJECT_NAME}
+)
 # Ресурсы — launch, models, worlds
 install(DIRECTORY
   launch
