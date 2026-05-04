@@ -36,6 +36,11 @@ install(PROGRAMS
   RENAME servo_cmd
   DESTINATION lib/${PROJECT_NAME}
 )
+install(PROGRAMS
+  drone_sim/sweep_node.py
+  RENAME sweep
+  DESTINATION lib/${PROJECT_NAME}
+)
 # Ресурсы — launch, models, worlds
 install(DIRECTORY
   launch
