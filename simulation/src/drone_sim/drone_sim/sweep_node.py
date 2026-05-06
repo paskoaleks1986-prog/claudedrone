@@ -24,7 +24,7 @@ from typing import Optional
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Empty, Float32, Float64
+from std_msgs.msg import Empty, Float32, Float64, String
 from sensor_msgs.msg import LaserScan
 
 
@@ -56,6 +56,7 @@ class SweepNode(Node):
         self.pub_target = self.create_publisher(Float64, '/drone/sg90/target_angle', 10)
         self.pub_result = self.create_publisher(LaserScan, '/drone/sweep/result', 10)
         self.pub_progress = self.create_publisher(Float32, '/drone/sweep/progress', 10)
+        self.pub_status = self.create_publisher(String, '/scan/status', 10)
 
         # subscribers
         self.sub_start = self.create_subscription(Empty, '/drone/sweep/start', self._on_start, 1)
@@ -86,6 +87,7 @@ class SweepNode(Node):
         self._sweeping = True
         self._step_idx = 0
         self._collected = []
+        self.pub_status.publish(String(data='SCANNING'))
         # шлём цель = 0 и сразу засекаем settle
         self._send_target(0.0)
         self._step_started_t = self._now_s()
@@ -137,6 +139,7 @@ class SweepNode(Node):
         scan.ranges = list(self._collected)
         scan.intensities = []
         self.pub_result.publish(scan)
+        self.pub_status.publish(String(data='COMPLETE'))
         self.get_logger().info(
             f'sweep: done — {len(scan.ranges)} samples, '
             f'min={min(scan.ranges):.2f} m, max={max(scan.ranges):.2f} m'
