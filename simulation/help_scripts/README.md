@@ -16,13 +16,13 @@ The env file lives **outside the repo**, one level above:
 
 ```
 /home/aleks/git/proj/aerosearch/.env_simulation     # NOT committed
-/home/aleks/git/proj/aerosearch/git/simulation/help_scripts/.env_simulation.example  # committed
+/home/aleks/git/proj/aerosearch/claudedrone-git/simulation/help_scripts/.env_simulation.example  # committed
 ```
 
 Copy and edit:
 
 ```bash
-cp git/simulation/help_scripts/.env_simulation.example .env_simulation
+cp claudedrone-git/simulation/help_scripts/.env_simulation.example .env_simulation
 $EDITOR .env_simulation
 ```
 
