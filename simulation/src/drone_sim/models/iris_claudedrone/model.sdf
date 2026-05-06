@@ -923,33 +923,8 @@
         </lidar>
       </sensor>
 
-      <!-- TF LUNA ВПЕРЁД — 2D скан -->
-      <sensor name="tf_luna_front" type="gpu_lidar">
-        <pose>0.1 0 0 0 0 0</pose>
-        <topic>/drone/tf_luna_scan</topic>
-        <update_rate>10</update_rate>
-        <visualize>true</visualize>
-        <lidar>
-          <scan>
-            <horizontal>
-              <samples>1</samples>
-              <resolution>1</resolution>
-              <min_angle>0</min_angle>
-              <max_angle>0</max_angle>
-            </horizontal>
-          </scan>
-          <range>
-            <min>0.2</min>
-            <max>8.0</max>
-            <resolution>0.01</resolution>
-          </range>
-          <noise>
-            <type>gaussian</type>
-            <mean>0.0</mean>
-            <stddev>0.01</stddev>
-          </noise>
-        </lidar>
-      </sensor>
+      <!-- TF LUNA ВПЕРЁД (sweep-сенсор) перенесён на sg90_arm —
+           см. ниже link sg90_arm. Здесь больше не объявляется. -->
 
       <!-- VL53L0X x6 — периметр 360° -->
       <!-- VL0 — 0° ПЕРЕД -->
@@ -1061,6 +1036,164 @@
       <parent>iris_with_standoffs::base_link</parent>
       <child>sensors_link</child>
     </joint>
+
+<!-- ============================================================
+         SG90 SERVO — поворотная платформа для TF-Luna
+         Корпус наверху дрона, ось вращения вертикальна
+         (рог сервы движется в плоскости параллельной полу)
+         Диапазон: 0..180° (0..π рад)
+    ============================================================ -->
+    <link name="sg90_base">
+      <pose>0 0 0.13 0 0 0</pose>
+      <inertial>
+        <mass>0.009</mass>
+        <inertia>
+          <ixx>0.0000007</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.0000010</iyy><iyz>0</iyz>
+          <izz>0.0000007</izz>
+        </inertia>
+      </inertial>
+      <visual name="sg90_base_visual">
+        <geometry>
+          <box>
+            <size>0.023 0.012 0.022</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.1 0.1 0.6 1</ambient>
+          <diffuse>0.1 0.1 0.6 1</diffuse>
+        </material>
+      </visual>
+      <collision name="sg90_base_collision">
+        <geometry>
+          <box>
+            <size>0.023 0.012 0.022</size>
+          </box>
+        </geometry>
+      </collision>
+    </link>
+
+    <link name="sg90_arm">
+      <pose>0 0 0.146 0 0 0</pose>
+      <inertial>
+        <mass>0.001</mass>
+        <inertia>
+          <ixx>0.0000001</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.0000001</iyy><iyz>0</iyz>
+          <izz>0.0000001</izz>
+        </inertia>
+      </inertial>
+      <visual name="sg90_arm_visual">
+        <pose>0.0125 0 0 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.025 0.005 0.003</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.8 0.1 0.1 1</ambient>
+          <diffuse>0.8 0.1 0.1 1</diffuse>
+        </material>
+      </visual>
+      <collision name="sg90_arm_collision">
+        <pose>0.0125 0 0 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.025 0.005 0.003</size>
+          </box>
+        </geometry>
+      </collision>
+
+      <!-- Корпус TF-Luna на конце руки (визуально) —
+           сенсор стоит вертикально (перпендикулярно полу),
+           так что его луч идёт горизонтально наружу (+X arm-local).
+           При вращении sg90_joint 0..π луч сметает плоскость
+           параллельную полу. -->
+      <visual name="tf_luna_body_visual">
+        <pose>0.025 0 0.005 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.012 0.020 0.018</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.05 0.05 0.05 1</ambient>
+          <diffuse>0.05 0.05 0.05 1</diffuse>
+        </material>
+      </visual>
+
+      <!-- TF-Luna sweep-сенсор. Топик /scan/sweep по acceptance.
+           Луч направлен по +X руки (горизонтально) — при servo=0
+           смотрит вперёд дрона, при servo=π — назад через левую сторону. -->
+      <sensor name="tf_luna_sweep" type="gpu_lidar">
+        <pose>0.025 0 0.005 0 0 0</pose>
+        <topic>/scan/sweep</topic>
+        <update_rate>10</update_rate>
+        <visualize>true</visualize>
+        <lidar>
+          <scan>
+            <horizontal>
+              <samples>1</samples>
+              <resolution>1</resolution>
+              <min_angle>0</min_angle>
+              <max_angle>0</max_angle>
+            </horizontal>
+          </scan>
+          <range>
+            <min>0.2</min>
+            <max>8.0</max>
+            <resolution>0.01</resolution>
+          </range>
+          <noise>
+            <type>gaussian</type>
+            <mean>0.0</mean>
+            <stddev>0.01</stddev>
+          </noise>
+        </lidar>
+      </sensor>
+    </link>
+
+    <!-- Корпус сервы — фикс к корпусу дрона -->
+    <joint name="sg90_base_joint" type="fixed">
+      <parent>iris_with_standoffs::base_link</parent>
+      <child>sg90_base</child>
+    </joint>
+
+    <!-- Сама серва — revolute joint, ось Z (перпендикулярна полу),
+         диапазон 0..180° -->
+    <joint name="sg90_joint" type="revolute">
+      <parent>sg90_base</parent>
+      <child>sg90_arm</child>
+      <axis>
+        <xyz>0 0 1</xyz>
+        <limit>
+          <lower>0</lower>
+          <upper>3.14159</upper>
+          <effort>0.2</effort>
+          <velocity>6.0</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.001</damping>
+          <friction>0.0001</friction>
+        </dynamics>
+      </axis>
+    </joint>
+
+    <!-- Контроллер позиции для SG90.
+         Команда: радианы, топик /drone/sg90/cmd (gz topic -t /drone/sg90/cmd -m gz.msgs.Double -p "data: 1.57")
+         После моста gz↔ROS2 будет ros2 topic /drone/sg90/cmd (std_msgs/Float64). -->
+    <plugin filename="gz-sim-joint-position-controller-system"
+      name="gz::sim::systems::JointPositionController">
+      <joint_name>sg90_joint</joint_name>
+      <topic>/drone/sg90/cmd</topic>
+      <p_gain>1.0</p_gain>
+      <i_gain>0.1</i_gain>
+      <d_gain>0.05</d_gain>
+      <i_max>0.5</i_max>
+      <i_min>-0.5</i_min>
+      <cmd_max>0.2</cmd_max>
+      <cmd_min>-0.2</cmd_min>
+    </plugin>
 
   </model>
 </sdf>

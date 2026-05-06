@@ -32,6 +32,27 @@ def generate_launch_description():
             name='sensor_monitor',
             output='screen'
         ),
+        # SG90 servo command node — клемп target_angle → /drone/sg90/cmd
+        Node(
+            package='drone_sim',
+            executable='servo_cmd',
+            name='servo_cmd_node',
+            output='screen'
+        ),
+        # Sweep — функция скана 0→π минимальным шагом, /drone/sweep/start → /drone/sweep/result
+        Node(
+            package='drone_sim',
+            executable='sweep',
+            name='sweep_node',
+            output='screen'
+        ),
+        # Autoscan — независимый триггер sweep'ов с cooldown
+        Node(
+            package='drone_sim',
+            executable='autoscan',
+            name='autoscan_node',
+            output='screen'
+        ),
         Node(
             package='ros_gz_bridge',
             executable='parameter_bridge',
@@ -52,10 +73,15 @@ def generate_launch_description():
                 '@sensor_msgs/msg/LaserScan'
                 '[gz.msgs.LaserScan',
 
-                # TF Luna скан
-                '/drone/tf_luna_scan'
+                # TF Luna sweep (на sg90_arm, движется с сервой)
+                '/scan/sweep'
                 '@sensor_msgs/msg/LaserScan'
                 '[gz.msgs.LaserScan',
+
+                # SG90 servo команда (ROS2 → gz, double в радианах)
+                '/drone/sg90/cmd'
+                '@std_msgs/msg/Float64'
+                ']gz.msgs.Double',
 
                 # VL53L0X x6
                 '/drone/vl53l0x/ch0'
