@@ -12,12 +12,14 @@ Build and launch helpers for the `simulation` ROS2 workspace.
 
 ## Setup
 
-The env file lives **outside the repo**, one level above:
+The env file lives **outside the repo**, one level above the repo root:
 
 ```
-/home/aleks/git/proj/aerosearch/.env_simulation     # NOT committed
-/home/aleks/git/proj/aerosearch/claudedrone-git/simulation/help_scripts/.env_simulation.example  # committed
+<aerosearch>/.env_simulation                                 # NOT committed (one dir above claudedrone-git/)
+claudedrone-git/simulation/help_scripts/.env_simulation.example  # committed (relative to aerosearch/)
 ```
+
+Where `<aerosearch>` is whatever directory contains `claudedrone-git/` on your machine.
 
 Copy and edit:
 
