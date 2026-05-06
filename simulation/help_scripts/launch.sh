@@ -25,6 +25,7 @@ LOG_PANES=0
 HEADLESS=0
 MANUAL=0
 MONITOR=0
+MAVROS=0
 AUTO_NODE=""
 
 usage() {
@@ -49,6 +50,7 @@ Modifiers:
   --headless      Gazebo without GUI (-s)
   --manual        extra pane for MAVProxy manual control
   --monitor       extra pane: watch ros2 topic list
+  --mavros        extra pane: ros2 launch mavros apm.launch (SITL → /mavros/*)
   --auto NAME     extra pane: ros2 run drone_sim NAME
 
 Presets:
@@ -83,6 +85,7 @@ while [[ $# -gt 0 ]]; do
         --headless)  HEADLESS=1; shift ;;
         --manual)    MANUAL=1; shift ;;
         --monitor)   MONITOR=1; shift ;;
+        --mavros)    MAVROS=1; shift ;;
         --auto)      AUTO_NODE="${2:?--auto needs a node name}"; shift 2 ;;
         --layout)    WANT_GZ=1; shift ;;
         --sim)       WANT_GZ=1; GZ_RUN=1; WANT_SITL=1; WANT_BRIDGE=1; shift ;;
@@ -224,6 +227,14 @@ exec watch -n 1 ros2 topic list
 EOF
 }
 
+cmd_mavros() {
+    cat <<EOF
+source '$ROS_SETUP'
+echo "[mavros] ros2 launch mavros apm.launch fcu_url:=udp://:14550@14555"
+exec ros2 launch mavros apm.launch fcu_url:=udp://:14550@14555
+EOF
+}
+
 cmd_auto() {
     local node="$1"
     cat <<EOF
@@ -258,6 +269,7 @@ PANES=()
 (( WANT_SITL ))   && PANES+=("sitl|$(cmd_sitl)")
 (( WANT_BRIDGE )) && PANES+=("bridge|$(cmd_bridge)")
 (( WANT_ROS ))    && PANES+=("ros|$(cmd_ros)")
+(( MAVROS ))      && PANES+=("mavros|$(cmd_mavros)")
 (( MANUAL ))      && PANES+=("manual|$(cmd_manual)")
 (( MONITOR ))     && PANES+=("monitor|$(cmd_monitor)")
 [[ -n "$AUTO_NODE" ]] && PANES+=("auto|$(cmd_auto "$AUTO_NODE")")
