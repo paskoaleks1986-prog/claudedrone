@@ -50,10 +50,10 @@ ros2 pkg create dron_sim --build-type ament_cmake --dependencies rclpy std_msgs 
     ├── src
     └── worlds
 5. Create test Node. here some code
-nano /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/drone_sim/hello.py
+nano <repo-root>/simulation/src/drone_sim/drone_sim/hello.py
 
 6. Build node
-cd /home/aleks/git/proj/claudedrone/simulation
+cd <repo-root>/simulation
 
 # Собрать всё
 colcon build
@@ -114,7 +114,7 @@ commit 13c7d8ae16746ad8e1148533a9bb3b539c9c519d (HEAD -> main)
 
 WARN!!!
 # Игнорируем venv для colcon
-touch /home/aleks/git/proj/claudedrone/simulation/venv/COLCON_IGNORE
+touch <repo-root>/simulation/venv/COLCON_IGNORE
 
 1. CReate new node sensor_monitor.py
 2. add new node to CMakeLists.txt after # Регистрируем ноды
@@ -158,7 +158,7 @@ ros_gz_interfaces — общие типы сообщений
 gz sim empty.sdf
 
 5 create room
-newFile /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/worlds/indoor_room.sdf
+newFile <repo-root>/simulation/src/drone_sim/worlds/indoor_room.sdf
 
 6 add light
 <!-- Основной свет сверху -->
@@ -195,7 +195,7 @@ newFile /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/worlds/indoor_
 <diffuse>0.85 0.82 0.72 1</diffuse>
 
 8 check the room
-gz sim /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/worlds/indoor_room.sdf
+gz sim <repo-root>/simulation/src/drone_sim/worlds/indoor_room.sdf
 
 9 DESCRIPTION
 SDF — главные компоненты
@@ -311,13 +311,13 @@ world
 
 
 10 drone model
-mkdir -p /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/models/claudedrone
+mkdir -p <repo-root>/simulation/src/drone_sim/models/claudedrone
 
 this model passport
-newFile /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/models/claudedrone/model.config
+newFile <repo-root>/simulation/src/drone_sim/models/claudedrone/model.config
 
 model
-newFile /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/models/claudedrone/model.sdf
+newFile <repo-root>/simulation/src/drone_sim/models/claudedrone/model.sdf
 
 11 add drone to the room
 indoor_room.sdf
@@ -328,13 +328,13 @@ indoor_room.sdf
     </include>
 
 12 run
-export GZ_SIM_RESOURCE_PATH=/home/aleks/git/proj/claudedrone/simulation/src/drone_sim/models
-gz sim /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/worlds/indoor_room.sdf
+export GZ_SIM_RESOURCE_PATH=<repo-root>/simulation/src/drone_sim/models
+gz sim <repo-root>/simulation/src/drone_sim/worlds/indoor_room.sdf
 #################################################################################
 commit 452f2a082a5f12d756ae7be52917125b34b98c5d (HEAD -> main, origin/main, origin/HEAD)
 START SIMUILATION
 1.
-cd /home/aleks/git/proj/claudedrone/simulation
+cd <repo-root>/simulation
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
 ros2 launch drone_sim drone.launch.py
@@ -366,7 +366,7 @@ ros2 topic echo /world/indoor_room/pose/info
 
 5. Теперь добавим bridge в launch файл чтобы он запускался автоматически
 
-nano /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/launch/drone.launch.py
+nano <repo-root>/simulation/src/drone_sim/launch/drone.launch.py
 
 # Bridge — Gazebo <-> ROS2
 Node(
@@ -388,10 +388,10 @@ now everything set up in launcher
 #################################################################################
 
 1. add sensors to Drone
-subl /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/models/claudedrone/model.sdf
+subl <repo-root>/simulation/src/drone_sim/models/claudedrone/model.sdf
 
 2. add it our simulation
-subl /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/worlds/indoor_room.sdf
+subl <repo-root>/simulation/src/drone_sim/worlds/indoor_room.sdf
 
 <plugin filename="gz-sim-sensors-system"
         name="gz::sim::systems::Sensors">

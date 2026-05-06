@@ -107,12 +107,12 @@ sensor_monitor.py (наш код)
 
 1. copy iris model to our prj
 cp -r ~/ardupilot_gazebo/models/iris_with_ardupilot \
-  /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/models/iris_claudedrone
+  <repo-root>/simulation/src/drone_sim/models/iris_claudedrone
 
 add sensors to model.sdf добавили TOF TFLuna
 
 2. change params for Drone
-/home/aleks/git/proj/claudedrone/simulation/config/ardupilot/indoor.parm
+<repo-root>/simulation/config/ardupilot/indoor.parm
 
 TESTING OUR PARAMS with IRIS DRONE
 Терминал 1:
@@ -122,19 +122,19 @@ gz sim ~/ardupilot_gazebo/worlds/iris_runway.sdf -r
 bash
 cd ~/ardupilot/ArduCopter
 sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --console \
-  --add-param-file=/home/aleks/git/proj/claudedrone/simulation/config/ardupilot/indoor.parm
+  --add-param-file=<repo-root>/simulation/config/ardupilot/indoor.parm
 
 
 
 ```bash
 cp ~/ardupilot_gazebo/worlds/iris_runway.sdf \
-  /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/worlds/claudedrone_runway.sdf
+  <repo-root>/simulation/src/drone_sim/worlds/claudedrone_runway.sdf
 ```
 Указываем нашу модель дрона в этом мире
 Потом открой в VS Code:
 
 ```bash
-code /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/worlds/claudedrone_runway.sdf
+code <repo-root>/simulation/src/drone_sim/worlds/claudedrone_runway.sdf
 ```
 
 Найди строку:
@@ -150,8 +150,8 @@ code /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/worlds/claudedron
 
 **Терминал 1 — Gazebo с нашим world файлом
 ```bash
-GZ_SIM_RESOURCE_PATH=/home/aleks/git/proj/claudedrone/simulation/src/drone_sim/models:~/ardupilot_gazebo/models:$GZ_SIM_RESOURCE_PATH \
-gz sim /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/worlds/claudedrone_runway.sdf -r
+GZ_SIM_RESOURCE_PATH=<repo-root>/simulation/src/drone_sim/models:~/ardupilot_gazebo/models:$GZ_SIM_RESOURCE_PATH \
+gz sim <repo-root>/simulation/src/drone_sim/worlds/claudedrone_runway.sdf -r
 ```
 
 **Разбор:**
@@ -163,7 +163,7 @@ gz sim /home/aleks/git/proj/claudedrone/simulation/src/drone_sim/worlds/claudedr
 ```bash
 cd ~/ardupilot/ArduCopter
 sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --console \
-  --add-param-file=/home/aleks/git/proj/claudedrone/simulation/config/ardupilot/indoor.parm
+  --add-param-file=<repo-root>/simulation/config/ardupilot/indoor.parm
 ```
 
 Активируем Ros в текущем терминале
