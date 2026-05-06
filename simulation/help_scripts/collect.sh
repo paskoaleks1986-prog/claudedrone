@@ -7,7 +7,7 @@
 set -euo pipefail
 
 VAULT="${VAULT:-$HOME/obsidian/claudedrone}"
-DRONE_REPO="${DRONE_REPO:-$HOME/git/proj/aerosearch/git}"
+DRONE_REPO="${DRONE_REPO:-$HOME/git/proj/aerosearch/claudedrone-git}"
 LANDING_REPO="${LANDING_REPO:-$HOME/git/proj/aerosearch/landing}"
 WORKSPACE="${WORKSPACE:-$HOME/git/proj/aerosearch/_workspace}"
 OUT="${OUT:-$LANDING_REPO/metrics.json}"
