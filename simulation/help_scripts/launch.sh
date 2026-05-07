@@ -122,7 +122,25 @@ LAUNCH_PKG="${LAUNCH_PKG:-drone_sim}"
 GZ_RESOURCE_EXTRA="${GZ_RESOURCE_EXTRA:-}"
 LOG_DIR="${LOG_DIR:-/tmp/sim-logs}"
 
+# D2 multi-instance isolation (TASK-033). Defaults preserve pre-isolation behavior.
+SITL_INSTANCE="${SITL_INSTANCE:-0}"
+MAVLINK_PORT="${MAVLINK_PORT:-$((5760 + 10 * SITL_INSTANCE))}"
+GZ_PARTITION="${GZ_PARTITION:-sim}"
+ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
+GZ_HEADLESS="${GZ_HEADLESS:-0}"
+(( GZ_HEADLESS )) && HEADLESS=1   # env wins; --headless flag still adds it too
+
 command -v tmux >/dev/null || { echo "tmux not installed" >&2; exit 1; }
+
+# Pre-flight: ensure MAVLINK_PORT is free before launching SITL.
+if (( WANT_SITL )); then
+    if ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${MAVLINK_PORT}\$"; then
+        echo "ERROR: MAVLINK_PORT $MAVLINK_PORT is already bound." >&2
+        echo "  Either bump SITL_INSTANCE in $ENV_FILE (each +1 = +10 on port)," >&2
+        echo "  or run: $(cd "$SCRIPT_DIR/../../../scripts/shared" 2>/dev/null && pwd)/d2_sitl_cleanup.sh --dry-run" >&2
+        exit 1
+    fi
+fi
 
 # ── world / params resolution ────────────────────────────────────────────────
 pick_from_dir() {
@@ -179,7 +197,8 @@ cmd_gz() {
 cd '$WS_DIR'
 source '$ROS_SETUP'
 export GZ_SIM_RESOURCE_PATH='$GZ_RESOURCE_EXTRA'
-echo "[gz] world=$WORLD_PATH flags=$GZ_FLAGS"
+export GZ_PARTITION='$GZ_PARTITION'
+echo "[gz] world=$WORLD_PATH flags=$GZ_FLAGS partition=$GZ_PARTITION"
 exec gz sim '$WORLD_PATH'$GZ_FLAGS
 EOF
 }
@@ -187,8 +206,9 @@ EOF
 cmd_sitl() {
     cat <<EOF
 cd '$ARDUPILOT_DIR/ArduCopter'
-echo "[sitl] params=$PARAMS"
+echo "[sitl] params=$PARAMS instance=$SITL_INSTANCE port=$MAVLINK_PORT"
 exec sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --console \\
+    -I $SITL_INSTANCE \\
     --add-param-file='$PARAMS'
 EOF
 }
@@ -196,7 +216,9 @@ EOF
 cmd_bridge() {
     cat <<EOF
 source '$ROS_SETUP'
-echo "[bridge] starting ros_gz_bridge clock"
+export GZ_PARTITION='$GZ_PARTITION'
+export ROS_DOMAIN_ID='$ROS_DOMAIN_ID'
+echo "[bridge] starting ros_gz_bridge clock partition=$GZ_PARTITION domain=$ROS_DOMAIN_ID"
 exec ros2 run ros_gz_bridge parameter_bridge \\
     /clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock
 EOF
@@ -206,32 +228,39 @@ cmd_ros() {
     cat <<EOF
 cd '$WS_DIR'
 source '$ROS_SETUP'
+export GZ_PARTITION='$GZ_PARTITION'
+export ROS_DOMAIN_ID='$ROS_DOMAIN_ID'
 if [[ -f install/setup.bash ]]; then source install/setup.bash; fi
-echo "[ros] launching $LAUNCH_PKG $LAUNCH_FILE"
+echo "[ros] launching $LAUNCH_PKG $LAUNCH_FILE domain=$ROS_DOMAIN_ID"
 exec ros2 launch '$LAUNCH_PKG' '$LAUNCH_FILE'
 EOF
 }
 
 cmd_manual() {
+    local mp_out=$((14550 + 10 * SITL_INSTANCE))
     cat <<EOF
-echo "[manual] MAVProxy on udp:127.0.0.1:14550 — type 'help'"
-exec mavproxy.py --master=udp:127.0.0.1:14550 --console
+echo "[manual] MAVProxy on udp:127.0.0.1:$mp_out (instance=$SITL_INSTANCE) — type 'help'"
+exec mavproxy.py --master=udp:127.0.0.1:$mp_out --console
 EOF
 }
 
 cmd_monitor() {
     cat <<EOF
 source '$ROS_SETUP'
+export ROS_DOMAIN_ID='$ROS_DOMAIN_ID'
 if [[ -f '$WS_DIR/install/setup.bash' ]]; then source '$WS_DIR/install/setup.bash'; fi
 exec watch -n 1 ros2 topic list
 EOF
 }
 
 cmd_mavros() {
+    local fcu_remote=$((14550 + 10 * SITL_INSTANCE))
+    local fcu_local=$((14555 + 10 * SITL_INSTANCE))
     cat <<EOF
 source '$ROS_SETUP'
-echo "[mavros] ros2 launch mavros apm.launch fcu_url:=udp://:14550@14555"
-exec ros2 launch mavros apm.launch fcu_url:=udp://:14550@14555
+export ROS_DOMAIN_ID='$ROS_DOMAIN_ID'
+echo "[mavros] ros2 launch mavros apm.launch fcu_url:=udp://:$fcu_remote@$fcu_local (instance=$SITL_INSTANCE)"
+exec ros2 launch mavros apm.launch fcu_url:=udp://:$fcu_remote@$fcu_local
 EOF
 }
 
@@ -240,8 +269,10 @@ cmd_auto() {
     cat <<EOF
 cd '$WS_DIR'
 source '$ROS_SETUP'
+export GZ_PARTITION='$GZ_PARTITION'
+export ROS_DOMAIN_ID='$ROS_DOMAIN_ID'
 if [[ -f install/setup.bash ]]; then source install/setup.bash; fi
-echo "[auto] ros2 run $LAUNCH_PKG $node"
+echo "[auto] ros2 run $LAUNCH_PKG $node domain=$ROS_DOMAIN_ID"
 exec ros2 run '$LAUNCH_PKG' '$node'
 EOF
 }
