@@ -22,6 +22,18 @@
     <plugin filename="gz-sim-navsat-system"
             name="gz::sim::systems::NavSat"/>
 
+    <!-- Geographic anchor for ArduPilot navsat/AHRS init.
+         Without this, EKF/AHRS waits forever and arducopter never
+         emits MAVLink heartbeat (TASK-021 21a). Values match the
+         ArduPilot SITL default home (Canberra). -->
+    <spherical_coordinates>
+      <latitude_deg>-35.363262</latitude_deg>
+      <longitude_deg>149.165237</longitude_deg>
+      <elevation>584</elevation>
+      <heading_deg>0</heading_deg>
+      <surface_model>EARTH_WGS84</surface_model>
+    </spherical_coordinates>
+
     <light type="directional" name="main_light">
       <cast_shadows>false</cast_shadows>
       <pose>0 0 10 0 0 0</pose>
