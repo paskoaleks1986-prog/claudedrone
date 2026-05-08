@@ -213,10 +213,17 @@ EOF
 }
 
 cmd_sitl() {
+    # NOTE: no --console flag. --console makes MAVProxy spawn a side-window
+    # via matplotlib; on this venv matplotlib import warns and the side
+    # window never finishes init, so MAVProxy itself blocks before
+    # processing the heartbeat. arducopter emits heartbeats fine — the
+    # symptom is "Waiting for heartbeat" forever in the sitl pane. Without
+    # --console MAVProxy runs in terminal text mode and shows heartbeats
+    # directly. See docs/dev-log/06-launch-console-mavproxy-stall.md.
     cat <<EOF
 cd '$ARDUPILOT_DIR/ArduCopter'
 echo "[sitl] params=$PARAMS instance=$SITL_INSTANCE port=$MAVLINK_PORT"
-exec sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --console \\
+exec sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON \\
     -I $SITL_INSTANCE \\
     --add-param-file='$PARAMS'
 EOF
