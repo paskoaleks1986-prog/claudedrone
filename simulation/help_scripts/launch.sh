@@ -23,6 +23,8 @@ PARAMS=""
 ASK_PARAMS=0
 LOG_PANES=0
 HEADLESS=0
+HEADLESS_FROM_FLAG=0
+GUI=0
 MANUAL=0
 MONITOR=0
 MAVROS=0
@@ -48,6 +50,7 @@ Modifiers:
   --ask-params    interactive list of params/
   -log            tee each pane to LOG_DIR/<session>-<pane>.log
   --headless      Gazebo without GUI (-s)
+  --gui           force Gazebo GUI (overrides env GZ_HEADLESS=1)
   --manual        extra pane for MAVProxy manual control
   --monitor       extra pane: watch ros2 topic list
   --mavros        extra pane: ros2 launch mavros apm.launch (SITL → /mavros/*)
@@ -82,7 +85,8 @@ while [[ $# -gt 0 ]]; do
         -p)          PARAMS="${2:?-p needs a path}"; shift 2 ;;
         --ask-params) ASK_PARAMS=1; shift ;;
         -log)        LOG_PANES=1; shift ;;
-        --headless)  HEADLESS=1; shift ;;
+        --headless)  HEADLESS=1; HEADLESS_FROM_FLAG=1; shift ;;
+        --gui)       GUI=1; shift ;;
         --manual)    MANUAL=1; shift ;;
         --monitor)   MONITOR=1; shift ;;
         --mavros)    MAVROS=1; shift ;;
@@ -128,7 +132,12 @@ MAVLINK_PORT="${MAVLINK_PORT:-$((5760 + 10 * SITL_INSTANCE))}"
 GZ_PARTITION="${GZ_PARTITION:-sim}"
 ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 GZ_HEADLESS="${GZ_HEADLESS:-0}"
-(( GZ_HEADLESS )) && HEADLESS=1   # env wins; --headless flag still adds it too
+(( GZ_HEADLESS )) && HEADLESS=1   # env applies; --headless flag also adds it
+if (( GUI && HEADLESS_FROM_FLAG )); then
+    echo "ERROR: --gui and --headless are mutually exclusive." >&2
+    exit 2
+fi
+(( GUI )) && { HEADLESS=0; GZ_HEADLESS=0; }   # --gui flag wins over env GZ_HEADLESS=1
 
 command -v tmux >/dev/null || { echo "tmux not installed" >&2; exit 1; }
 
