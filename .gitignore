@@ -36,23 +36,14 @@ simulation/log/
 # ─── Logs ─────────────────────────────────────
 *.log
 
-# ─── Claude Code ──────────────────────────────
+# ─── Claude Code agent instructions (local only) ─
 .claude/
+CLAUDE.md
 
-# Personal planning documents
+# ─── Personal planning documents ──────────────
 claudedrone_roadmap_v2.md.pdf
 step_7_stop_scan.md.pdf
 *.pdf
 
-# Claude Code agent instructions (local only)
-CLAUDE.md
-.claude/
-
-# Personal planning documents
-claudedrone_roadmap_v2.md.pdf
-step_7_stop_scan.md.pdf
-*.pdf
-
-# Claude Code agent instructions (local only)
-CLAUDE.md
-.claude/
+# ─── Agent dev-log (mirrored to seo doc) ──────
+docs/dev-log/
