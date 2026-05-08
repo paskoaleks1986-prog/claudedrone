@@ -1,0 +1,4 @@
+# diagnostic-minimal.parm: TASK-021 21a heartbeat repro (ASCII only, short lines).
+# Used via launch.sh -p <abs path>. Comments must stay <80 chars (parser bug).
+ARMING_SKIPCHK 1
+BATT_MONITOR 0
