@@ -159,7 +159,7 @@ TMP=$(mktemp "${OUT}.XXXXXX.tmp")
 cat > "$TMP" <<EOF
 {
   "generated_at": "$(now_iso)",
-  "source": "~/obsidian/claudedrone/ + ~/git/proj/aerosearch/{git,landing}/",
+  "source": "\$AEROSEARCH_ROOT/{obsidian-files,claudedrone-git,landing-git}/",
 
   "project": {
     "phase": "$PHASE_NAME",
