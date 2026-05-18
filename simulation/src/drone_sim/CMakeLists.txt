@@ -42,6 +42,11 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
 )
 install(PROGRAMS
+  drone_sim/sweep_storage_node.py
+  RENAME sweep_storage
+  DESTINATION lib/${PROJECT_NAME}
+)
+install(PROGRAMS
   drone_sim/autoscan_node.py
   RENAME autoscan
   DESTINATION lib/${PROJECT_NAME}
