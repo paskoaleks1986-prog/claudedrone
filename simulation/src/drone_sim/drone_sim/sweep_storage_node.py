@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """sweep_storage_node — TASK-047 prototype: servo sweep + scan storage.
 
 Реализация H1 (Triangular sweep + LaserScan aggregation) из dev-log/14
