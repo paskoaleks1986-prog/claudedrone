@@ -1,6 +1,8 @@
 import os
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess
+from launch.actions import DeclareLaunchArgument, ExecuteProcess
+from launch.conditions import IfCondition, UnlessCondition
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 
@@ -15,7 +17,19 @@ def generate_launch_description():
     # Путь к моделям
     models = os.path.join(pkg, 'models')
 
+    # TASK-054 opt-in: переключение legacy sweep_node ↔ researchbest sweep_storage_node.
+    # default=false → legacy поведение. true → sweep_storage_node с param-override под
+    # совместимые legacy topic/frame (target_angle → servo_cmd → cmd; frame_id=sg90_arm).
+    sweep_storage_arg = DeclareLaunchArgument(
+        'sweep_storage',
+        default_value='false',
+        description='Use sweep_storage_node (researchbest TASK-047) вместо legacy sweep_node',
+    )
+    sweep_storage = LaunchConfiguration('sweep_storage')
+
     return LaunchDescription([
+
+        sweep_storage_arg,
 
         # Запускаем Gazebo
         ExecuteProcess(
@@ -39,12 +53,31 @@ def generate_launch_description():
             name='servo_cmd_node',
             output='screen'
         ),
-        # Sweep — функция скана 0→π минимальным шагом, /drone/sweep/start → /drone/sweep/result
+        # Sweep (legacy TASK-002) — step-by-step 0→π, /drone/sweep/start → /drone/sweep/result.
+        # Запускается когда sweep_storage:=false (default).
         Node(
             package='drone_sim',
             executable='sweep',
             name='sweep_node',
-            output='screen'
+            output='screen',
+            condition=UnlessCondition(sweep_storage),
+        ),
+        # Sweep storage (researchbest TASK-047 / TASK-054 opt-in) — triangular sweep,
+        # NPZ dump, configurable output. Параметры переопределены под legacy:
+        #   cmd_topic=/drone/sg90/target_angle (через servo_cmd → /drone/sg90/cmd)
+        #   frame_id=sg90_arm                  (совместимо с TF/legacy LaserScan)
+        # Запускается когда sweep_storage:=true (вместо legacy sweep_node).
+        Node(
+            package='drone_sim',
+            executable='sweep_storage',
+            name='sweep_storage_node',
+            output='screen',
+            parameters=[{
+                'cmd_topic': '/drone/sg90/target_angle',
+                'frame_id': 'sg90_arm',
+                'dump_dir': '/tmp/sweep_dumps/sim',
+            }],
+            condition=IfCondition(sweep_storage),
         ),
         # Autoscan — независимый триггер sweep'ов с cooldown
         Node(
