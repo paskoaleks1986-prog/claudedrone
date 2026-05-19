@@ -6,15 +6,17 @@
 
 set -euo pipefail
 
+: "${AEROSEARCH_ROOT:?source /data/git/aerosearch/.aerosearch_env}"
+
 # Resolve repo / project paths relative to this script's location, so the
 # defaults work on any machine without hardcoding /home/<user>/...
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DRONE_REPO_DEFAULT="$(cd "$SCRIPT_DIR/../.." && pwd)"        # claudedrone-git/
 PROJECT_ROOT_DEFAULT="$(cd "$DRONE_REPO_DEFAULT/.." && pwd)" # aerosearch/
 
-VAULT="${VAULT:-$HOME/obsidian/claudedrone}"
+VAULT="${VAULT:-$AEROSEARCH_ROOT/obsidian-files}"
 DRONE_REPO="${DRONE_REPO:-$DRONE_REPO_DEFAULT}"
-LANDING_REPO="${LANDING_REPO:-$PROJECT_ROOT_DEFAULT/landing}"
+LANDING_REPO="${LANDING_REPO:-$AEROSEARCH_ROOT/landing}"
 WORKSPACE="${WORKSPACE:-$PROJECT_ROOT_DEFAULT/_workspace}"
 OUT="${OUT:-$LANDING_REPO/metrics.json}"
 
