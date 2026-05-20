@@ -51,6 +51,11 @@ install(PROGRAMS
   RENAME autoscan
   DESTINATION lib/${PROJECT_NAME}
 )
+install(PROGRAMS
+  drone_sim/safety_guard.py
+  RENAME safety_guard
+  DESTINATION lib/${PROJECT_NAME}
+)
 # Ресурсы — launch, models, worlds
 install(DIRECTORY
   launch

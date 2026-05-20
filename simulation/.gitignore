@@ -15,3 +15,6 @@ __pycache__/
 mav.parm
 mav.tlog
 mav.tlog.raw
+
+# SB3 policy bridge venv (TASK-059)
+.venv-policy/

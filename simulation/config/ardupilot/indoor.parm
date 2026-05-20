@@ -5,31 +5,47 @@
 # stays false -> reload_defaults_file fires every param load = crash loop,
 # no MAVLink heartbeat. See docs/dev-log/05-indoor-parm-cyrillic-loop.md.
 
-# GPS off
-GPS1_TYPE 0
+# GPS enabled for SITL fake GPS (origin auto-set, position control works).
+# Real hardware future: disable to use optflow only.
+GPS1_TYPE 1
 
 # Skip all pre-arm checks (ARMING_SKIPCHK is the 4.7+ name; old ARMING_CHECK).
 ARMING_SKIPCHK 1
 
-# Z position from rangefinder (EK3_SRC1_POSZ: 1=baro, 2=rangefinder)
-EK3_SRC1_POSZ 2
-
-# Optical flow for XY velocity (FLOW_TYPE 6 = SITL, VELXY 5 = optflow)
-FLOW_TYPE 6
-EK3_SRC1_VELXY 5
-EK3_SRC1_POSXY 0
+# EKF default sources (GPS enabled, no AHRS_OPTIONS overrides).
+# EK3_SRC1_POSZ default = baro. EK3_SRC1_POSXY default = GPS.
 
 # Indoor slow flight
 LOIT_SPEED_MS 3.0
 PILOT_SPD_UP 1.0
 
-# Geofence (FENCE_TYPE bitmask: 1=floor, 2=ceil, 4=radius, 8=polygon)
-FENCE_ENABLE 1
-FENCE_TYPE 2
+# Geofence original pre-session config.
+FENCE_ENABLE 0
+FENCE_TYPE 3
 FENCE_ALT_MAX 2.5
-
-# FENCE_ACTION: 0=log, 1=RTL, 2=Land, 3=SmartRTL, 4=Brake, 6=Avoid
+FENCE_RADIUS 3.5
+FENCE_MARGIN 0.5
 FENCE_ACTION 4
 
 # Disable battery monitor (sim has no battery)
 BATT_MONITOR 0
+
+# Baseline pre-session.
+WPNAV_ACCEL 50
+# Attempt #19 RCA (2026-05-20): WPNAV_SPEED 30 (30 cm/s) was OK, but
+# combined with 45 deg ANGLE_MAX (ATC_ANGLE_MAX 4500) drone lost 0.28 m
+# of altitude per 1 m XY move. Lock WPNAV to 20 cm/s + ANGLE_MAX 15 deg.
+WPNAV_SPEED 20
+PILOT_ACCEL_Z 100
+ATC_ANGLE_MAX 15
+
+# Boost z velocity P gain для faster recovery от tilt-induced altitude loss.
+# Default 5.0, doubled to 10.0 после attempt #19 diagnostic.
+PSC_VELZ_P 10.0
+
+# DISARM_DELAY 0: cheap insurance against slow setpoint publisher startup.
+DISARM_DELAY 0
+
+# GUID_OPTIONS bit 6 (=64): waypoint nav for position targets in GUIDED.
+# Enables position setpoints to trigger takeoff when drone on ground.
+GUID_OPTIONS 64

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import math
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
@@ -6,6 +7,9 @@ from std_msgs.msg import Float32MultiArray, Float32
 
 CRITICAL = 0.30
 HIGH = 0.80
+VL_MAX_RANGE_M = 2.0   # VL53L0X физический max range; bridge нормализует к 1.2 m,
+                        # но physical max = 2.0 m (gazebo plugin range_max)
+TF_LUNA_MAX_RANGE_M = 8.0  # TF-Luna physical max range
 
 DIRECTIONS = [
     'Перед', 'Перед-право', 'Зад-право',
@@ -18,7 +22,9 @@ class SensorMonitor(Node):
     def __init__(self):
         super().__init__('sensor_monitor')
 
-        self.vl_data = [None] * 6
+        # init = MAX_RANGE = "никаких препятствий". НЕ None — иначе bridge
+        # получает 0.0 (см. RCA 2026-05-19 attempt #1 fly-away).
+        self.vl_data = [VL_MAX_RANGE_M] * 6
 
         # Реальные данные из Gazebo
         for i in range(6):
@@ -42,14 +48,18 @@ class SensorMonitor(Node):
         self.pub_altitude = self.create_publisher(
             Float32, '/drone/altitude', 10)
 
-        self.get_logger().info('SensorMonitor — реальные данные Gazebo')
+        self.get_logger().info('SensorMonitor — реальные данные Gazebo (inf→MAX_RANGE)')
 
     def _vl_callback(self, msg: LaserScan, idx: int):
         if not msg.ranges:
             return
         dist = msg.ranges[0]
-        if dist == float('inf'):
-            return
+        # inf / nan / out-of-range → cap на MAX. "Sensor read max" = "no obstacle",
+        # НЕ "obstacle at 0m" (старый bug 2026-05-19).
+        if not math.isfinite(dist) or dist > VL_MAX_RANGE_M:
+            dist = VL_MAX_RANGE_M
+        elif dist < 0.0:
+            dist = 0.0
 
         self.vl_data[idx] = dist
 
@@ -63,15 +73,18 @@ class SensorMonitor(Node):
             )
 
         msg_out = Float32MultiArray()
-        msg_out.data = [v if v is not None else 0.0 for v in self.vl_data]
+        msg_out.data = list(self.vl_data)
         self.pub_perimeter.publish(msg_out)
 
     def _altitude_callback(self, msg: LaserScan):
         if not msg.ranges:
             return
         alt = msg.ranges[0]
-        if alt == float('inf'):
-            return
+        # inf → MAX_RANGE. Не drop'аем callback — bridge ожидает publish'и steady rate.
+        if not math.isfinite(alt) or alt > TF_LUNA_MAX_RANGE_M:
+            alt = TF_LUNA_MAX_RANGE_M
+        elif alt < 0.0:
+            alt = 0.0
 
         self.get_logger().info(f'Высота: {alt:.2f}м')
 
