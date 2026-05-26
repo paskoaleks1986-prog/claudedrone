@@ -11,8 +11,11 @@ def generate_launch_description():
 
     pkg = get_package_share_directory('drone_sim')
 
-    # Путь к миру
-    world = os.path.join(pkg, 'worlds', 'indoor_room.sdf')
+    # World name — env DEFAULT_WORLD (из .env_simulation) или 'indoor_room' fallback.
+    # При запуске launch.sh -w <name> устанавливает DEFAULT_WORLD перед ros2 launch.
+    # Используется и для SDF path, и для gz_bridge `/world/<name>/...` topics.
+    world_name = os.environ.get('DEFAULT_WORLD', 'indoor_room')
+    world = os.path.join(pkg, 'worlds', f'{world_name}.sdf')
 
     # Путь к моделям
     models = os.path.join(pkg, 'models')
@@ -27,17 +30,26 @@ def generate_launch_description():
     )
     sweep_storage = LaunchConfiguration('sweep_storage')
 
+    launch_gz_arg = DeclareLaunchArgument(
+        'launch_gz',
+        default_value='true',
+        description='Запускать ли Gazebo внутри этого launch файла (set false если gz уже стартован extern launch.sh -gz)',
+    )
+    launch_gz = LaunchConfiguration('launch_gz')
+
     return LaunchDescription([
 
         sweep_storage_arg,
+        launch_gz_arg,
 
-        # Запускаем Gazebo
+        # Запускаем Gazebo (только если launch_gz:=true — backward compat для standalone)
         ExecuteProcess(
             cmd=['gz', 'sim', '-r', world],
             additional_env={
                 'GZ_SIM_RESOURCE_PATH': models
             },
-            output='screen'
+            output='screen',
+            condition=IfCondition(launch_gz),
         ),
         # Нода монитор
         Node(
@@ -86,13 +98,28 @@ def generate_launch_description():
             name='autoscan_node',
             output='screen'
         ),
+        # Safety guard — TOF-уровневая аварийная остановка (TASK-059 attempt #4).
+        # Independent reactive layer ниже policy_bridge: если ANY VL53L0X/sweep
+        # читает < 0.5 м, publish zero Twist на /mavros/setpoint_velocity/cmd_vel_unstamped
+        # на 50 Hz (выше bridge inner loop 20 Hz) → bridge'овы non-zero Twist'ы
+        # overwritten last-write-wins → drone hovers in place до уезда из safety zone.
+        Node(
+            package='drone_sim',
+            executable='safety_guard',
+            name='safety_guard',
+            output='screen',
+            parameters=[{
+                'stop_threshold': 0.5,
+                'check_rate_hz': 50.0,
+            }],
+        ),
         Node(
             package='ros_gz_bridge',
             executable='parameter_bridge',
             name='gz_bridge',
             arguments=[
                 # Позиция дрона
-                '/world/indoor_room/pose/info'
+                f'/world/{world_name}/pose/info'
                 '@geometry_msgs/msg/PoseArray'
                 '[gz.msgs.Pose_V',
 
@@ -140,6 +167,14 @@ def generate_launch_description():
                 '/drone/vl53l0x/ch5'
                 '@sensor_msgs/msg/LaserScan'
                 '[gz.msgs.LaserScan',
+
+                # Joint state — для bridge ObsBuilder (servo_angle = sg90_joint pos / π).
+                # gz публикует gz.msgs.Model, мы маппим в sensor_msgs/JointState.
+                # Topic в ROS2 = f'/world/{world_name}/model/iris_claudedrone/joint_state',
+                # policy_bridge_node принимает param joint_state_topic для override.
+                f'/world/{world_name}/model/iris_claudedrone/joint_state'
+                '@sensor_msgs/msg/JointState'
+                '[gz.msgs.Model',
             ],
             output='screen'
         ),
