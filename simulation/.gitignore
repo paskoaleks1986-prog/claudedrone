@@ -15,3 +15,10 @@ __pycache__/
 mav.parm
 mav.tlog
 mav.tlog.raw
+
+# Aleks's personal notes — NEVER COMMIT, NEVER DELETE, NEVER MODIFY (sim memory feedback_aleks_personal_notes)
+notes_*.txt
+*_notes.txt
+aleks_*.md
+aleks_*.txt
+.aleks-notes/
