@@ -27,17 +27,26 @@ def generate_launch_description():
     )
     sweep_storage = LaunchConfiguration('sweep_storage')
 
+    launch_gz_arg = DeclareLaunchArgument(
+        'launch_gz',
+        default_value='true',
+        description='Запускать ли Gazebo внутри этого launch файла (set false если gz уже стартован extern launch.sh -gz)',
+    )
+    launch_gz = LaunchConfiguration('launch_gz')
+
     return LaunchDescription([
 
         sweep_storage_arg,
+        launch_gz_arg,
 
-        # Запускаем Gazebo
+        # Запускаем Gazebo (только если launch_gz:=true — backward compat для standalone)
         ExecuteProcess(
             cmd=['gz', 'sim', '-r', world],
             additional_env={
                 'GZ_SIM_RESOURCE_PATH': models
             },
-            output='screen'
+            output='screen',
+            condition=IfCondition(launch_gz),
         ),
         # Нода монитор
         Node(

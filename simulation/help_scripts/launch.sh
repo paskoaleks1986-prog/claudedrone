@@ -241,14 +241,20 @@ EOF
 }
 
 cmd_ros() {
+    # TASK-059 attempt #1 RCA (2026-05-19): drone.launch.py запускает свой
+    # Gazebo через ExecuteProcess. Если launch.sh уже стартует gz через -gz,
+    # это duplicate spawn (два gz в одном GZ_PARTITION → SITL talks to wrong
+    # world). Автоматически передаём launch_gz:=false когда -gz присутствует.
+    local launch_gz_val
+    if (( WANT_GZ )); then launch_gz_val=false; else launch_gz_val=true; fi
     cat <<EOF
 cd '$WS_DIR'
 source '$ROS_SETUP'
 export GZ_PARTITION='$GZ_PARTITION'
 export ROS_DOMAIN_ID='$ROS_DOMAIN_ID'
 if [[ -f install/setup.bash ]]; then source install/setup.bash; fi
-echo "[ros] launching $LAUNCH_PKG $LAUNCH_FILE domain=$ROS_DOMAIN_ID"
-exec ros2 launch '$LAUNCH_PKG' '$LAUNCH_FILE'
+echo "[ros] launching $LAUNCH_PKG $LAUNCH_FILE launch_gz=$launch_gz_val domain=$ROS_DOMAIN_ID"
+exec ros2 launch '$LAUNCH_PKG' '$LAUNCH_FILE' launch_gz:=$launch_gz_val
 EOF
 }
 
