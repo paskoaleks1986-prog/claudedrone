@@ -48,7 +48,17 @@ class SensorMonitor(Node):
         self.pub_altitude = self.create_publisher(
             Float32, '/drone/altitude', 10)
 
+        # v2 Block 2 (2026-06-06): perimeter публикуем 10 Hz таймером, а не из
+        # каждого vl-callback'а. Раньше массив летел 6×10 = ~58 Hz, причём 5 из 6
+        # значений в каждом сообщении были несвежими. 10 Hz = частота сенсоров.
+        self.create_timer(0.1, self._publish_perimeter)
+
         self.get_logger().info('SensorMonitor — реальные данные Gazebo (inf→MAX_RANGE)')
+
+    def _publish_perimeter(self):
+        msg_out = Float32MultiArray()
+        msg_out.data = list(self.vl_data)
+        self.pub_perimeter.publish(msg_out)
 
     def _vl_callback(self, msg: LaserScan, idx: int):
         if not msg.ranges:
@@ -71,10 +81,6 @@ class SensorMonitor(Node):
             self.get_logger().warn(
                 f'HIGH: {DIRECTIONS[idx]} = {dist:.2f}м'
             )
-
-        msg_out = Float32MultiArray()
-        msg_out.data = list(self.vl_data)
-        self.pub_perimeter.publish(msg_out)
 
     def _altitude_callback(self, msg: LaserScan):
         if not msg.ranges:

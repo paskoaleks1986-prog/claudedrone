@@ -146,12 +146,20 @@ class PolicyBridgeNode(Node):
             linear_speed=self.linear_speed,
             angular_speed=self.angular_speed,
             get_yaw_rad=lambda: self.obs_builder.pose.heading_rad,
+            # v2 Block 2: training parity — env помечает visited все клетки
+            # пройденные за action (включая промежуточные у action 7).
+            visited_update_fn=self.visited.update,
         )
+        # v2 Block 2: servo_angle obs = commanded angle executor'а (training
+        # parity: в env servo-динамики нет). Убирает 1 kHz JointState churn.
+        self.obs_builder.set_servo_angle_source(lambda: self.executor_act.servo_deg)
         self.failure = FailureHandler(self)
 
         # ----- adaptive speed controller (TASK-059 attempt #5, Aleks/Web 4-mode design) -----
         self.adaptive_speed = AdaptiveSpeedController()
         self._adaptive_log_counter = 0
+        # v2 Block 2: freshness gate counter (см. _predict_and_execute_one_step)
+        self._obs_fresh_skip_count = 0
 
         # ----- stuck detector (TASK-059 attempt #7, Aleks/Web R2 escape pattern) -----
         # Detects coverage-stuck loops (policy/obs feedback cycle) и injects escape:
@@ -444,6 +452,24 @@ class PolicyBridgeNode(Node):
             self._wall_follow_tick(pose)
             return
         # RL phase below (legacy path)
+
+        # v2 Block 2: freshness gate. Politika тренирована turn-based — obs
+        # обязан описывать состояние ПОСЛЕ предыдущего действия. Если сенсорные
+        # кэши старше порога (odom ~8.8Hz → 3 цикла, perimeter 10Hz), snapshot
+        # отражает позу/дистанции ДО остановки → off-distribution. Пропускаем
+        # тик (без счёта шага), следующий через 0.1с перепроверит.
+        now_s = self.get_clock().now().nanoseconds * 1e-9
+        stale = self.obs_builder.staleness_seconds(now_s)
+        if stale["odom"] > 0.35 or stale["perimeter"] > 0.35 or stale["sweep"] > 1.0:
+            self._obs_fresh_skip_count += 1
+            if self._obs_fresh_skip_count % 50 == 1:
+                self.get_logger().warn(
+                    f"obs not fresh, skip predict: odom={stale['odom']:.2f}s "
+                    f"perimeter={stale['perimeter']:.2f}s sweep={stale['sweep']:.2f}s "
+                    f"(skips={self._obs_fresh_skip_count})"
+                )
+            return
+        self._obs_fresh_skip_count = 0
 
         self.visited.update(pose.x_m, pose.y_m)
 

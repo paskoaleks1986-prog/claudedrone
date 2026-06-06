@@ -37,10 +37,22 @@ def generate_launch_description():
     )
     launch_gz = LaunchConfiguration('launch_gz')
 
+    # v2 Block 2 (2026-06-06): для RL-ранов autoscan:=false ОБЯЗАТЕЛЕН.
+    # autoscan каждые cooldown_s триггерит sweep_node, который гоняет серву
+    # 0→π — а в тренировке серву двигает ТОЛЬКО action 6 шагами 30°.
+    # Параллельные sweep'ы делают servo_angle/distances[6] в obs бессмысленными.
+    autoscan_arg = DeclareLaunchArgument(
+        'autoscan',
+        default_value='true',
+        description='Автотриггер sweep циклов. false для policy_bridge RL-ранов (серва — у action 6).',
+    )
+    autoscan = LaunchConfiguration('autoscan')
+
     return LaunchDescription([
 
         sweep_storage_arg,
         launch_gz_arg,
+        autoscan_arg,
 
         # Запускаем Gazebo (только если launch_gz:=true — backward compat для standalone)
         ExecuteProcess(
@@ -91,12 +103,14 @@ def generate_launch_description():
             }],
             condition=IfCondition(sweep_storage),
         ),
-        # Autoscan — независимый триггер sweep'ов с cooldown
+        # Autoscan — независимый триггер sweep'ов с cooldown.
+        # Отключаем для RL-ранов (autoscan:=false): серва принадлежит action 6.
         Node(
             package='drone_sim',
             executable='autoscan',
             name='autoscan_node',
-            output='screen'
+            output='screen',
+            condition=IfCondition(autoscan),
         ),
         # Safety guard — TOF-уровневая аварийная остановка (TASK-059 attempt #4).
         # Independent reactive layer ниже policy_bridge: если ANY VL53L0X/sweep

@@ -112,7 +112,8 @@ class ActionExecutor:
         angular_speed: float = 0.26,
         get_yaw_rad: Callable[[], float] | None = None,
         scan_hover_s: float = DEFAULT_SCAN_HOVER_S,
-        settle_hover_s: float = 0.1,
+        settle_hover_s: float = 0.3,
+        visited_update_fn: Callable[[float, float], None] | None = None,
     ) -> None:
         self.node = node
         self.cell_size_m = cell_size_m
@@ -120,12 +121,26 @@ class ActionExecutor:
         self.target_altitude = target_altitude_m
         self.grid_size = grid_size
         self.scan_hover_s = scan_hover_s
+        # v2 Block 2 (2026-06-06): settle принимался конструктором, но не сохранялся
+        # и нигде не применялся — obs снимался через ~0-100мс после arrival, пока
+        # дрон ещё качается (ArduPilot overshoot). 0.3s по сим2реал-практике
+        # (200-500мс до выхода variance дистанций на плато).
+        self.settle_hover_s = settle_hover_s
+        # v2 Block 2: в тренировке action 7 помечает visited ВСЕ пройденные клетки
+        # (drone_2d_env.py:176-177). Без отметки по пути модель видит "дырку"
+        # в гриде вдоль только что пройденной траектории — off-distribution obs
+        # + coverage undercount. Вызывается на каждом poll'е arrival-ожидания.
+        self._visited_update_fn = visited_update_fn
         self._get_front_m = get_front_distance_m
         self._get_pose = get_pose
 
         self.pose_pub = node.create_publisher(PoseStamped, cmd_pose_topic, 10)
         self.sg90_cmd_pub = node.create_publisher(Float64, sg90_cmd_topic, 10)
-        self._servo_deg = 0.0
+        # v2 Block 2: training parity — env reset ставит servo = 90°
+        # (drone_2d_env.py:96), а тут было 0.0. Модель в начале эпизода ждёт
+        # servo_angle = 0.5. Физическая серва получает команду в
+        # initialize_target() (старт эпизода).
+        self._servo_deg = 90.0
 
         # Target pose — initialized после takeoff release (см. initialize_target())
         self._target_pose: PoseStamped | None = None
@@ -143,9 +158,14 @@ class ActionExecutor:
         if z is None:
             z = self.target_altitude
         self._target_pose = _make_pose(x, y, z, yaw)
+        # v2 Block 2: физическую серву — в стартовое положение эпизода (90°,
+        # как env reset), чтобы commanded == actual с первого obs.
+        cmd = Float64()
+        cmd.data = math.radians(self._servo_deg)
+        self.sg90_cmd_pub.publish(cmd)
         self.node.get_logger().info(
             f"action_executor target initialized: ({x:.2f}, {y:.2f}, {z:.2f}, "
-            f"yaw={math.degrees(yaw):.1f}°)"
+            f"yaw={math.degrees(yaw):.1f}°), servo → {self._servo_deg:.0f}°"
         )
 
     def _publish_maintenance(self) -> None:
@@ -279,14 +299,21 @@ class ActionExecutor:
     def _wait_arrival_position(
         self, target_x: float, target_y: float, tolerance: float, timeout_s: float
     ) -> bool:
-        """Poll pose until distance < tolerance OR timeout."""
+        """Poll pose until distance < tolerance OR timeout.
+
+        По пути помечаем visited-клетки (training parity: env action 7 отмечает
+        каждую промежуточную клетку, не только финальную).
+        """
         t_start = time.monotonic()
         while time.monotonic() - t_start < timeout_s:
             pose = self._get_pose()
+            if self._visited_update_fn is not None:
+                self._visited_update_fn(pose.x_m, pose.y_m)
             dx = pose.x_m - target_x
             dy = pose.y_m - target_y
             dist = math.hypot(dx, dy)
             if dist < tolerance:
+                self._settle()
                 return True
             time.sleep(ARRIVAL_POLL_S)
         self.node.get_logger().warn(
@@ -294,6 +321,16 @@ class ActionExecutor:
             f"final_pose=({pose.x_m:.2f}, {pose.y_m:.2f}) dist={dist:.2f} > tol={tolerance:.2f}"
         )
         return False
+
+    def _settle(self) -> None:
+        """Пауза после arrival перед возвратом управления (и снятием obs).
+
+        ArduPilot position hold даёт overshoot/колебания после прихода в точку;
+        без паузы policy получает obs середины колебания. Markov parity с
+        тренировкой (там состояние после step мгновенно стационарно).
+        """
+        if self.settle_hover_s > 0.0:
+            time.sleep(self.settle_hover_s)
 
     def _wait_arrival_yaw(
         self, target_yaw: float, tolerance_rad: float, timeout_s: float
@@ -304,6 +341,7 @@ class ActionExecutor:
             pose = self._get_pose()
             diff = abs(_angle_diff(pose.heading_rad, target_yaw))
             if diff < tolerance_rad:
+                self._settle()
                 return True
             time.sleep(ARRIVAL_POLL_S)
         self.node.get_logger().warn(

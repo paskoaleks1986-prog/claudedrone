@@ -69,11 +69,17 @@ class ObsBuilder:
         self.sg90_joint_name = sg90_joint_name
 
         # Default = max range = "no obstacle" (нормализованное 1.0 для VL/TF).
-        # servo_angle default = 0 (servo при reset env'а — 90°deg = π/2 rad = norm 0.5),
-        # но без observation просто оставляем 0 чтобы predict работал детерминистично.
+        # servo_angle default = 0.5 — env reset ставит servo 90° (norm 0.5),
+        # v2 Block 2: раньше было 0.0, что противоречило старту эпизода тренировки.
         self._perimeter_norm = np.full(6, 1.0, dtype=np.float32)
         self._sweep_norm = 1.0
-        self._servo_angle_norm = 0.0
+        self._servo_angle_norm = 0.5
+        # v2 Block 2: предпочтительный источник servo_angle — commanded angle от
+        # ActionExecutor (set_servo_angle_source). В тренировке servo-динамики нет:
+        # commanded == actual мгновенно, а после scan_hover 0.5s реальная серва
+        # доехала. Это убирает 1 kHz JointState churn (gz шлёт ~966 Hz) из
+        # inference-процесса. JointState остаётся fallback'ом.
+        self._servo_angle_fn = None
         self._pose = Pose2D()
         self._latest_perimeter_stamp = 0.0
         self._latest_sweep_stamp = 0.0
@@ -170,11 +176,18 @@ class ObsBuilder:
             "odom": now_s - self._latest_odom_stamp,
         }
 
+    def set_servo_angle_source(self, fn) -> None:
+        """v2 Block 2: установить commanded-angle источник (executor.servo_deg,
+        градусы [0,180)). Приоритетнее JointState callback'а."""
+        self._servo_angle_fn = fn
+
     def build_obs(self, visited_grid: np.ndarray) -> dict[str, np.ndarray]:
         """Compose Dict obs ready for PPO.predict.
 
         visited_grid: (64,64) float32 from VisitedGridBuilder.
         """
+        if self._servo_angle_fn is not None:
+            self._servo_angle_norm = float(self._servo_angle_fn()) / 180.0
         distances = np.empty(7, dtype=np.float32)
         distances[:6] = self._perimeter_norm
         distances[6] = self._sweep_norm
