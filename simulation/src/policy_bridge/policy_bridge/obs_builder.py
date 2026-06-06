@@ -124,8 +124,13 @@ class ObsBuilder:
         if not msg.ranges:
             return
         raw = float(msg.ranges[0])
+        # v2 night watch (2026-06-07): inf = «нет препятствия» → cap на MAX,
+        # НЕ drop callback (то же правило, что TASK-059 #5 в sensor_monitor).
+        # Drop оставлял старое значение + замораживал stamp → freshness-гейт
+        # блокировал predict навсегда (ран B: sweep stale 954s, 9251 скипов).
+        # Диагональ комнаты 8.7м > 6.4м диапазона — inf это ШТАТНОЕ чтение.
         if not math.isfinite(raw):
-            return
+            raw = TF_SWEEP_MAX_RANGE_M
         clipped = max(0.0, min(raw, TF_SWEEP_MAX_RANGE_M))
         self._sweep_norm = clipped / TF_SWEEP_MAX_RANGE_M
         self._latest_sweep_stamp = self.node.get_clock().now().nanoseconds * 1e-9

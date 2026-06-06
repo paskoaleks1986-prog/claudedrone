@@ -144,6 +144,8 @@ class ActionExecutor:
 
         # Target pose — initialized после takeoff release (см. initialize_target())
         self._target_pose: PoseStamped | None = None
+        # v2: true пока safety_guard владеет дроном (см. set_safety_hold)
+        self._safety_hold = False
         # 10 Hz maintenance timer (необходим для ArduPilot GUIDED setpoint stream)
         self._maint_timer = node.create_timer(
             1.0 / MAINTAIN_RATE_HZ, self._publish_maintenance
@@ -168,9 +170,36 @@ class ActionExecutor:
             f"yaw={math.degrees(yaw):.1f}°), servo → {self._servo_deg:.0f}°"
         )
 
+    def set_safety_hold(self, active: bool) -> None:
+        """v2 night watch: safety_guard забрал дрона (/safety/active).
+
+        Пока hold — НЕ стримим position maintenance (стрим тянул дрона в
+        стену против zero/retreat-Twist'а guard'а → режимный thrash ArduPilot
+        → раскачка → crash AngErr=61, ран B). На release переинициализируем
+        target на ТЕКУЩУЮ позу — старый target у стены и был тягой.
+        """
+        if active == self._safety_hold:
+            return
+        self._safety_hold = active
+        if not active:
+            pose = self._get_pose()
+            z = (
+                self._target_pose.pose.position.z
+                if self._target_pose is not None else self.target_altitude
+            )
+            self._target_pose = _make_pose(pose.x_m, pose.y_m, z, pose.heading_rad)
+            self.node.get_logger().info(
+                f"safety released — target re-init на текущую позу "
+                f"({pose.x_m:.2f}, {pose.y_m:.2f})"
+            )
+
+    @property
+    def safety_hold(self) -> bool:
+        return self._safety_hold
+
     def _publish_maintenance(self) -> None:
         """10 Hz publish current target pose (mandatory ArduPilot GUIDED)."""
-        if self._target_pose is None:
+        if self._target_pose is None or self._safety_hold:
             return
         self._target_pose.header.stamp = self.node.get_clock().now().to_msg()
         self.pose_pub.publish(self._target_pose)
@@ -306,6 +335,9 @@ class ActionExecutor:
         """
         t_start = time.monotonic()
         while time.monotonic() - t_start < timeout_s:
+            if self._safety_hold:
+                self.node.get_logger().warn("arrival wait aborted: safety hold")
+                return False
             pose = self._get_pose()
             if self._visited_update_fn is not None:
                 self._visited_update_fn(pose.x_m, pose.y_m)
@@ -338,6 +370,9 @@ class ActionExecutor:
         """Poll pose until |yaw_diff| < tolerance_rad OR timeout."""
         t_start = time.monotonic()
         while time.monotonic() - t_start < timeout_s:
+            if self._safety_hold:
+                self.node.get_logger().warn("yaw arrival wait aborted: safety hold")
+                return False
             pose = self._get_pose()
             diff = abs(_angle_diff(pose.heading_rad, target_yaw))
             if diff < tolerance_rad:

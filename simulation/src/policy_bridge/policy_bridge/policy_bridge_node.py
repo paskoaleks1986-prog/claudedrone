@@ -162,6 +162,20 @@ class PolicyBridgeNode(Node):
         # v2 Block 2: servo_angle obs = commanded angle executor'а (training
         # parity: в env servo-динамики нет). Убирает 1 kHz JointState churn.
         self.obs_builder.set_servo_angle_source(lambda: self.executor_act.servo_deg)
+
+        # v2 night watch: координация с safety_guard (latched Bool).
+        # True → executor молчит (maintenance пауза), predict пропускается;
+        # False → target переинициализируется на текущую позу.
+        safety_qos = QoSProfile(
+            depth=1,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+        )
+        self.create_subscription(
+            Bool, "/safety/active",
+            lambda m: self.executor_act.set_safety_hold(bool(m.data)),
+            safety_qos, callback_group=self.sub_cb_group,
+        )
         self.failure = FailureHandler(self)
 
         # ----- adaptive speed controller (TASK-059 attempt #5, Aleks/Web 4-mode design) -----
@@ -321,6 +335,11 @@ class PolicyBridgeNode(Node):
 
         # D-refactor: wait для takeoff_node release control signal
         if not self._takeoff_ready:
+            return
+
+        # v2 night watch: safety_guard владеет дроном — не predict'им и не
+        # двигаем (он отведёт от препятствия и отпустит /safety/active=False).
+        if self.executor_act.safety_hold:
             return
 
         # Pre-flight checks (TASK-059 attempt #1 RCA — safety net):
