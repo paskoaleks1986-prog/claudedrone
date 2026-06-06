@@ -103,13 +103,18 @@ def generate_launch_description():
         # читает < 0.5 м, publish zero Twist на /mavros/setpoint_velocity/cmd_vel_unstamped
         # на 50 Hz (выше bridge inner loop 20 Hz) → bridge'овы non-zero Twist'ы
         # overwritten last-write-wins → drone hovers in place до уезда из safety zone.
+        # v2 fix (2026-06-06): параметр назывался 'stop_threshold' — нода такого
+        # не объявляет (safety_guard.py: 'stop_threshold_floor'), значение молча
+        # игнорировалось и реально действовал дефолт 0.8 м. Передаём правильное
+        # имя и явные 0.8 — это фактическое поведение, под которое тюнился
+        # wall_distance=0.95 (attempt #21 RCA).
         Node(
             package='drone_sim',
             executable='safety_guard',
             name='safety_guard',
             output='screen',
             parameters=[{
-                'stop_threshold': 0.5,
+                'stop_threshold_floor': 0.8,
                 'check_rate_hz': 50.0,
             }],
         ),

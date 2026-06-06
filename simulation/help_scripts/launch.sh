@@ -189,6 +189,10 @@ if (( ASK_PARAMS )); then
     PARAMS="$PARAMS_DIR/$pick"
 fi
 [[ -z "$PARAMS" ]] && PARAMS="$DEFAULT_PARAMS"
+# v2 fix (2026-06-06): cmd_sitl делает `cd $ARDUPILOT_DIR/ArduCopter`, поэтому
+# относительный -p там «не существует» и sim_vehicle молча умирает. Резолвим
+# в абсолютный путь здесь, пока cwd ещё каталог вызова.
+[[ "$PARAMS" != /* ]] && PARAMS="$(cd "$(dirname "$PARAMS")" 2>/dev/null && pwd)/$(basename "$PARAMS")"
 if (( WANT_SITL )) && [[ ! -f "$PARAMS" ]]; then
     echo "ERROR: params file not found: $PARAMS" >&2
     exit 1
@@ -220,12 +224,17 @@ cmd_sitl() {
     # symptom is "Waiting for heartbeat" forever in the sitl pane. Without
     # --console MAVProxy runs in terminal text mode and shows heartbeats
     # directly. See docs/dev-log/06-launch-console-mavproxy-stall.md.
+    # v2 fix (2026-06-06): MAVProxy default streamrate=4 Hz душил
+    # /mavros/local_position/odom до ~3.8 Hz. При 0.3 м/с это ~8 см пути между
+    # odom-апдейтами — на грани arrival tolerance 0.08 м (ложные arrival
+    # timeout'ы). 10 Hz выравнивает odom с bridge loop rate.
     cat <<EOF
 cd '$ARDUPILOT_DIR/ArduCopter'
-echo "[sitl] params=$PARAMS instance=$SITL_INSTANCE port=$MAVLINK_PORT"
+echo "[sitl] params=$PARAMS instance=$SITL_INSTANCE port=$MAVLINK_PORT streamrate=10"
 exec sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON \\
     -I $SITL_INSTANCE \\
-    --add-param-file='$PARAMS'
+    --add-param-file='$PARAMS' \\
+    -m '--streamrate=10'
 EOF
 }
 

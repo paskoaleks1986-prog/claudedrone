@@ -112,6 +112,20 @@ def generate_launch_description() -> LaunchDescription:
             "perimeter_laps", default_value="1",
             description="Сколько кругов wall_follow перед switch к RL phase.",
         ),
+        # v2 fix (2026-06-06): obs_builder по умолчанию слушал "/joint_state",
+        # но ros_gz_bridge публикует /world/<world>/model/iris_claudedrone/joint_state
+        # (см. drone.launch.py gz_bridge args). Override сюда никогда не передавался →
+        # servo_angle в obs был вечным 0.0 — модель не знала, куда смотрит
+        # sweep-дальномер (distances[6]). Default резолвим из DEFAULT_WORLD тем же
+        # механизмом, что world в drone.launch.py.
+        DeclareLaunchArgument(
+            "joint_state_topic",
+            default_value=(
+                f"/world/{os.environ.get('DEFAULT_WORLD', 'indoor_room')}"
+                "/model/iris_claudedrone/joint_state"
+            ),
+            description="JointState topic от ros_gz_bridge для servo_angle obs.",
+        ),
     ]
 
     # ExecuteProcess вместо Node т.к. требуется dedicated isolated venv python
@@ -142,6 +156,7 @@ def generate_launch_description() -> LaunchDescription:
             "-p", ["mode:=", LaunchConfiguration("mode")],
             "-p", ["wall_distance:=", LaunchConfiguration("wall_distance")],
             "-p", ["perimeter_laps:=", LaunchConfiguration("perimeter_laps")],
+            "-p", ["joint_state_topic:=", LaunchConfiguration("joint_state_topic")],
         ],
         output="screen",
         emulate_tty=True,
