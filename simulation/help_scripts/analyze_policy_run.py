@@ -97,6 +97,43 @@ def main() -> None:
             print(f"Тренд: 1-я половина {r1} вмеш. vs 2-я {r2} — "
                   f"{'СПАДАЮТ ✓' if r2 < r1 else 'НЕ спадают ✗'}")
 
+    # ---- ВЕРДИКТ «модель летит» (критерии независимого ревью, 2026-06-06) ----
+    # 1. coverage@338 ≥ 0.25 (~70% baseline 0.351; ≥0.30 — хороший перенос)
+    # 2. escapes/step ≤ 3% к шагу 338 (было 6.8%)
+    # 3. safety_guard active ≤ 5 с/мин в среднем (было 60 в запаркованном хвосте)
+    cov338 = None
+    esc338 = 0
+    for ln in lines:
+        s = STEP.search(ln)
+        if s and int(s.group(1)) <= 338:
+            cov338 = float(s.group(3))
+            esc338 = int(s.group(4))
+    reached338 = any(STEP.search(ln) and int(STEP.search(ln).group(1)) >= 338
+                     for ln in lines)
+    print("\n=== ВЕРДИКТ (критерии ревью) ===")
+    if cov338 is None:
+        print("  нет step-данных")
+    elif not reached338:
+        print(f"  ран не дошёл до шага 338 (coverage пока {cov338:.3f}) — рано судить")
+    else:
+        c1 = cov338 >= 0.25
+        c2 = esc338 / 338 <= 0.03
+        print(f"  1. coverage@338 = {cov338:.3f} (цель ≥0.25, хорошо ≥0.30) "
+              f"{'✓' if c1 else '✗'}{' ✓✓' if cov338 >= 0.30 else ''}")
+        print(f"  2. escapes/step @338 = {100 * esc338 / 338:.1f}% (цель ≤3%) "
+              f"{'✓' if c2 else '✗'}")
+        if safety_per_min:
+            n_min = max(safety_per_min) + 1
+            avg_safety = sum(safety_per_min.values()) / max(1, n_min)
+            c3 = avg_safety <= 5.0
+            print(f"  3. safety_guard = {avg_safety:.1f} с/мин (цель ≤5) "
+                  f"{'✓' if c3 else '✗'}")
+            verdict = c1 and c2 and c3
+        else:
+            print("  3. safety_guard: передай sim-ros.log вторым аргументом")
+            verdict = c1 and c2
+        print(f"  → {'МОДЕЛЬ ЛЕТИТ ✓' if verdict else 'политика ещё не рулит сама ✗'}")
+
 
 if __name__ == "__main__":
     main()
