@@ -49,3 +49,10 @@ DISARM_DELAY 0
 # GUID_OPTIONS bit 6 (=64): waypoint nav for position targets in GUIDED.
 # Enables position setpoints to trigger takeoff when drone on ground.
 GUID_OPTIONS 64
+
+# v2 night watch (2026-06-07): yaw отслеживался ~15°/с → rotate-действия
+# (15-120°) ловили arrival timeout 8s у стен. Ресёрч: в GUIDED yaw гонит
+# attitude-цепочка (НЕ WPNAV); потолки — rate и accel. 90°/с + 360°/с²
+# безопасно для indoor small quad SITL. (Баг 4.0 guided-yaw в 4.5 уже пофикшен.)
+ATC_RATE_Y_MAX 90
+ATC_ACCEL_Y_MAX 36000
