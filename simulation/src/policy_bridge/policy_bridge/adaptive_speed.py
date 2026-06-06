@@ -65,10 +65,16 @@ MODE_TABLE: dict[SpeedMode, ModeConfig] = {
     # position-stream vs zero-Twist → crash AngErr=54 (e2e 2026-06-06 23:05,
     # см. dev-log 23). Сейчас флаги allow_* это маскируют, но значения
     # обязаны быть согласованы с gate_margin_m бриджа.
+    # v2 Block 3.1: action 7 в EXPLORE РАЗРЕШЁН. Baseline в родном env
+    # (eval_model_baseline.py): rot 83% + action 7 14%, fwd 0% — action 7 это
+    # ЕДИНСТВЕННЫЙ локомотив политики. Деградация 7→0 подменяла её движение
+    # шажками 0.1 м → live coverage 0.113@338 vs 0.351@338 native (3×).
+    # Безопасность теперь у слоёв: travel = front − wt(0.95 > floor+cell),
+    # gate на 0-3, safety_guard 50 Hz последним рубежом.
     SpeedMode.EXPLORE: ModeConfig(
         linear_speed=0.15,
         wall_threshold=0.95,      # was 0.80 == safety floor (boundary trap)
-        allow_action_7=False,    # degrade to action 0
+        allow_action_7=True,     # v2 Block 3.1: было False — душило политику
         allow_translation=True,
     ),
     SpeedMode.CAUTIOUS: ModeConfig(

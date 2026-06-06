@@ -41,6 +41,9 @@ from nav_msgs.msg import Odometry
 
 VL_MAX_RANGE_M = 1.2
 TF_SWEEP_MAX_RANGE_M = 6.4
+# v2 Block 3.1: радиус посадки VL53L0X на лучах рамы (model.sdf sensor poses).
+# Используется ТОЛЬКО для obs-нормализации (центр-референс как в env).
+VL_MOUNT_RADIUS_M = 0.1
 SERVO_MAX_RAD = math.pi
 
 
@@ -72,6 +75,7 @@ class ObsBuilder:
         # servo_angle default = 0.5 — env reset ставит servo 90° (norm 0.5),
         # v2 Block 2: раньше было 0.0, что противоречило старту эпизода тренировки.
         self._perimeter_norm = np.full(6, 1.0, dtype=np.float32)
+        self._perimeter_raw_m = np.full(6, VL_MAX_RANGE_M, dtype=np.float32)
         self._sweep_norm = 1.0
         self._servo_angle_norm = 0.5
         # v2 Block 2: предпочтительный источник servo_angle — commanded angle от
@@ -106,7 +110,14 @@ class ObsBuilder:
         if len(msg.data) < 6:
             return
         raw = np.array(msg.data[:6], dtype=np.float32)
-        self._perimeter_norm = np.clip(raw, 0.0, VL_MAX_RANGE_M) / VL_MAX_RANGE_M
+        # v2 Block 3.1 (obs parity): env рейкастит из ЦЕНТРА дрона, а VL-сенсоры
+        # в SDF сидят на радиусе 0.1 м (model.sdf poses) — численно ловилось как
+        # систематический Δ≈0.08-0.18 на каналах у стен. Для obs (взгляд модели)
+        # центр-референсим: + mount radius. perimeter_distances_m (safety/gate/WF)
+        # остаётся сырым sensor-frame — для коллизий важна дистанция от корпуса.
+        centered = raw + VL_MOUNT_RADIUS_M
+        self._perimeter_norm = np.clip(centered, 0.0, VL_MAX_RANGE_M) / VL_MAX_RANGE_M
+        self._perimeter_raw_m = raw
         self._latest_perimeter_stamp = self.node.get_clock().now().nanoseconds * 1e-9
 
     def _sweep_cb(self, msg: LaserScan) -> None:
@@ -149,13 +160,14 @@ class ObsBuilder:
 
     @property
     def front_distance_m(self) -> float:
-        """Action 7 stop check — VL53L0X[0] (forward) raw meters."""
-        return float(self._perimeter_norm[0]) * VL_MAX_RANGE_M
+        """Action 7 stop check — VL53L0X[0] (forward) raw sensor-frame meters."""
+        return float(self._perimeter_raw_m[0])
 
     @property
     def perimeter_distances_m(self) -> list[float]:
-        """Все 6 VL53L0X raw meters (denormalized) — для AdaptiveSpeedController."""
-        return [float(p) * VL_MAX_RANGE_M for p in self._perimeter_norm]
+        """Все 6 VL53L0X raw sensor-frame meters — для control-слоёв
+        (AdaptiveSpeed/gate/WF). НЕ центр-референсные (см. _perimeter_cb)."""
+        return [float(p) for p in self._perimeter_raw_m]
 
     @property
     def sweep_distance_m(self) -> float:
