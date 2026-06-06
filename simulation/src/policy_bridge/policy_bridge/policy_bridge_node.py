@@ -35,6 +35,7 @@ from std_msgs.msg import Int32, Float32, Bool
 from nav_msgs.msg import OccupancyGrid
 from rclpy.qos import QoSProfile, DurabilityPolicy, HistoryPolicy
 
+from policy_bridge.action_gate import gate_blocks, movement_clearance_m
 from policy_bridge.obs_builder import ObsBuilder
 from policy_bridge.visited_grid import VisitedGridBuilder
 from policy_bridge.action_executor import ActionExecutor, InvalidActionError
@@ -75,6 +76,11 @@ PARAM_DEFAULTS: dict[str, object] = {
     "mode": "hybrid",          # hybrid | wall_follow_only | rl_only
     "wall_distance": 0.6,
     "perimeter_laps": 1,
+    # v2 Block 3 (2026-06-06): ActionGate — шаг 0-3, который закончится ближе
+    # этого к препятствию, отклоняется до исполнения (training parity: env не
+    # двигает дрона в стену). 0.9 = safety_guard floor 0.8 + cell 0.1, чтобы
+    # не начинать шаги, которые safety_guard всё равно задушит (tug-of-war).
+    "gate_margin_m": 0.9,
 }
 
 
@@ -101,6 +107,9 @@ class PolicyBridgeNode(Node):
         self.mode = str(self.get_parameter("mode").value)
         self.wall_distance = float(self.get_parameter("wall_distance").value)
         self.perimeter_laps = int(self.get_parameter("perimeter_laps").value)
+        # v2 Block 3
+        self.gate_margin_m = float(self.get_parameter("gate_margin_m").value)
+        self._gate_block_count = 0
 
         self.grid_size = int(round(self.room_size / self.cell_size))
         if self.grid_size != 64:
@@ -531,6 +540,22 @@ class PolicyBridgeNode(Node):
         action_mod, cfg, mode = self.adaptive_speed.evaluate(
             action, distances_m, escape_bypass=escape_active
         )
+
+        # v2 Block 3: ActionGate — слой изоляции №1. Шаг 0-3 в сторону стены
+        # отклоняем мгновенно (training parity: в env такой шаг не двигает
+        # дрона). Дрон держит позицию, шаг засчитывается, модель получает
+        # свежий obs и выбирает дальше — вместо 8s tug-of-war с safety_guard.
+        if gate_blocks(action_mod, perimeter_distances, self.gate_margin_m):
+            clearance = movement_clearance_m(action_mod, perimeter_distances)
+            self._gate_block_count += 1
+            self.get_logger().info(
+                f"gate: action {action_mod} отклонён — clearance "
+                f"{clearance:.2f}m < margin {self.gate_margin_m:.2f}m "
+                f"(blocks={self._gate_block_count})"
+            )
+            self.action_pub.publish(Int32(data=action_mod))
+            self.step_count += 1
+            return
 
         # Publish EXECUTED action (post-stuck/adaptive) для policy logging
         self.action_pub.publish(Int32(data=action_mod))

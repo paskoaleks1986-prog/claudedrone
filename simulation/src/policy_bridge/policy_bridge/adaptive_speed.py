@@ -59,15 +59,21 @@ MODE_TABLE: dict[SpeedMode, ModeConfig] = {
         allow_action_7=True,
         allow_translation=True,
     ),
+    # v2 Block 3 (2026-06-06): wall_threshold НИКОГДА не ниже 0.9
+    # (= safety_guard floor 0.8 + cell 0.1). EXPLORE 0.80 / CAUTIOUS 0.50
+    # позволяли action 7 целиться ВНУТРЬ зоны safety_guard → tug-of-war
+    # position-stream vs zero-Twist → crash AngErr=54 (e2e 2026-06-06 23:05,
+    # см. dev-log 23). Сейчас флаги allow_* это маскируют, но значения
+    # обязаны быть согласованы с gate_margin_m бриджа.
     SpeedMode.EXPLORE: ModeConfig(
         linear_speed=0.15,
-        wall_threshold=0.80,      # was 0.70 (raise per Aleks #6 plan)
+        wall_threshold=0.95,      # was 0.80 == safety floor (boundary trap)
         allow_action_7=False,    # degrade to action 0
         allow_translation=True,
     ),
     SpeedMode.CAUTIOUS: ModeConfig(
         linear_speed=0.05,
-        wall_threshold=0.50,      # was 0.40
+        wall_threshold=0.95,      # was 0.50 (внутри safety zone!)
         allow_action_7=False,
         allow_translation=False,  # all translation actions → rotate
     ),
