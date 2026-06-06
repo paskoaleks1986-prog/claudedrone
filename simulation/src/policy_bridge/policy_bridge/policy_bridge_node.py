@@ -265,8 +265,27 @@ class PolicyBridgeNode(Node):
         if path in ("", "none"):
             return Coverage(free_mask_path=None, grid_size=self.grid_size)
         if path == "auto":
-            self.get_logger().info(
-                "free_mask_path=auto — пытаюсь resolve по world (не imp в Phase 1)"
+            # v2 Block 2 (2026-06-06): auto-resolve реализован. Ищем
+            # free_mask.png рядом с миром: DEFAULT_WORLD (env, тот же механизм,
+            # что drone.launch.py) → src/drone_sim/worlds/rl_rooms/<world>/.
+            # Без маски coverage = visited/4096 занижает прогресс ~втрое
+            # (free cells ≈ 1/3 грида) — и порог COVERAGE_TARGET недостижим.
+            world = os.environ.get("DEFAULT_WORLD", "")
+            sim_root = os.environ.get(
+                "AEROSEARCH_ROOT", "/data/git/aerosearch"
+            ) + "/claudedrone-git/simulation"
+            candidate = (
+                Path(sim_root)
+                / "src/drone_sim/worlds/rl_rooms" / world / "free_mask.png"
+            )
+            if world and candidate.exists():
+                self.get_logger().info(f"free_mask_path=auto → {candidate}")
+                return Coverage(
+                    free_mask_path=str(candidate), grid_size=self.grid_size
+                )
+            self.get_logger().warn(
+                f"free_mask_path=auto: не нашёл {candidate} "
+                f"(DEFAULT_WORLD={world!r}) — coverage без маски"
             )
             return Coverage(free_mask_path=None, grid_size=self.grid_size)
         return Coverage(free_mask_path=path, grid_size=self.grid_size)
