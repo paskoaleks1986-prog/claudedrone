@@ -47,3 +47,6 @@ step_7_stop_scan.md.pdf
 
 # ─── Agent dev-log (mirrored to seo doc) ──────
 docs/dev-log/
+
+# ─── Local SB3 policy venv (machine-specific, rebuild from requirements) ──────
+simulation/.venv-policy/
