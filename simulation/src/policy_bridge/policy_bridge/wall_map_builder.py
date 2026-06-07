@@ -48,12 +48,19 @@ class WallMapBuilder:
         room_size_m: float = DEFAULT_ROOM_SIZE_M,
         grid_size: int = DEFAULT_GRID_SIZE,
         max_range_m: float = DEFAULT_MAX_RANGE_M,
+        *,
+        # Блок Б (2026-06-07): rect-миры. None → квадрат (legacy).
+        room_y_m: float | None = None,
+        ny: int | None = None,
     ) -> None:
         self.room_size = float(room_size_m)
         self.grid_size = int(grid_size)
         self.max_range = float(max_range_m)
-        self.cell_size = self.room_size / self.grid_size
-        self._wall_mask = np.zeros((self.grid_size, self.grid_size), dtype=np.float32)
+        self.room_y = float(room_y_m if room_y_m is not None else room_size_m)
+        self.nx = int(grid_size)
+        self.ny = int(ny if ny is not None else grid_size)
+        self.cell_size = self.room_size / self.nx
+        self._wall_mask = np.zeros((self.ny, self.nx), dtype=np.float32)
         self._hit_count = 0
 
     def update(self, pose: Pose2D, distances: list[float]) -> int:
@@ -74,8 +81,8 @@ class WallMapBuilder:
             wy = pose.y + math.sin(abs_angle) * d
 
             ix = int((wx + self.room_size / 2.0) / self.cell_size)
-            iy = int((wy + self.room_size / 2.0) / self.cell_size)
-            if 0 <= ix < self.grid_size and 0 <= iy < self.grid_size:
+            iy = int((wy + self.room_y / 2.0) / self.cell_size)
+            if 0 <= ix < self.nx and 0 <= iy < self.ny:
                 if self._wall_mask[iy, ix] == 0.0:
                     self._wall_mask[iy, ix] = 1.0
                     marked_now += 1

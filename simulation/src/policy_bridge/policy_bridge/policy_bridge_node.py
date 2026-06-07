@@ -38,6 +38,7 @@ from rclpy.qos import QoSProfile, DurabilityPolicy, HistoryPolicy
 from policy_bridge.action_gate import gate_blocks, movement_clearance_m
 from policy_bridge.am_adapter import ActiveMappingAdapter
 from policy_bridge.obs_builder import ObsBuilder
+from policy_bridge.world_config import WorldGeometry, load_world_geometry
 from policy_bridge.visited_grid import VisitedGridBuilder
 from policy_bridge.action_executor import ActionExecutor, InvalidActionError
 from policy_bridge.coverage import Coverage
@@ -51,8 +52,18 @@ from policy_bridge.phase_controller import PhaseController, Phase
 
 PARAM_DEFAULTS: dict[str, object] = {
     "model_path": "",
+    # Блок Б (2026-06-07): per-world геометрия из config/worlds.yaml.
+    # world_name "" → env DEFAULT_WORLD; мир без записи в yaml = fail-fast.
+    # room_size/cell_size стали ИНФОРМАЦИОННЫМИ (yaml выигрывает, расхождение
+    # = warn) — оставлены для совместимости старых launch-вызовов.
+    "world_name": "",
+    "worlds_config": "auto",
     "room_size": 6.4,
     "cell_size": 0.1,
+    # v1.5c: терминация эпизода по mapped_ratio (env: coverage>95% → done).
+    # Пост-терминальное поведение модели вырождено (frontiers исчерпаны,
+    # ран 3: stall-шторм после mapped 0.975) — миссия завершена, hover.
+    "mapped_success_threshold": 0.95,
     # TASK-059 attempt #1 RCA (2026-05-19): 0.15 m оказался слишком тесный
     # для real Gazebo (drone 0.3 m/s, VL53L0X max 2 m → no warning до впритык).
     # 0.50 m = ~1.7 cell stop distance, безопаснее.
@@ -127,6 +138,10 @@ class PolicyBridgeNode(Node):
         self.model_path = str(self.get_parameter("model_path").value)
         self.room_size = float(self.get_parameter("room_size").value)
         self.cell_size = float(self.get_parameter("cell_size").value)
+        self.mapped_success_threshold = float(
+            self.get_parameter("mapped_success_threshold").value
+        )
+        self._mission_complete = False
         self.wall_threshold = float(self.get_parameter("wall_threshold").value)
         self.linear_speed = float(self.get_parameter("linear_speed").value)
         self.angular_speed = float(self.get_parameter("angular_speed").value)
@@ -171,11 +186,30 @@ class PolicyBridgeNode(Node):
             )
             self.mode = "rl_only"
 
-        self.grid_size = int(round(self.room_size / self.cell_size))
-        if self.grid_size != 64:
+        # ----- Блок Б: per-world геометрия (worlds.yaml, fail-fast) -----
+        self.geom = self._load_geometry()
+        # yaml выигрывает над legacy-скалярами; расхождение = warn
+        if abs(self.geom.room_x_m - self.room_size) > 1e-6 and \
+                self.room_size != float(PARAM_DEFAULTS["room_size"]):
             self.get_logger().warn(
-                f"grid_size={self.grid_size} ≠ 64 — SWEEP-02 was trained на MAP_SIZE=64. "
-                "Bridge будет работать но policy expects 64×64 visited grid."
+                f"param room_size={self.room_size} игнорируется — worlds.yaml "
+                f"{self.geom.world_name}: {self.geom.room_x_m}×{self.geom.room_y_m} м"
+            )
+        self.room_size = self.geom.room_x_m       # legacy-поля (квадратные вызовы)
+        self.cell_size = self.geom.resolution_m
+        self.room_x = self.geom.room_x_m
+        self.room_y = self.geom.room_y_m
+        self.nx = self.geom.nx
+        self.ny = self.geom.ny
+
+        self.grid_size = self.nx
+        if not self.geom.is_model_canon:
+            self.get_logger().warn(
+                f"мир {self.geom.world_name}: грид {self.nx}×{self.ny} @ "
+                f"{self.cell_size} м ≠ модельный канон 64×64 @ 0.1 — модель "
+                f"({self.model_family}) работает OOD: гео-слои bridge "
+                "(safe-box/visited/occupancy) по миру, obs-нормализации — "
+                "по контракту модели."
             )
 
         # ----- step counter / timer (declare cb groups FIRST so ObsBuilder gets sub group) -----
@@ -200,6 +234,8 @@ class PolicyBridgeNode(Node):
             room_size_m=self.room_size,
             cell_size_m=self.cell_size,
             grid_size=self.grid_size,
+            room_x_m=self.room_x, room_y_m=self.room_y,
+            nx=self.nx, ny=self.ny,
         )
         self.coverage = self._build_coverage()
 
@@ -211,7 +247,8 @@ class PolicyBridgeNode(Node):
         self.am_adapter: ActiveMappingAdapter | None = None
         if self.model_family == "activemapping":
             self.am_adapter = ActiveMappingAdapter(
-                room_size_m=self.room_size,
+                room_size_m=self.room_x,
+                room_y_m=self.room_y,
                 cell_size_m=self.cell_size,
                 free_mask=self.coverage.free_mask,
                 get_pose=lambda: self.obs_builder.pose,
@@ -228,7 +265,8 @@ class PolicyBridgeNode(Node):
             # D-refactor (2026-05-20): position setpoint control. Pass pose accessor
             # для arrival check + initial target.
             get_pose=lambda: self.obs_builder.pose,
-            grid_size=self.grid_size,
+            # Блок Б: action7 safety cap = grid_size*cell — большая ось мира
+            grid_size=max(self.nx, self.ny),
             # Legacy (ignored в position control but kept в signature)
             linear_speed=self.linear_speed,
             angular_speed=self.angular_speed,
@@ -281,6 +319,8 @@ class PolicyBridgeNode(Node):
         self.wall_map_builder = WallMapBuilder(
             room_size_m=self.room_size,
             grid_size=self.grid_size,
+            room_y_m=self.room_y,
+            ny=self.ny,
         )
         self.phase_controller = PhaseController(
             wall_follower=self.wall_follower,
@@ -364,6 +404,26 @@ class PolicyBridgeNode(Node):
         else:
             self.get_logger().info(f"coverage Option A · free_count={self.coverage.free_count}")
 
+    # ---- world geometry (Блок Б) --------------------------------------------
+
+    def _load_geometry(self) -> WorldGeometry:
+        world = str(self.get_parameter("world_name").value) or os.environ.get(
+            "DEFAULT_WORLD", ""
+        )
+        cfg = str(self.get_parameter("worlds_config").value)
+        if cfg in ("", "auto"):
+            sim_root = os.environ.get(
+                "AEROSEARCH_ROOT", "/data/git/aerosearch"
+            ) + "/claudedrone-git/simulation"
+            cfg = f"{sim_root}/src/policy_bridge/config/worlds.yaml"
+        geom = load_world_geometry(cfg, world)
+        self.get_logger().info(
+            f"world geometry: {geom.world_name} · {geom.room_x_m}×{geom.room_y_m} м "
+            f"@ {geom.resolution_m} → грид {geom.nx}×{geom.ny}"
+            f"{' · model canon' if geom.is_model_canon else ' · ⚠ НЕ канон 64×64'}"
+        )
+        return geom
+
     # ---- model loading -----------------------------------------------------
 
     def _load_model(self):
@@ -402,10 +462,9 @@ class PolicyBridgeNode(Node):
     # ---- v1.5c livelock breaker ---------------------------------------------
 
     def _cell_of(self, pose) -> tuple[int, int]:
-        half = self.room_size / 2.0
         return (
-            int((pose.x_m + half) / self.cell_size),
-            int((pose.y_m + half) / self.cell_size),
+            int((pose.x_m + self.room_x / 2.0) / self.cell_size),
+            int((pose.y_m + self.room_y / 2.0) / self.cell_size),
         )
 
     def _feasibility_update(self, action: int, moved: bool) -> None:
@@ -450,15 +509,15 @@ class PolicyBridgeNode(Node):
 
     def _build_coverage(self) -> Coverage:
         path = self.free_mask_path
+        kw = {"grid_size": self.grid_size, "nx": self.nx, "ny": self.ny}
         if path in ("", "none"):
-            return Coverage(free_mask_path=None, grid_size=self.grid_size)
+            return Coverage(free_mask_path=None, **kw)
         if path == "auto":
-            # v2 Block 2 (2026-06-06): auto-resolve реализован. Ищем
-            # free_mask.png рядом с миром: DEFAULT_WORLD (env, тот же механизм,
-            # что drone.launch.py) → src/drone_sim/worlds/rl_rooms/<world>/.
-            # Без маски coverage = visited/4096 занижает прогресс ~втрое
+            # v2 Block 2 (2026-06-06): auto-resolve. Блок Б: имя мира берём
+            # из world geometry (worlds.yaml), не напрямую из env.
+            # Без маски coverage = visited/total занижает прогресс ~втрое
             # (free cells ≈ 1/3 грида) — и порог COVERAGE_TARGET недостижим.
-            world = os.environ.get("DEFAULT_WORLD", "")
+            world = self.geom.world_name
             sim_root = os.environ.get(
                 "AEROSEARCH_ROOT", "/data/git/aerosearch"
             ) + "/claudedrone-git/simulation"
@@ -468,15 +527,13 @@ class PolicyBridgeNode(Node):
             )
             if world and candidate.exists():
                 self.get_logger().info(f"free_mask_path=auto → {candidate}")
-                return Coverage(
-                    free_mask_path=str(candidate), grid_size=self.grid_size
-                )
+                return Coverage(free_mask_path=str(candidate), **kw)
             self.get_logger().warn(
                 f"free_mask_path=auto: не нашёл {candidate} "
-                f"(DEFAULT_WORLD={world!r}) — coverage без маски"
+                f"(world={world!r}) — coverage без маски"
             )
-            return Coverage(free_mask_path=None, grid_size=self.grid_size)
-        return Coverage(free_mask_path=path, grid_size=self.grid_size)
+            return Coverage(free_mask_path=None, **kw)
+        return Coverage(free_mask_path=path, **kw)
 
     # ---- main tick ---------------------------------------------------------
 
@@ -524,6 +581,10 @@ class PolicyBridgeNode(Node):
         if self.step_count >= self.max_steps:
             return
 
+        # v1.5c: миссия завершена (mapped ≥ threshold) — hover, не predict'им.
+        if self._mission_complete:
+            return
+
         # D-refactor: wait для takeoff_node release control signal
         if not self._takeoff_ready:
             return
@@ -542,10 +603,13 @@ class PolicyBridgeNode(Node):
         now_s = self.get_clock().now().nanoseconds * 1e-9
         staleness = self.obs_builder.staleness_seconds(now_s)
         pose = self.obs_builder.pose
-        half_extent = self.room_size / 2.0 + self.safe_box_margin_m
+        # Блок Б: per-axis извлечения из worlds.yaml (раньше хардкод 6.4 убивал
+        # полёт в indoor_room 16×10 — 7800 ERROR-строк hover на x>3.7)
+        half_x = self.room_x / 2.0 + self.safe_box_margin_m
+        half_y = self.room_y / 2.0 + self.safe_box_margin_m
         out_of_box = (
             self.obs_builder.has_received_odom
-            and (abs(pose.x_m) > half_extent or abs(pose.y_m) > half_extent)
+            and (abs(pose.x_m) > half_x or abs(pose.y_m) > half_y)
         )
         odom_stale = (
             self.obs_builder.has_received_odom
@@ -558,7 +622,9 @@ class PolicyBridgeNode(Node):
             self.failure.clear_hover_if_recovered()
 
         if out_of_box:
-            self.failure.trigger_pose_out_of_box(pose.x_m, pose.y_m, half_extent)
+            self.failure.trigger_pose_out_of_box(
+                pose.x_m, pose.y_m, max(half_x, half_y)
+            )
         elif odom_stale:
             self.failure.trigger_odom_stale(staleness["odom"])
 
@@ -717,6 +783,17 @@ class PolicyBridgeNode(Node):
             # BFS-расчётом. predict БЕЗ action_masks запрещён (F1).
             self.am_adapter.integrate_now()
             obs, action_mask, mapped = self.am_adapter.snapshot()
+            # v1.5c: терминация эпизода (env: coverage>95% → done). Дальше
+            # модель вырождена (frontiers исчерпаны) — миссия выполнена, hover.
+            if mapped >= self.mapped_success_threshold:
+                self._mission_complete = True
+                self.mapped_ratio_pub.publish(Float32(data=mapped))
+                self.get_logger().info(
+                    f"🏁 MISSION COMPLETE: mapped {mapped:.3f} ≥ "
+                    f"{self.mapped_success_threshold} на шаге {self.step_count} "
+                    f"— эпизод завершён, hover (env-семантика терминации)"
+                )
+                return
             if self._infeasible_actions:
                 action_mask = action_mask.copy()
                 for a in self._infeasible_actions:
@@ -747,11 +824,11 @@ class PolicyBridgeNode(Node):
         cov_for_stuck = self.coverage.compute(self.visited.grid)
         pose = self.obs_builder.pose
         # Convert pose to cell ix/iy (matches VisitedGridBuilder formula)
-        pos_ix = int((pose.x_m + self.room_size / 2.0) / self.cell_size)
-        pos_iy = int((pose.y_m + self.room_size / 2.0) / self.cell_size)
+        pos_ix = int((pose.x_m + self.room_x / 2.0) / self.cell_size)
+        pos_iy = int((pose.y_m + self.room_y / 2.0) / self.cell_size)
         # Clip к grid bounds (drone может быть outside в edge cases)
-        pos_ix = max(0, min(pos_ix, self.grid_size - 1))
-        pos_iy = max(0, min(pos_iy, self.grid_size - 1))
+        pos_ix = max(0, min(pos_ix, self.nx - 1))
+        pos_iy = max(0, min(pos_iy, self.ny - 1))
 
         perimeter_distances = self.obs_builder.perimeter_distances_m
         if self.stuck_enabled:
@@ -851,11 +928,11 @@ class PolicyBridgeNode(Node):
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "map"
         msg.info.resolution = self.cell_size
-        msg.info.width = self.grid_size
-        msg.info.height = self.grid_size
+        msg.info.width = self.nx
+        msg.info.height = self.ny
         # Origin = SW corner мира.
-        msg.info.origin.position.x = -self.room_size / 2.0
-        msg.info.origin.position.y = -self.room_size / 2.0
+        msg.info.origin.position.x = -self.room_x / 2.0
+        msg.info.origin.position.y = -self.room_y / 2.0
         msg.info.origin.orientation.w = 1.0
         # OccupancyGrid expects int8 -1/0/100. Visited=100, unvisited=0.
         data = (grid * 100).astype(np.int8).flatten().tolist()

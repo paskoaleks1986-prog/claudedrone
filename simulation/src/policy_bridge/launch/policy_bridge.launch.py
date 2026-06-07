@@ -62,9 +62,27 @@ def generate_launch_description() -> LaunchDescription:
             description="StuckDetector escape-инъекции: auto (=только sweep02) "
                         "| on | off. Для AM выключено — меряем модель.",
         ),
+        # Блок Б (2026-06-07): per-world геометрия из config/worlds.yaml.
+        DeclareLaunchArgument(
+            "world_name",
+            default_value=os.environ.get("DEFAULT_WORLD", ""),
+            description="Имя мира — ключ в worlds.yaml (обязан существовать, "
+                        "fail-fast). Default из env DEFAULT_WORLD.",
+        ),
+        DeclareLaunchArgument(
+            "worlds_config", default_value="auto",
+            description="Путь к worlds.yaml; auto = "
+                        "src/policy_bridge/config/worlds.yaml.",
+        ),
+        DeclareLaunchArgument(
+            "mapped_success_threshold", default_value="0.95",
+            description="AM: mapped_ratio ≥ этого → эпизод завершён (env "
+                        "терминирует на coverage>95%), bridge hover.",
+        ),
         DeclareLaunchArgument(
             "room_size", default_value="6.4",
-            description="Длина стороны bbox мира в метрах (rl_room_* = 6.4).",
+            description="LEGACY (Блок Б): информационный — worlds.yaml "
+                        "выигрывает, расхождение = warn в логе ноды.",
         ),
         DeclareLaunchArgument(
             "cell_size", default_value="0.1",
@@ -163,6 +181,10 @@ def generate_launch_description() -> LaunchDescription:
             "--ros-args",
             "-p", ["model_path:=", LaunchConfiguration("model_path")],
             "-p", ["model_family:=", LaunchConfiguration("model_family")],
+            "-p", ["world_name:=", LaunchConfiguration("world_name")],
+            "-p", ["worlds_config:=", LaunchConfiguration("worlds_config")],
+            "-p", ["mapped_success_threshold:=",
+                   LaunchConfiguration("mapped_success_threshold")],
             "-p", ["deterministic:=", LaunchConfiguration("deterministic")],
             "-p", ["stuck_escape:=", LaunchConfiguration("stuck_escape")],
             "-p", ["room_size:=", LaunchConfiguration("room_size")],

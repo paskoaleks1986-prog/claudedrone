@@ -21,10 +21,16 @@ class Coverage:
         self,
         free_mask_path: str | Path | None = None,
         grid_size: int = 64,
+        *,
+        # Блок Б (2026-06-07): прямоугольные гриды. None → квадрат grid_size.
+        nx: int | None = None,
+        ny: int | None = None,
     ) -> None:
         self.grid_size = grid_size
+        self.nx = int(nx if nx is not None else grid_size)
+        self.ny = int(ny if ny is not None else grid_size)
         self._free_mask: np.ndarray | None = None
-        self._free_count = grid_size * grid_size  # fallback
+        self._free_count = self.nx * self.ny  # fallback
 
         if free_mask_path:
             self._load_free_mask(Path(free_mask_path))
@@ -38,9 +44,9 @@ class Coverage:
             raise FileNotFoundError(f"free_mask not found: {path}")
         img = Image.open(path).convert("L")
         arr = np.array(img, dtype=np.uint8)
-        if arr.shape != (self.grid_size, self.grid_size):
+        if arr.shape != (self.ny, self.nx):
             raise ValueError(
-                f"free_mask {path} shape {arr.shape} != ({self.grid_size}, {self.grid_size})"
+                f"free_mask {path} shape {arr.shape} != ({self.ny}, {self.nx})"
             )
         self._free_mask = (arr == 0).astype(bool)
         self._free_count = int(self._free_mask.sum())

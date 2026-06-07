@@ -45,40 +45,44 @@ class ActiveMappingAdapter:
         get_vl_raw_m: Callable[[], list[float]],  # 6 каналов, sensor-frame
         get_tf_raw_m: Callable[[], float],        # sweep, метры (inf уже capped)
         get_servo_deg: Callable[[], float],       # commanded angle executor'а
+        room_y_m: float | None = None,            # Блок Б: rect-миры; None = квадрат
     ) -> None:
-        # Протокол §1: модельный контракт = грид 64×64 @ 0.1 м. Карта НЕ
-        # масштабируется под мир (Block Б per-world касается safe-box/coverage,
-        # не obs-контракта модели).
+        # Протокол §1: модельный obs-контракт = 64×64 @ 0.1 м. В мирах
+        # больше карта строится rect-гридом по миру (Блок Б), но нормализации
+        # obs (/64, /4096) НЕ растягиваются → model_canon=False (OOD; caller
+        # обязан громко предупредить).
         if free_mask is None:
             raise ValueError(
                 "ActiveMapping требует free_mask (Option A, §5.1) — "
                 "mapped_ratio без него не определён. Проверь free_mask_path."
             )
-        if free_mask.shape != (GRID, GRID):
-            raise ValueError(f"free_mask shape {free_mask.shape} != 64×64")
-        grid_size = int(round(room_size_m / cell_size_m))
-        if grid_size != GRID:
+        room_x_m = float(room_size_m)
+        room_y_m = float(room_y_m) if room_y_m is not None else room_x_m
+        nx = int(round(room_x_m / cell_size_m))
+        ny = int(round(room_y_m / cell_size_m))
+        if free_mask.shape != (ny, nx):
             raise ValueError(
-                f"room {room_size_m}×{room_size_m} @ {cell_size_m} → "
-                f"grid {grid_size} ≠ 64: модель AM-v1 обучена на 64×64. "
-                "Для больших миров obs-контракт не растягивается."
+                f"free_mask shape {free_mask.shape} != грид мира ({ny}, {nx})"
             )
+        self.model_canon = (nx == GRID and ny == GRID
+                            and abs(cell_size_m - 0.1) < 1e-9)
         self.cell = cell_size_m
-        self.half = room_size_m / 2.0
+        self.half_x = room_x_m / 2.0
+        self.half_y = room_y_m / 2.0
         self.free_mask = free_mask.astype(bool)
         self._get_pose = get_pose
         self._get_vl_raw_m = get_vl_raw_m
         self._get_tf_raw_m = get_tf_raw_m
         self._get_servo_deg = get_servo_deg
 
-        self.builder = OccupancyMapBuilder()
+        self.builder = OccupancyMapBuilder(nx=nx, ny=ny)
         self._last_cell: tuple[int, int] | None = None
         self.integrations = 0
 
     # ---- координаты (§1) ----------------------------------------------------
 
     def _to_cells(self, x_m: float, y_m: float) -> tuple[float, float]:
-        return (x_m + self.half) / self.cell, (y_m + self.half) / self.cell
+        return (x_m + self.half_x) / self.cell, (y_m + self.half_y) / self.cell
 
     # ---- интеграция (§2.5) ---------------------------------------------------
 

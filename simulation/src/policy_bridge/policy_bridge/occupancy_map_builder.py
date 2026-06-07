@@ -51,18 +51,19 @@ def integrate_ray(
     dx = math.cos(angle_world_rad)
     dy = math.sin(angle_world_rad)
     span = min(reading_cells, max_range_cells)
+    h, w = occ.shape  # Блок Б: границы из формы карты (rect-миры)
     d = 0.0
     while d < span:
         cx = int(x_cells + dx * d)
         cy = int(y_cells + dy * d)
-        if not (0 <= cx < GRID and 0 <= cy < GRID):
+        if not (0 <= cx < w and 0 <= cy < h):
             return
         occ[cy, cx] = FREE
         d += RAY_STEP
     if hit:
         cx = int(x_cells + dx * reading_cells)
         cy = int(y_cells + dy * reading_cells)
-        if 0 <= cx < GRID and 0 <= cy < GRID:
+        if 0 <= cx < w and 0 <= cy < h:
             occ[cy, cx] = OCCUPIED
 
 
@@ -113,8 +114,9 @@ def frontier_bfs(
     Tie-breaking детерминирован: FIFO + порядок NEIGH.
     Клетка дрона принудительно проходима (§4.1).
     """
-    dist = np.full((GRID, GRID), -1, np.int32)
-    first = np.full((GRID, GRID), -1, np.int8)
+    h, w = occ_free.shape
+    dist = np.full((h, w), -1, np.int32)
+    first = np.full((h, w), -1, np.int8)
     dist[iy0, ix0] = 0
     q: deque[tuple[int, int]] = deque([(ix0, iy0)])
     while q:
@@ -122,7 +124,7 @@ def frontier_bfs(
         for k, (dx, dy) in enumerate(NEIGH):
             nx, ny = x + dx, y + dy
             if (
-                0 <= nx < GRID and 0 <= ny < GRID
+                0 <= nx < w and 0 <= ny < h
                 and occ_free[ny, nx] and dist[ny, nx] < 0
             ):
                 dist[ny, nx] = dist[y, x] + 1
@@ -141,8 +143,9 @@ def frontier_directions(
     """Протокол §4.3: 8 ego-секторов, сектор = угол ПЕРВОГО BFS-шага,
     value = 1/(bfs_dist+1). Недостижимые frontier'ы = 0."""
     out = np.zeros(N_SECTORS, dtype=np.float32)
+    h, w = occ.shape
     ix0, iy0 = int(x_cells), int(y_cells)
-    if not (0 <= ix0 < GRID and 0 <= iy0 < GRID):
+    if not (0 <= ix0 < w and 0 <= iy0 < h):
         return out
     occ_free = occ == FREE
     occ_free[iy0, ix0] = True  # §4.1: источник принудительно проходим
@@ -183,29 +186,38 @@ def action_mask_from_occupancy(
     известной карте вместо ground truth.
     """
     mask = np.ones(8, dtype=bool)
+    h, w = occ.shape
     for a, body_ang in enumerate((0.0, math.pi, math.pi / 2, -math.pi / 2)):
         ang = heading_rad + body_ang
         cx = int(x_cells + math.cos(ang))
         cy = int(y_cells + math.sin(ang))
         mask[a] = (
-            0 <= cx < GRID and 0 <= cy < GRID and occ[cy, cx] == FREE
+            0 <= cx < w and 0 <= cy < h and occ[cy, cx] == FREE
         )
     mask[7] = mask[0]
     return mask
 
 
 class OccupancyMapBuilder:
-    """Stateful обёртка для bridge-ноды: §2.1 глобальная карта на эпизод."""
+    """Stateful обёртка для bridge-ноды: §2.1 глобальная карта на эпизод.
 
-    def __init__(self) -> None:
-        self.occ = np.zeros((GRID, GRID), dtype=np.uint8)
-        self._frontier_mask = np.zeros((GRID, GRID), dtype=bool)
+    Блок Б (2026-06-07): размер карты параметрен (rect-миры, indoor_room
+    160×100). Дефолт 64×64 — модельный канон; нормализации obs_fields
+    (frontier_count /4096) остаются модельным контрактом НЕЗАВИСИМО от
+    фактического размера (в больших мирах модель OOD — ответственность
+    вызывающего предупредить).
+    """
+
+    def __init__(self, *, nx: int = GRID, ny: int = GRID) -> None:
+        self.nx, self.ny = int(nx), int(ny)
+        self.occ = np.zeros((self.ny, self.nx), dtype=np.uint8)
+        self._frontier_mask = np.zeros((self.ny, self.nx), dtype=bool)
 
     def reset(self, x_cells: float, y_cells: float) -> None:
         """§2.1: всё UNKNOWN, клетка спавна FREE (первый integrate — снаружи)."""
         self.occ.fill(UNKNOWN)
         ix, iy = int(x_cells), int(y_cells)
-        if 0 <= ix < GRID and 0 <= iy < GRID:
+        if 0 <= ix < self.nx and 0 <= iy < self.ny:
             self.occ[iy, ix] = FREE
 
     def integrate(

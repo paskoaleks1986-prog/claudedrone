@@ -49,16 +49,36 @@ class Rig:
 
 def test_fail_fast_contracts() -> None:
     rig = Rig()
+    # free_mask обязан совпадать с гридом мира
     with pytest.raises(ValueError, match="free_mask"):
         rig.adapter(free_mask=np.ones((32, 32), dtype=bool))
-    with pytest.raises(ValueError, match="64"):
-        rig.adapter(room=10.0)  # grid 100 ≠ 64 — obs-контракт не тянется
+    with pytest.raises(ValueError, match="free_mask"):
+        rig.adapter(room=10.0)  # грид 100×100, маска 64×64 — mismatch
     with pytest.raises(ValueError):
         ActiveMappingAdapter(
             room_size_m=6.4, cell_size_m=0.1, free_mask=None,
             get_pose=lambda: None, get_vl_raw_m=lambda: [],
             get_tf_raw_m=lambda: 0.0, get_servo_deg=lambda: 0.0,
         )
+
+
+def test_rect_world_ood_flag() -> None:
+    """Блок Б: rect-мир (16×10) валиден — карта по миру, model_canon=False."""
+    rig = Rig()
+    mask = np.ones((100, 160), dtype=bool)  # (ny, nx) при 0.1 м
+    ad = ActiveMappingAdapter(
+        room_size_m=16.0, room_y_m=10.0, cell_size_m=0.1, free_mask=mask,
+        get_pose=lambda: rig.pose, get_vl_raw_m=lambda: rig.vl,
+        get_tf_raw_m=lambda: rig.tf, get_servo_deg=lambda: rig.servo,
+    )
+    assert not ad.model_canon
+    assert ad.builder.occ.shape == (100, 160)
+    ad.reset_episode()
+    obs, mask8, mapped = ad.snapshot()
+    assert obs.shape == (21,)
+    assert 0.0 <= float(obs.min()) and float(obs.max()) <= 1.0  # клип контракта
+    # канонический квадрат — canon
+    assert Rig().adapter().model_canon
 
 
 def test_reset_episode_first_look() -> None:
