@@ -296,8 +296,11 @@ cmd_mavros() {
     cat <<EOF
 source '$ROS_SETUP'
 export ROS_DOMAIN_ID='$ROS_DOMAIN_ID'
+# 2026-06-07 DISTANCE_SENSOR groundwork: снапшот apm_config с кастомным
+# distance_sensor блоком (6xVL53 PRX yaw + TF-Luna down PITCH_270).
 echo "[mavros] ros2 launch mavros apm.launch fcu_url:=udp://:$fcu_remote@$fcu_local (instance=$SITL_INSTANCE)"
-exec ros2 launch mavros apm.launch fcu_url:=udp://:$fcu_remote@$fcu_local
+exec ros2 launch mavros apm.launch fcu_url:=udp://:$fcu_remote@$fcu_local \
+    config_yaml:='$SCRIPT_DIR/../config/mavros/apm_config_claudedrone.yaml'
 EOF
 }
 

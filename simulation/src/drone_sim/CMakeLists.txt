@@ -17,6 +17,11 @@ ament_python_install_package(${PROJECT_NAME})
 
 # Регистрируем ноды
 install(PROGRAMS
+  drone_sim/distance_sensor_bridge.py
+  RENAME distance_sensor_bridge
+  DESTINATION lib/${PROJECT_NAME}
+)
+install(PROGRAMS
   drone_sim/sensor_monitor.py
   RENAME sensor_monitor
   DESTINATION lib/${PROJECT_NAME}
