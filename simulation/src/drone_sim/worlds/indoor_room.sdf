@@ -65,13 +65,13 @@
     <!-- Стена север Y=+5 — голубая -->
     <model name="wall_north">
       <static>true</static>
-      <pose>0 5.0 1.5 0 0 0</pose>
+      <pose>0 5.0 2.0 0 0 0</pose>
       <link name="link">
         <collision name="c">
-          <geometry><box><size>16 0.15 3.0</size></box></geometry>
+          <geometry><box><size>16 0.15 4.0</size></box></geometry>
         </collision>
         <visual name="v">
-          <geometry><box><size>16 0.15 3.0</size></box></geometry>
+          <geometry><box><size>16 0.15 4.0</size></box></geometry>
           <material>
             <ambient>0.6 0.8 0.9 1</ambient>
             <diffuse>0.6 0.8 0.9 1</diffuse>
@@ -83,13 +83,13 @@
     <!-- Стена юг Y=-5 — зелёная -->
     <model name="wall_south">
       <static>true</static>
-      <pose>0 -5.0 1.5 0 0 0</pose>
+      <pose>0 -5.0 2.0 0 0 0</pose>
       <link name="link">
         <collision name="c">
-          <geometry><box><size>16 0.15 3.0</size></box></geometry>
+          <geometry><box><size>16 0.15 4.0</size></box></geometry>
         </collision>
         <visual name="v">
-          <geometry><box><size>16 0.15 3.0</size></box></geometry>
+          <geometry><box><size>16 0.15 4.0</size></box></geometry>
           <material>
             <ambient>0.6 0.9 0.6 1</ambient>
             <diffuse>0.6 0.9 0.6 1</diffuse>
@@ -101,13 +101,13 @@
     <!-- Стена запад X=-8 — жёлтая -->
     <model name="wall_west">
       <static>true</static>
-      <pose>-8.0 0 1.5 0 0 0</pose>
+      <pose>-8.0 0 2.0 0 0 0</pose>
       <link name="link">
         <collision name="c">
-          <geometry><box><size>0.15 10 3.0</size></box></geometry>
+          <geometry><box><size>0.15 10 4.0</size></box></geometry>
         </collision>
         <visual name="v">
-          <geometry><box><size>0.15 10 3.0</size></box></geometry>
+          <geometry><box><size>0.15 10 4.0</size></box></geometry>
           <material>
             <ambient>0.95 0.90 0.55 1</ambient>
             <diffuse>0.95 0.90 0.55 1</diffuse>
@@ -119,13 +119,13 @@
     <!-- Стена восток X=+8 — розовая -->
     <model name="wall_east">
       <static>true</static>
-      <pose>8.0 0 1.5 0 0 0</pose>
+      <pose>8.0 0 2.0 0 0 0</pose>
       <link name="link">
         <collision name="c">
-          <geometry><box><size>0.15 10 3.0</size></box></geometry>
+          <geometry><box><size>0.15 10 4.0</size></box></geometry>
         </collision>
         <visual name="v">
-          <geometry><box><size>0.15 10 3.0</size></box></geometry>
+          <geometry><box><size>0.15 10 4.0</size></box></geometry>
           <material>
             <ambient>0.95 0.65 0.65 1</ambient>
             <diffuse>0.95 0.65 0.65 1</diffuse>
@@ -137,13 +137,13 @@
     <!-- Разделитель южный — от Y=-5 до Y=-1.5, центр Y=-3.25 -->
     <model name="wall_divider_south">
       <static>true</static>
-      <pose>0 -3.25 1.5 0 0 0</pose>
+      <pose>0 -3.25 2.0 0 0 0</pose>
       <link name="link">
         <collision name="c">
-          <geometry><box><size>0.15 3.5 3.0</size></box></geometry>
+          <geometry><box><size>0.15 3.5 4.0</size></box></geometry>
         </collision>
         <visual name="v">
-          <geometry><box><size>0.15 3.5 3.0</size></box></geometry>
+          <geometry><box><size>0.15 3.5 4.0</size></box></geometry>
           <material>
             <ambient>0.7 0.7 0.7 1</ambient>
             <diffuse>0.7 0.7 0.7 1</diffuse>
@@ -155,13 +155,13 @@
     <!-- Разделитель северный — от Y=+1.5 до Y=+5, центр Y=+3.25 -->
     <model name="wall_divider_north">
       <static>true</static>
-      <pose>0 3.25 1.5 0 0 0</pose>
+      <pose>0 3.25 2.0 0 0 0</pose>
       <link name="link">
         <collision name="c">
-          <geometry><box><size>0.15 3.5 3.0</size></box></geometry>
+          <geometry><box><size>0.15 3.5 4.0</size></box></geometry>
         </collision>
         <visual name="v">
-          <geometry><box><size>0.15 3.5 3.0</size></box></geometry>
+          <geometry><box><size>0.15 3.5 4.0</size></box></geometry>
           <material>
             <ambient>0.7 0.7 0.7 1</ambient>
             <diffuse>0.7 0.7 0.7 1</diffuse>
@@ -173,16 +173,16 @@
     <!-- Колонна в комнате 1 — X=-4, Y=2 -->
     <model name="column">
       <static>true</static>
-      <pose>-4 2 1.5 0 0 0</pose>
+      <pose>-4 2 2.0 0 0 0</pose>
       <link name="link">
         <collision name="c">
           <geometry>
-            <cylinder><radius>0.3</radius><length>3.0</length></cylinder>
+            <cylinder><radius>0.3</radius><length>4.0</length></cylinder>
           </geometry>
         </collision>
         <visual name="v">
           <geometry>
-            <cylinder><radius>0.3</radius><length>3.0</length></cylinder>
+            <cylinder><radius>0.3</radius><length>4.0</length></cylinder>
           </geometry>
           <material>
             <ambient>0.5 0.4 0.3 1</ambient>
