@@ -273,11 +273,15 @@ class SafetyGuard(Node):
 
         if now_s < self._brake_pulse_until_s:
             self.cmd_vel_pub.publish(self._brake_twist)
-        elif dist_alarm and not tilt_alarm:
+        elif not tilt_alarm:
             # v2 RETREAT: мягкий отход от ближайшего препятствия. Zero-hold
             # оставлял дрон в зоне навечно (bridge maintenance паузится по
             # /safety/active — никто не вытянет). Направление: ОТ сенсора с
             # min дистанцией; body 60°-каналы → world ENU через yaw.
+            # ВАЖНО (ран C dead-band RCA): retreat действует ПОКА active —
+            # до полного release (threshold + hysteresis), НЕ только при
+            # dist_alarm. Иначе в полосе [threshold, threshold+hyst] guard
+            # публиковал zero и дрон зависал там навечно (min=0.868, 25 мин).
             min_idx = self._vl_data.index(min_vl)
             away_world = self._yaw_rad + math.radians(60.0 * min_idx) + math.pi
             retreat = Twist()
@@ -285,7 +289,7 @@ class SafetyGuard(Node):
             retreat.linear.y = RETREAT_SPEED_M_S * math.sin(away_world)
             self.cmd_vel_pub.publish(retreat)
         else:
-            # tilt-alarm (или нет dist): только остановка, не двигаем
+            # tilt-alarm: только остановка, не двигаем
             self.cmd_vel_pub.publish(self._zero_twist)
 
         self._tick_count_since_stop += 1
