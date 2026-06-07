@@ -53,14 +53,18 @@ MODE_TABLE: dict[SpeedMode, ModeConfig] = {
     # (action 7) ближе метра, внешнее кольцо оставалось некрашеным (ран D
     # cov@338=0.14 при 122 hold-циклах). 0.75 = floor + overshoot-запас
     # (~0.1-0.2м на 0.3 м/с) — action 7 останавливается выше кольца guard'а.
+    # Блок 2 (Aleks 2026-06-07): FAST/CRUISE 0.30 → 0.50. attempt #5 crash был
+    # на open-loop yaw_rate; теперь closed-loop yaw (Блок 1) + snap90 action7
+    # (осевые заходы) + gate/guard слои. Откат на 0.40, если финальный ран даст
+    # arrival timeouts / guard > 5/мин / crash.
     SpeedMode.FAST: ModeConfig(
-        linear_speed=0.30,        # was 0.50 (attempt #5 crash root cause)
+        linear_speed=0.50,
         wall_threshold=0.65,
         allow_action_7=True,
         allow_translation=True,
     ),
     SpeedMode.CRUISE: ModeConfig(
-        linear_speed=0.30,
+        linear_speed=0.50,
         wall_threshold=0.65,
         allow_action_7=True,
         allow_translation=True,
@@ -78,7 +82,11 @@ MODE_TABLE: dict[SpeedMode, ModeConfig] = {
     # Безопасность теперь у слоёв: travel = front − wt(0.95 > floor+cell),
     # gate на 0-3, safety_guard 50 Hz последним рубежом.
     SpeedMode.EXPLORE: ModeConfig(
-        linear_speed=0.15,
+        # Блок 2 (Aleks): 0.15 → 0.50 — near-wall локомотив был тормозом
+        # (CAUTIOUS 0.05 / EXPLORE 0.15 = ползание). closed-loop yaw + snap90
+        # сняли косые заходы; wt 0.70 (> floor 0.45) держит overshoot выше
+        # guard'а. Откат на 0.40 при guard > 5/мин / crash.
+        linear_speed=0.50,
         wall_threshold=0.70,      # run F checklist #1: floor 0.45 + overshoot-запас
         allow_action_7=True,     # v2 Block 3.1: было False — душило политику
         allow_translation=True,
