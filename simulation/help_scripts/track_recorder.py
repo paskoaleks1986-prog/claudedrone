@@ -118,18 +118,29 @@ class TrackRecorder(Node):
                 msg.info.height, msg.info.width
             )
         )
+        # инкрементально (каждые 20 кадров): kill_sim_stack гасит tmux
+        # жёстко, close() не гарантирован (потерян npz рана A 18:32)
+        if len(self._occ_frames) % 20 == 0:
+            self._save_npz()
+            for f in self._files.values():
+                f.flush()
+
+    def _save_npz(self) -> None:
+        if not self._occ_frames:
+            return
+        np.savez_compressed(
+            f"{self._prefix}_occ.npz",
+            t=np.array(self._occ_t),
+            frames=np.stack(self._occ_frames),
+            **(self._occ_meta or {}),
+        )
 
     def close(self) -> None:
         for f in self._files.values():
             f.flush()
             f.close()
+        self._save_npz()
         if self._occ_frames:
-            np.savez_compressed(
-                f"{self._prefix}_occ.npz",
-                t=np.array(self._occ_t),
-                frames=np.stack(self._occ_frames),
-                **(self._occ_meta or {}),
-            )
             self.get_logger().info(
                 f"occupancy frames: {len(self._occ_frames)} → "
                 f"{self._prefix}_occ.npz"
