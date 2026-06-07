@@ -52,6 +52,9 @@ class Pose2D:
     x_m: float = 0.0
     y_m: float = 0.0
     heading_rad: float = 0.0
+    # run F fix (в) 2026-06-07: фактический hover z для z-capture at release.
+    # В obs НЕ входит — только для initialize_target (Z-coupling RCA).
+    z_m: float = 0.0
 
 
 class ObsBuilder:
@@ -158,7 +161,9 @@ class ObsBuilder:
             2.0 * (q.w * q.z + q.x * q.y),
             1.0 - 2.0 * (q.y * q.y + q.z * q.z),
         )
-        self._pose = Pose2D(x_m=float(p.x), y_m=float(p.y), heading_rad=yaw)
+        self._pose = Pose2D(
+            x_m=float(p.x), y_m=float(p.y), heading_rad=yaw, z_m=float(p.z)
+        )
         self._latest_odom_stamp = self.node.get_clock().now().nanoseconds * 1e-9
 
     # ---- public API ---------------------------------------------------------

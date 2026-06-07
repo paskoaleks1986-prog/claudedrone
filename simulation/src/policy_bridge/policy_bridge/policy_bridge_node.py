@@ -323,9 +323,27 @@ class PolicyBridgeNode(Node):
         if msg.data and not self._takeoff_ready:
             self._takeoff_ready = True
             pose = self.obs_builder.pose
+            # run F fix (в) 2026-06-07: z-capture at release. Константа 3.0
+            # давала хронический Z-лаг (~0.18м), Position Controller делил
+            # authority между Z и XY → median XY 0.063 м/с при WPNAV cap 0.2
+            # → action7 arrival timeouts (RCA step 100, вердикт @338 cov ✗).
+            # Берём ФАКТИЧЕСКИЙ hover z; sanity < 0.5м (odom ещё пуст) →
+            # fallback на константу с warn.
+            if pose.z_m > 0.5:
+                z_capture = pose.z_m
+                self.get_logger().info(
+                    f"z-capture at release: {z_capture:.2f}m (фактический hover; "
+                    f"константа TARGET_ALTITUDE_M=3.0 не используется)"
+                )
+            else:
+                z_capture = None
+                self.get_logger().warn(
+                    f"z-capture failed (odom z={pose.z_m:.2f} < 0.5m sanity) — "
+                    f"fallback на TARGET_ALTITUDE_M"
+                )
             # Initial target = current pose (drone holds in place)
             self.executor_act.initialize_target(
-                pose.x_m, pose.y_m, z=None, yaw=pose.heading_rad
+                pose.x_m, pose.y_m, z=z_capture, yaw=pose.heading_rad
             )
             self.get_logger().info(
                 f"/takeoff/ready received — bridge taking over setpoint control "
