@@ -887,11 +887,13 @@ class PolicyBridgeNode(Node):
         # Publish EXECUTED action (post-stuck/adaptive) для policy logging
         self.action_pub.publish(Int32(data=action_mod))
 
-        # Перед action 7 (длинный move) — snap heading на 15°-решётку
-        # θ₀+k·15° (closed-loop, Aleks Блок 1). Ротации уже приземляют на
-        # решётку, snap добивает дрейф от предыдущих translation'ов.
+        # Перед action 7 (длинный move) — snap heading на ОСЬ (90°), не на
+        # 15°-решётку (Aleks Блок 2, обосновано раном B): осевые заходы дают
+        # чистые прямые вдоль стен вместо косых «ёлочкой». Ротации (4/5)
+        # остаются на 15° — модель смотрит в 24 направлениях, но длинный
+        # move летит строго по оси.
         if action_mod == 7:
-            step = math.radians(15.0)
+            step = math.radians(90.0)
             snapped = round(pose.heading_rad / step) * step
             self.executor_act.snap_to_yaw(snapped)
 
