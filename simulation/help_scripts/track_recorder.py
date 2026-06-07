@@ -25,8 +25,9 @@ import math
 import signal
 import sys
 
+import numpy as np
 import rclpy
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import Odometry, OccupancyGrid
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from std_msgs.msg import Float32, Int32
@@ -69,6 +70,15 @@ class TrackRecorder(Node):
             Float32, "/rl_policy/mapped_ratio",
             lambda m: self._row("metrics", "mapped_ratio", m.data), 50,
         )
+        # occupancy-кадры для GIF-карт (запрос Aleks 2026-06-07):
+        # копим в память, npz на выходе (<prefix>_occ.npz: t, frames, meta)
+        self._occ_t: list[float] = []
+        self._occ_frames: list[np.ndarray] = []
+        self._occ_meta: dict | None = None
+        self._prefix = prefix
+        self.create_subscription(
+            OccupancyGrid, "/rl_policy/occupancy_grid", self._occ_cb, 10,
+        )
         self.get_logger().info(f"recording → {prefix}_{{odom,actions,metrics}}.csv")
 
     def _now(self) -> float:
@@ -93,10 +103,37 @@ class TrackRecorder(Node):
         if self.n_odom % 500 == 0:
             self.get_logger().info(f"odom points: {self.n_odom}")
 
+    def _occ_cb(self, msg: OccupancyGrid) -> None:
+        if self._occ_meta is None:
+            self._occ_meta = {
+                "resolution": msg.info.resolution,
+                "origin_x": msg.info.origin.position.x,
+                "origin_y": msg.info.origin.position.y,
+                "width": msg.info.width,
+                "height": msg.info.height,
+            }
+        self._occ_t.append(self._now())
+        self._occ_frames.append(
+            np.array(msg.data, dtype=np.int8).reshape(
+                msg.info.height, msg.info.width
+            )
+        )
+
     def close(self) -> None:
         for f in self._files.values():
             f.flush()
             f.close()
+        if self._occ_frames:
+            np.savez_compressed(
+                f"{self._prefix}_occ.npz",
+                t=np.array(self._occ_t),
+                frames=np.stack(self._occ_frames),
+                **(self._occ_meta or {}),
+            )
+            self.get_logger().info(
+                f"occupancy frames: {len(self._occ_frames)} → "
+                f"{self._prefix}_occ.npz"
+            )
 
 
 def main() -> None:

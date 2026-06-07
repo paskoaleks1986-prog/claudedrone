@@ -388,6 +388,12 @@ class PolicyBridgeNode(Node):
         self.mapped_ratio_pub = self.create_publisher(
             Float32, "/rl_policy/mapped_ratio", 10
         )
+        # GIF-карты (запрос Aleks 2026-06-07 ~18:10): occupancy AM-эпизода
+        # для offline-сборки 2D-анимаций (make_map_gif.py). Конвенция
+        # OccupancyGrid: UNKNOWN→-1, FREE→0, OCCUPIED→100.
+        self.occupancy_pub = self.create_publisher(
+            OccupancyGrid, "/rl_policy/occupancy_grid", 10
+        )
         self.visited_grid_pub = self.create_publisher(
             OccupancyGrid, "/rl_policy/visited_grid", 10
         )
@@ -819,6 +825,7 @@ class PolicyBridgeNode(Node):
             )
             self.mapped_ratio_pub.publish(Float32(data=mapped))
             self._last_mapped = mapped
+            self._publish_occupancy()
         else:
             obs = self.obs_builder.build_obs(self.visited.grid)
             action_arr, _ = self.model.predict(obs, deterministic=False)
@@ -936,6 +943,23 @@ class PolicyBridgeNode(Node):
                 f"mode {mode.value} (v={cfg.linear_speed:.2f}m/s wt={cfg.wall_threshold:.2f}m) · "
                 f"coverage {cov:.3f}{mapped_tag} · escape_total={self.stuck_detector.escape_count_total}"
             )
+
+    def _publish_occupancy(self) -> None:
+        """Occupancy AM-эпизода как OccupancyGrid (для GIF-карт и Foxglove)."""
+        occ = self.am_adapter.builder.occ
+        msg = OccupancyGrid()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "map"
+        msg.info.resolution = self.cell_size
+        msg.info.width = occ.shape[1]
+        msg.info.height = occ.shape[0]
+        msg.info.origin.position.x = -self.room_x / 2.0
+        msg.info.origin.position.y = -self.room_y / 2.0
+        msg.info.origin.orientation.w = 1.0
+        # UNKNOWN(0)→-1, FREE(1)→0, OCCUPIED(2)→100
+        lut = np.array([-1, 0, 100], dtype=np.int8)
+        msg.data = lut[occ].flatten().tolist()
+        self.occupancy_pub.publish(msg)
 
     def _publish_visited_grid(self, grid: np.ndarray) -> None:
         """Отправляет grid как OccupancyGrid для Foxglove визуализации."""
