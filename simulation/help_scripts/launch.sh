@@ -28,6 +28,7 @@ GUI=0
 MANUAL=0
 MONITOR=0
 MAVROS=0
+NO_AUTOSCAN=0   # v2: autoscan:=false для RL-ранов (серва — у policy action 6)
 AUTO_NODE=""
 
 usage() {
@@ -54,6 +55,7 @@ Modifiers:
   --manual        extra pane for MAVProxy manual control
   --monitor       extra pane: watch ros2 topic list
   --mavros        extra pane: ros2 launch mavros apm.launch (SITL → /mavros/*)
+  --no-autoscan   drone.launch.py autoscan:=false (RL-раны: серва — у action 6)
   --auto NAME     extra pane: ros2 run drone_sim NAME
 
 Presets:
@@ -90,6 +92,7 @@ while [[ $# -gt 0 ]]; do
         --manual)    MANUAL=1; shift ;;
         --monitor)   MONITOR=1; shift ;;
         --mavros)    MAVROS=1; shift ;;
+        --no-autoscan) NO_AUTOSCAN=1; shift ;;
         --auto)      AUTO_NODE="${2:?--auto needs a node name}"; shift 2 ;;
         --layout)    WANT_GZ=1; shift ;;
         --sim)       WANT_GZ=1; GZ_RUN=1; WANT_SITL=1; WANT_BRIDGE=1; shift ;;
@@ -189,6 +192,10 @@ if (( ASK_PARAMS )); then
     PARAMS="$PARAMS_DIR/$pick"
 fi
 [[ -z "$PARAMS" ]] && PARAMS="$DEFAULT_PARAMS"
+# v2 fix (2026-06-06): cmd_sitl делает `cd $ARDUPILOT_DIR/ArduCopter`, поэтому
+# относительный -p там «не существует» и sim_vehicle молча умирает. Резолвим
+# в абсолютный путь здесь, пока cwd ещё каталог вызова.
+[[ "$PARAMS" != /* ]] && PARAMS="$(cd "$(dirname "$PARAMS")" 2>/dev/null && pwd)/$(basename "$PARAMS")"
 if (( WANT_SITL )) && [[ ! -f "$PARAMS" ]]; then
     echo "ERROR: params file not found: $PARAMS" >&2
     exit 1
@@ -220,12 +227,17 @@ cmd_sitl() {
     # symptom is "Waiting for heartbeat" forever in the sitl pane. Without
     # --console MAVProxy runs in terminal text mode and shows heartbeats
     # directly. See docs/dev-log/06-launch-console-mavproxy-stall.md.
+    # v2 fix (2026-06-06): MAVProxy default streamrate=4 Hz душил
+    # /mavros/local_position/odom до ~3.8 Hz. При 0.3 м/с это ~8 см пути между
+    # odom-апдейтами — на грани arrival tolerance 0.08 м (ложные arrival
+    # timeout'ы). 10 Hz выравнивает odom с bridge loop rate.
     cat <<EOF
 cd '$ARDUPILOT_DIR/ArduCopter'
-echo "[sitl] params=$PARAMS instance=$SITL_INSTANCE port=$MAVLINK_PORT"
+echo "[sitl] params=$PARAMS instance=$SITL_INSTANCE port=$MAVLINK_PORT streamrate=10"
 exec sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON \\
     -I $SITL_INSTANCE \\
-    --add-param-file='$PARAMS'
+    --add-param-file='$PARAMS' \\
+    -m '--streamrate=10'
 EOF
 }
 
@@ -246,8 +258,9 @@ cmd_ros() {
     # это duplicate spawn (два gz в одном GZ_PARTITION → SITL talks to wrong
     # world). Автоматически передаём launch_gz:=false когда -gz присутствует.
     # И DEFAULT_WORLD проброс — чтобы drone.launch.py читал world из env.
-    local launch_gz_val
+    local launch_gz_val extra_args=""
     if (( WANT_GZ )); then launch_gz_val=false; else launch_gz_val=true; fi
+    if (( NO_AUTOSCAN )); then extra_args=" autoscan:=false"; fi
     cat <<EOF
 cd '$WS_DIR'
 source '$ROS_SETUP'
@@ -255,8 +268,8 @@ export GZ_PARTITION='$GZ_PARTITION'
 export ROS_DOMAIN_ID='$ROS_DOMAIN_ID'
 export DEFAULT_WORLD='$WORLD'
 if [[ -f install/setup.bash ]]; then source install/setup.bash; fi
-echo "[ros] launching $LAUNCH_PKG $LAUNCH_FILE world=$WORLD launch_gz=$launch_gz_val domain=$ROS_DOMAIN_ID"
-exec ros2 launch '$LAUNCH_PKG' '$LAUNCH_FILE' launch_gz:=$launch_gz_val
+echo "[ros] launching $LAUNCH_PKG $LAUNCH_FILE world=$WORLD launch_gz=$launch_gz_val domain=$ROS_DOMAIN_ID extra=$extra_args"
+exec ros2 launch '$LAUNCH_PKG' '$LAUNCH_FILE' launch_gz:=$launch_gz_val$extra_args
 EOF
 }
 
@@ -283,8 +296,15 @@ cmd_mavros() {
     cat <<EOF
 source '$ROS_SETUP'
 export ROS_DOMAIN_ID='$ROS_DOMAIN_ID'
-echo "[mavros] ros2 launch mavros apm.launch fcu_url:=udp://:$fcu_remote@$fcu_local (instance=$SITL_INSTANCE)"
-exec ros2 launch mavros apm.launch fcu_url:=udp://:$fcu_remote@$fcu_local
+# 2026-06-07 DISTANCE_SENSOR groundwork: кастомный apm_config (6xVL53 PRX yaw
+# + TF-Luna down PITCH_270). ⚠ apm.launch объявляет config_yaml через value=
+# (не default=) — CLI-переопределение МОЛЧА игнорируется (RCA видео-сессия
+# 13:35). Поэтому mavros_node напрямую с двумя params-file.
+echo "[mavros] mavros_node direct + apm_config_claudedrone.yaml (instance=$SITL_INSTANCE)"
+exec ros2 run mavros mavros_node --ros-args -r __ns:=/mavros \
+    -p fcu_url:=udp://:$fcu_remote@$fcu_local \
+    --params-file /opt/ros/jazzy/share/mavros/launch/apm_pluginlists.yaml \
+    --params-file '$SCRIPT_DIR/../config/mavros/apm_config_claudedrone.yaml'
 EOF
 }
 

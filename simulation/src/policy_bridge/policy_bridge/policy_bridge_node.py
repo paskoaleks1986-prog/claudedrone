@@ -35,7 +35,11 @@ from std_msgs.msg import Int32, Float32, Bool
 from nav_msgs.msg import OccupancyGrid
 from rclpy.qos import QoSProfile, DurabilityPolicy, HistoryPolicy
 
+from policy_bridge.action_gate import gate_blocks, movement_clearance_m
+from policy_bridge.am_adapter import ActiveMappingAdapter
+from policy_bridge.display_map import build_display_map, display_coverage
 from policy_bridge.obs_builder import ObsBuilder
+from policy_bridge.world_config import WorldGeometry, load_world_geometry
 from policy_bridge.visited_grid import VisitedGridBuilder
 from policy_bridge.action_executor import ActionExecutor, InvalidActionError
 from policy_bridge.coverage import Coverage
@@ -49,8 +53,21 @@ from policy_bridge.phase_controller import PhaseController, Phase
 
 PARAM_DEFAULTS: dict[str, object] = {
     "model_path": "",
+    # Блок Б (2026-06-07): per-world геометрия из config/worlds.yaml.
+    # world_name "" → env DEFAULT_WORLD; мир без записи в yaml = fail-fast.
+    # room_size/cell_size стали ИНФОРМАЦИОННЫМИ (yaml выигрывает, расхождение
+    # = warn) — оставлены для совместимости старых launch-вызовов.
+    "world_name": "",
+    "worlds_config": "auto",
     "room_size": 6.4,
     "cell_size": 0.1,
+    # v1.5c: терминация эпизода по mapped_ratio (env: coverage>95% → done).
+    # Пост-терминальное поведение модели вырождено (frontiers исчерпаны,
+    # ран 3: stall-шторм после mapped 0.975) — миссия завершена, hover.
+    "mapped_success_threshold": 0.95,
+    # Блок 2 (Aleks 2026-06-07): mission-done по DISPLAY-карте (дорисованной).
+    # Ниже parity-0.95 — display заполнена плотнее (углы/дыры<проёма закрыты).
+    "display_success_threshold": 0.92,
     # TASK-059 attempt #1 RCA (2026-05-19): 0.15 m оказался слишком тесный
     # для real Gazebo (drone 0.3 m/s, VL53L0X max 2 m → no warning до впритык).
     # 0.50 m = ~1.7 cell stop distance, безопаснее.
@@ -75,7 +92,45 @@ PARAM_DEFAULTS: dict[str, object] = {
     "mode": "hybrid",          # hybrid | wall_follow_only | rl_only
     "wall_distance": 0.6,
     "perimeter_laps": 1,
+    # v2 Block 3 (2026-06-06): ActionGate — шаг 0-3, который закончится ближе
+    # этого к препятствию, отклоняется до исполнения (training parity: env не
+    # двигает дрона в стену). Правило: gate_margin = safety floor + cell.
+    # v2 run F (Aleks 08:26): 0.5 (= floor 0.4 + cell). SIM-ONLY клиренс.
+    # run F checklist #1 (2026-06-07): floor 0.4 → 0.45 ⇒ gate 0.55.
+    "gate_margin_m": 0.55,
+    # v1.5c deploy (2026-06-07): модельная семья.
+    #   sweep02       — legacy PPO Dict obs (distances+servo+visited)
+    #   activemapping — MaskablePPO Box(21,) + occupancy/frontier (AM-v1);
+    #                   predict ОБЯЗАН получать action_masks (F1), mode
+    #                   принудительно rl_only (wall-phase не в тренировке).
+    "model_family": "activemapping",
+    # AM eval-эталоны rl-lab сняты deterministic=True; sweep02 летал False.
+    "deterministic": True,
+    # StuckDetector escape-инъекции: auto = только sweep02 (для AM ломает
+    # распределение — у модели есть frontier obs, меряем ЕЁ поведение).
+    "stuck_escape": "auto",
 }
+
+# v1.5c livelock breaker (ран 2026-06-07 15:0x RCA): deterministic policy +
+# физический отказ исполнения (front ≤ margin → action 7 «no travel») =
+# замороженный obs → модель вечно повторяет одно действие (2800 шагов у
+# стены, 1558 no-travel warn'ов). В env такого состояния НЕТ — env двигает
+# дрона до соседней со стеной клетки, а наш safety-слой держит margin 0.7 м.
+# Решение: движенческое действие, не давшее смены клетки NOOP_MASK_LIMIT раз
+# подряд, временно убирается из action_mask (динамическая маска — штатный
+# режим MaskablePPO) до смены клетки ИЛИ накопленного поворота ≥ 45°.
+# Release по ОДНОЙ ротации (первая версия) дал corner-dance: 15° мало,
+# gate блокирует снова → цикл 3 блока + 1 ротация навечно (2953 gate-block
+# в ране 15:2x). 45° = 3 ротации — направление действия реально сменилось.
+NOOP_MASK_LIMIT = 3
+RELEASE_HEADING_DEG = 45.0
+MOVEMENT_ACTIONS = (0, 1, 2, 3, 7)
+# Backstop: rot-осцилляция (+15/−15) не копит Δheading и не меняет клетку —
+# детерминированный argmax может зациклиться и на ротациях. После
+# STALL_STEPS шагов без смены клетки predict один раз сэмплирует из
+# распределения модели (deterministic=False) — выход из цикла действиями
+# самой модели, не хардкодом.
+STALL_STEPS = 30
 
 
 class PolicyBridgeNode(Node):
@@ -87,6 +142,15 @@ class PolicyBridgeNode(Node):
         self.model_path = str(self.get_parameter("model_path").value)
         self.room_size = float(self.get_parameter("room_size").value)
         self.cell_size = float(self.get_parameter("cell_size").value)
+        self.mapped_success_threshold = float(
+            self.get_parameter("mapped_success_threshold").value
+        )
+        self.display_success_threshold = float(
+            self.get_parameter("display_success_threshold").value
+        )
+        self._mission_complete = False
+        self._last_display = None       # Блок 2: дорисованная display-карта
+        self._last_disp_cov = 0.0
         self.wall_threshold = float(self.get_parameter("wall_threshold").value)
         self.linear_speed = float(self.get_parameter("linear_speed").value)
         self.angular_speed = float(self.get_parameter("angular_speed").value)
@@ -101,12 +165,60 @@ class PolicyBridgeNode(Node):
         self.mode = str(self.get_parameter("mode").value)
         self.wall_distance = float(self.get_parameter("wall_distance").value)
         self.perimeter_laps = int(self.get_parameter("perimeter_laps").value)
-
-        self.grid_size = int(round(self.room_size / self.cell_size))
-        if self.grid_size != 64:
+        # v2 Block 3
+        self.gate_margin_m = float(self.get_parameter("gate_margin_m").value)
+        self._gate_block_count = 0
+        self._last_mapped = 0.0
+        # v1.5c livelock breaker (см. NOOP_MASK_LIMIT)
+        self._noop_streak: dict[int, int] = {}
+        # action -> heading на момент маскировки (release: cell change ИЛИ
+        # |Δheading| ≥ RELEASE_HEADING_DEG — направление реально сменилось)
+        self._infeasible_actions: dict[int, float] = {}
+        self._cell_stall_count = 0
+        self._stall_kick_count = 0
+        # v1.5c deploy
+        self.model_family = str(self.get_parameter("model_family").value)
+        if self.model_family not in ("sweep02", "activemapping"):
+            raise ValueError(f"model_family={self.model_family!r} — "
+                             "ожидаю sweep02 | activemapping")
+        self.deterministic = bool(self.get_parameter("deterministic").value)
+        stuck_escape = str(self.get_parameter("stuck_escape").value)
+        if stuck_escape not in ("auto", "on", "off"):
+            raise ValueError(f"stuck_escape={stuck_escape!r} — auto|on|off")
+        self.stuck_enabled = stuck_escape == "on" or (
+            stuck_escape == "auto" and self.model_family == "sweep02"
+        )
+        if self.model_family == "activemapping" and self.mode != "rl_only":
             self.get_logger().warn(
-                f"grid_size={self.grid_size} ≠ 64 — SWEEP-02 was trained на MAP_SIZE=64. "
-                "Bridge будет работать но policy expects 64×64 visited grid."
+                f"model_family=activemapping несовместим с mode={self.mode!r} "
+                "(wall-phase не в тренировке AM-v1) — форсирую rl_only"
+            )
+            self.mode = "rl_only"
+
+        # ----- Блок Б: per-world геометрия (worlds.yaml, fail-fast) -----
+        self.geom = self._load_geometry()
+        # yaml выигрывает над legacy-скалярами; расхождение = warn
+        if abs(self.geom.room_x_m - self.room_size) > 1e-6 and \
+                self.room_size != float(PARAM_DEFAULTS["room_size"]):
+            self.get_logger().warn(
+                f"param room_size={self.room_size} игнорируется — worlds.yaml "
+                f"{self.geom.world_name}: {self.geom.room_x_m}×{self.geom.room_y_m} м"
+            )
+        self.room_size = self.geom.room_x_m       # legacy-поля (квадратные вызовы)
+        self.cell_size = self.geom.resolution_m
+        self.room_x = self.geom.room_x_m
+        self.room_y = self.geom.room_y_m
+        self.nx = self.geom.nx
+        self.ny = self.geom.ny
+
+        self.grid_size = self.nx
+        if not self.geom.is_model_canon:
+            self.get_logger().warn(
+                f"мир {self.geom.world_name}: грид {self.nx}×{self.ny} @ "
+                f"{self.cell_size} м ≠ модельный канон 64×64 @ 0.1 — модель "
+                f"({self.model_family}) работает OOD: гео-слои bridge "
+                "(safe-box/visited/occupancy) по миру, obs-нормализации — "
+                "по контракту модели."
             )
 
         # ----- step counter / timer (declare cb groups FIRST so ObsBuilder gets sub group) -----
@@ -131,8 +243,29 @@ class PolicyBridgeNode(Node):
             room_size_m=self.room_size,
             cell_size_m=self.cell_size,
             grid_size=self.grid_size,
+            room_x_m=self.room_x, room_y_m=self.room_y,
+            nx=self.nx, ny=self.ny,
         )
         self.coverage = self._build_coverage()
+
+        # ----- ActiveMapping adapter (v1.5c deploy 2026-06-07) -----
+        # Box(21,) obs + occupancy/frontier + action_masks (протокол v1.0).
+        # free_mask ОБЯЗАТЕЛЕН (§5.1 mapped_ratio) — без него fail-fast,
+        # никаких тихих fallback'ов. servo_deg — late-bound c executor'а
+        # (создаётся ниже), вызовы идут только в runtime.
+        self.am_adapter: ActiveMappingAdapter | None = None
+        if self.model_family == "activemapping":
+            self.am_adapter = ActiveMappingAdapter(
+                room_size_m=self.room_x,
+                room_y_m=self.room_y,
+                cell_size_m=self.cell_size,
+                free_mask=self.coverage.free_mask,
+                get_pose=lambda: self.obs_builder.pose,
+                get_vl_raw_m=lambda: self.obs_builder.perimeter_distances_m,
+                get_tf_raw_m=lambda: self.obs_builder.sweep_distance_m,
+                get_servo_deg=lambda: self.executor_act.servo_deg,
+            )
+
         self.executor_act = ActionExecutor(
             self,
             cell_size_m=self.cell_size,
@@ -141,17 +274,44 @@ class PolicyBridgeNode(Node):
             # D-refactor (2026-05-20): position setpoint control. Pass pose accessor
             # для arrival check + initial target.
             get_pose=lambda: self.obs_builder.pose,
-            grid_size=self.grid_size,
+            # Блок Б: action7 safety cap = grid_size*cell — большая ось мира
+            grid_size=max(self.nx, self.ny),
             # Legacy (ignored в position control but kept в signature)
             linear_speed=self.linear_speed,
             angular_speed=self.angular_speed,
             get_yaw_rad=lambda: self.obs_builder.pose.heading_rad,
+            # v2 Block 2: training parity — env помечает visited все клетки
+            # пройденные за action (включая промежуточные у action 7).
+            # v1.5c: для AM тот же хук дополнительно интегрирует occupancy
+            # при каждой НОВОЙ клетке (§2.5 п.2 — action 7 / translations).
+            visited_update_fn=self._on_pose_update,
+            # v2 run F: velocity-gated arrival (Aleks 08:26)
+            get_speed_m_s=lambda: self.obs_builder.speed_m_s,
+        )
+        # v2 Block 2: servo_angle obs = commanded angle executor'а (training
+        # parity: в env servo-динамики нет). Убирает 1 kHz JointState churn.
+        self.obs_builder.set_servo_angle_source(lambda: self.executor_act.servo_deg)
+
+        # v2 night watch: координация с safety_guard (latched Bool).
+        # True → executor молчит (maintenance пауза), predict пропускается;
+        # False → target переинициализируется на текущую позу.
+        safety_qos = QoSProfile(
+            depth=1,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+        )
+        self.create_subscription(
+            Bool, "/safety/active",
+            lambda m: self.executor_act.set_safety_hold(bool(m.data)),
+            safety_qos, callback_group=self.sub_cb_group,
         )
         self.failure = FailureHandler(self)
 
         # ----- adaptive speed controller (TASK-059 attempt #5, Aleks/Web 4-mode design) -----
         self.adaptive_speed = AdaptiveSpeedController()
         self._adaptive_log_counter = 0
+        # v2 Block 2: freshness gate counter (см. _predict_and_execute_one_step)
+        self._obs_fresh_skip_count = 0
 
         # ----- stuck detector (TASK-059 attempt #7, Aleks/Web R2 escape pattern) -----
         # Detects coverage-stuck loops (policy/obs feedback cycle) и injects escape:
@@ -168,6 +328,8 @@ class PolicyBridgeNode(Node):
         self.wall_map_builder = WallMapBuilder(
             room_size_m=self.room_size,
             grid_size=self.grid_size,
+            room_y_m=self.room_y,
+            ny=self.ny,
         )
         self.phase_controller = PhaseController(
             wall_follower=self.wall_follower,
@@ -217,7 +379,22 @@ class PolicyBridgeNode(Node):
 
         # ----- publishers -----
         self.action_pub = self.create_publisher(Int32, "/rl_policy/action", 10)
+        # v1.5c: сырое действие политики ДО stuck/adaptive/gate — для чистого
+        # профиля действий (analyze: частоты 0-7, strafe vs rotate).
+        self.action_raw_pub = self.create_publisher(
+            Int32, "/rl_policy/action_raw", 10
+        )
         self.coverage_pub = self.create_publisher(Float32, "/rl_policy/coverage", 10)
+        # v1.5c: mapped_ratio (§5.1) — собственная метрика модели AM.
+        self.mapped_ratio_pub = self.create_publisher(
+            Float32, "/rl_policy/mapped_ratio", 10
+        )
+        # GIF-карты (запрос Aleks 2026-06-07 ~18:10): occupancy AM-эпизода
+        # для offline-сборки 2D-анимаций (make_map_gif.py). Конвенция
+        # OccupancyGrid: UNKNOWN→-1, FREE→0, OCCUPIED→100.
+        self.occupancy_pub = self.create_publisher(
+            OccupancyGrid, "/rl_policy/occupancy_grid", 10
+        )
         self.visited_grid_pub = self.create_publisher(
             OccupancyGrid, "/rl_policy/visited_grid", 10
         )
@@ -227,7 +404,10 @@ class PolicyBridgeNode(Node):
         self.timer = self.create_timer(period_s, self._tick, callback_group=self.timer_cb_group)
 
         self.get_logger().info(
-            f"policy_bridge_node ready · rate={self.rate_hz} Hz · room {self.room_size}×{self.room_size} m · "
+            f"policy_bridge_node ready · family={self.model_family} · "
+            f"mode={self.mode} · deterministic={self.deterministic} · "
+            f"stuck_escape={'on' if self.stuck_enabled else 'off'} · "
+            f"rate={self.rate_hz} Hz · room {self.room_x}×{self.room_y} m · "
             f"defaults linear={self.linear_speed} m/s angular={self.angular_speed} rad/s "
             f"wall_threshold={self.wall_threshold} m"
         )
@@ -239,29 +419,136 @@ class PolicyBridgeNode(Node):
         else:
             self.get_logger().info(f"coverage Option A · free_count={self.coverage.free_count}")
 
+    # ---- world geometry (Блок Б) --------------------------------------------
+
+    def _load_geometry(self) -> WorldGeometry:
+        world = str(self.get_parameter("world_name").value) or os.environ.get(
+            "DEFAULT_WORLD", ""
+        )
+        cfg = str(self.get_parameter("worlds_config").value)
+        if cfg in ("", "auto"):
+            sim_root = os.environ.get(
+                "AEROSEARCH_ROOT", "/data/git/aerosearch"
+            ) + "/claudedrone-git/simulation"
+            cfg = f"{sim_root}/src/policy_bridge/config/worlds.yaml"
+        geom = load_world_geometry(cfg, world)
+        self.get_logger().info(
+            f"world geometry: {geom.world_name} · {geom.room_x_m}×{geom.room_y_m} м "
+            f"@ {geom.resolution_m} → грид {geom.nx}×{geom.ny}"
+            f"{' · model canon' if geom.is_model_canon else ' · ⚠ НЕ канон 64×64'}"
+        )
+        return geom
+
     # ---- model loading -----------------------------------------------------
 
     def _load_model(self):
         if not self.model_path:
             raise RuntimeError("model_path param empty — set it via launch arg.")
-        # Late import чтобы node мог быть импортирован без SB3 (для unit тестов).
-        from stable_baselines3 import PPO
         path = Path(self.model_path)
         if not path.exists():
             raise FileNotFoundError(f"model.zip not found: {path}")
+        # Late imports чтобы node мог быть импортирован без SB3 (unit тесты).
+        if self.model_family == "activemapping":
+            from sb3_contrib import MaskablePPO
+            self.get_logger().info(
+                f"loading MaskablePPO (AM-v1) from {path} (device=cpu, "
+                f"deterministic={self.deterministic})"
+            )
+            model = MaskablePPO.load(str(path), device="cpu")
+            obs_shape = tuple(model.observation_space.shape)
+            if obs_shape != (21,):
+                raise ValueError(
+                    f"model obs space {obs_shape} ≠ (21,) — это не "
+                    "ActiveMapping-v1 модель? Проверь model_path/model_family."
+                )
+            return model
+        from stable_baselines3 import PPO
         self.get_logger().info(f"loading PPO from {path} (device=cpu)")
         return PPO.load(str(path), device="cpu")
 
+    def _on_pose_update(self, x_m: float, y_m: float) -> None:
+        """Hook ActionExecutor'а на каждом poll'е arrival-ожидания (20 Hz):
+        visited (training parity, v2 Block 2) + occupancy при смене клетки
+        (AM, §2.5 п.2)."""
+        self.visited.update(x_m, y_m)
+        if self.am_adapter is not None:
+            self.am_adapter.on_pose_update(x_m, y_m)
+
+    # ---- v1.5c livelock breaker ---------------------------------------------
+
+    def _cell_of(self, pose) -> tuple[int, int]:
+        return (
+            int((pose.x_m + self.room_x / 2.0) / self.cell_size),
+            int((pose.y_m + self.room_y / 2.0) / self.cell_size),
+        )
+
+    def _feasibility_update(self, action: int, moved: bool) -> None:
+        """Учёт no-op'ов исполнения. moved = клетка дрона сменилась за шаг."""
+        if moved:
+            self._noop_streak.clear()
+            self._cell_stall_count = 0
+            if self._infeasible_actions:
+                self.get_logger().info(
+                    "feasibility mask released (cell change): "
+                    f"{sorted(self._infeasible_actions)}"
+                )
+                self._infeasible_actions.clear()
+            return
+        self._cell_stall_count += 1
+        # ротации меняют body→world направления — release только после
+        # НАКОПЛЕННОГО поворота ≥ RELEASE_HEADING_DEG (см. RCA corner-dance)
+        heading = self.obs_builder.pose.heading_rad
+        released = [
+            a for a, h0 in self._infeasible_actions.items()
+            if abs(math.degrees(self._angle_diff(heading, h0)))
+            >= RELEASE_HEADING_DEG
+        ]
+        for a in released:
+            del self._infeasible_actions[a]
+            self._noop_streak.pop(a, None)
+        if released:
+            self.get_logger().info(
+                f"feasibility mask released (Δheading ≥ {RELEASE_HEADING_DEG}°): "
+                f"{sorted(released)}"
+            )
+        if action not in MOVEMENT_ACTIONS:
+            return
+        n = self._noop_streak.get(action, 0) + 1
+        self._noop_streak[action] = n
+        if n >= NOOP_MASK_LIMIT and action not in self._infeasible_actions:
+            self._infeasible_actions[action] = heading
+            self.get_logger().warn(
+                f"feasibility mask: action {action} no-op ×{n} подряд — "
+                f"маскирую до смены клетки / Δheading {RELEASE_HEADING_DEG}°"
+            )
+
     def _build_coverage(self) -> Coverage:
         path = self.free_mask_path
+        kw = {"grid_size": self.grid_size, "nx": self.nx, "ny": self.ny}
         if path in ("", "none"):
-            return Coverage(free_mask_path=None, grid_size=self.grid_size)
+            return Coverage(free_mask_path=None, **kw)
         if path == "auto":
-            self.get_logger().info(
-                "free_mask_path=auto — пытаюсь resolve по world (не imp в Phase 1)"
+            # v2 Block 2 (2026-06-06): auto-resolve. Блок Б: имя мира берём
+            # из world geometry (worlds.yaml), не напрямую из env.
+            # Без маски coverage = visited/total занижает прогресс ~втрое
+            # (free cells ≈ 1/3 грида) — и порог COVERAGE_TARGET недостижим.
+            world = self.geom.world_name
+            sim_root = os.environ.get(
+                "AEROSEARCH_ROOT", "/data/git/aerosearch"
+            ) + "/claudedrone-git/simulation"
+            candidate = (
+                Path(sim_root)
+                / "src/drone_sim/worlds/rl_rooms" / world / "free_mask.png"
             )
-            return Coverage(free_mask_path=None, grid_size=self.grid_size)
-        return Coverage(free_mask_path=path, grid_size=self.grid_size)
+            if world and candidate.exists():
+                self.get_logger().info(f"free_mask_path=auto → {candidate}")
+                return Coverage(free_mask_path=str(candidate), **kw)
+            self.get_logger().warn(
+                f"free_mask_path=auto: не нашёл {candidate} "
+                f"(world={world!r}) — coverage без маски"
+            )
+            return Coverage(free_mask_path=None, **kw)
+        return Coverage(free_mask_path=path, **kw)
 
     # ---- main tick ---------------------------------------------------------
 
@@ -270,21 +557,56 @@ class PolicyBridgeNode(Node):
         if msg.data and not self._takeoff_ready:
             self._takeoff_ready = True
             pose = self.obs_builder.pose
+            # run F fix (в) 2026-06-07: z-capture at release. Константа 3.0
+            # давала хронический Z-лаг (~0.18м), Position Controller делил
+            # authority между Z и XY → median XY 0.063 м/с при WPNAV cap 0.2
+            # → action7 arrival timeouts (RCA step 100, вердикт @338 cov ✗).
+            # Берём ФАКТИЧЕСКИЙ hover z; sanity < 0.5м (odom ещё пуст) →
+            # fallback на константу с warn.
+            if pose.z_m > 0.5:
+                z_capture = pose.z_m
+                self.get_logger().info(
+                    f"z-capture at release: {z_capture:.2f}m (фактический hover; "
+                    f"константа TARGET_ALTITUDE_M=3.0 не используется)"
+                )
+            else:
+                z_capture = None
+                self.get_logger().warn(
+                    f"z-capture failed (odom z={pose.z_m:.2f} < 0.5m sanity) — "
+                    f"fallback на TARGET_ALTITUDE_M"
+                )
             # Initial target = current pose (drone holds in place)
             self.executor_act.initialize_target(
-                pose.x_m, pose.y_m, z=None, yaw=pose.heading_rad
+                pose.x_m, pose.y_m, z=z_capture, yaw=pose.heading_rad
             )
             self.get_logger().info(
                 f"/takeoff/ready received — bridge taking over setpoint control "
                 f"at ({pose.x_m:.2f}, {pose.y_m:.2f}, yaw={pose.heading_rad:.2f}rad)"
             )
+            # v1.5c: §2.5 п.3 — начало эпизода: клетка спавна FREE +
+            # первичный взгляд (7 лучей) из hover-позы.
+            if self.am_adapter is not None:
+                self.am_adapter.reset_episode()
+                self.get_logger().info(
+                    "AM adapter: episode reset + первичный взгляд "
+                    f"(integrations={self.am_adapter.integrations})"
+                )
 
     def _tick(self) -> None:
         if self.step_count >= self.max_steps:
             return
 
+        # v1.5c: миссия завершена (mapped ≥ threshold) — hover, не predict'им.
+        if self._mission_complete:
+            return
+
         # D-refactor: wait для takeoff_node release control signal
         if not self._takeoff_ready:
+            return
+
+        # v2 night watch: safety_guard владеет дроном — не predict'им и не
+        # двигаем (он отведёт от препятствия и отпустит /safety/active=False).
+        if self.executor_act.safety_hold:
             return
 
         # Pre-flight checks (TASK-059 attempt #1 RCA — safety net):
@@ -296,10 +618,13 @@ class PolicyBridgeNode(Node):
         now_s = self.get_clock().now().nanoseconds * 1e-9
         staleness = self.obs_builder.staleness_seconds(now_s)
         pose = self.obs_builder.pose
-        half_extent = self.room_size / 2.0 + self.safe_box_margin_m
+        # Блок Б: per-axis извлечения из worlds.yaml (раньше хардкод 6.4 убивал
+        # полёт в indoor_room 16×10 — 7800 ERROR-строк hover на x>3.7)
+        half_x = self.room_x / 2.0 + self.safe_box_margin_m
+        half_y = self.room_y / 2.0 + self.safe_box_margin_m
         out_of_box = (
             self.obs_builder.has_received_odom
-            and (abs(pose.x_m) > half_extent or abs(pose.y_m) > half_extent)
+            and (abs(pose.x_m) > half_x or abs(pose.y_m) > half_y)
         )
         odom_stale = (
             self.obs_builder.has_received_odom
@@ -312,7 +637,9 @@ class PolicyBridgeNode(Node):
             self.failure.clear_hover_if_recovered()
 
         if out_of_box:
-            self.failure.trigger_pose_out_of_box(pose.x_m, pose.y_m, half_extent)
+            self.failure.trigger_pose_out_of_box(
+                pose.x_m, pose.y_m, max(half_x, half_y)
+            )
         elif odom_stale:
             self.failure.trigger_odom_stale(staleness["odom"])
 
@@ -445,11 +772,75 @@ class PolicyBridgeNode(Node):
             return
         # RL phase below (legacy path)
 
+        # v2 Block 2: freshness gate. Politika тренирована turn-based — obs
+        # обязан описывать состояние ПОСЛЕ предыдущего действия. Если сенсорные
+        # кэши старше порога (odom ~8.8Hz → 3 цикла, perimeter 10Hz), snapshot
+        # отражает позу/дистанции ДО остановки → off-distribution. Пропускаем
+        # тик (без счёта шага), следующий через 0.1с перепроверит.
+        now_s = self.get_clock().now().nanoseconds * 1e-9
+        stale = self.obs_builder.staleness_seconds(now_s)
+        if stale["odom"] > 0.35 or stale["perimeter"] > 0.35 or stale["sweep"] > 1.0:
+            self._obs_fresh_skip_count += 1
+            if self._obs_fresh_skip_count % 50 == 1:
+                self.get_logger().warn(
+                    f"obs not fresh, skip predict: odom={stale['odom']:.2f}s "
+                    f"perimeter={stale['perimeter']:.2f}s sweep={stale['sweep']:.2f}s "
+                    f"(skips={self._obs_fresh_skip_count})"
+                )
+            return
+        self._obs_fresh_skip_count = 0
+
         self.visited.update(pose.x_m, pose.y_m)
 
-        obs = self.obs_builder.build_obs(self.visited.grid)
-        action_arr, _ = self.model.predict(obs, deterministic=False)
+        if self.am_adapter is not None:
+            # v1.5c: §2.5 п.1 — интеграция на step boundary (снапшот obs
+            # ПОСЛЕ завершения предыдущего действия), затем obs+mask одним
+            # BFS-расчётом. predict БЕЗ action_masks запрещён (F1).
+            self.am_adapter.integrate_now()
+            obs, action_mask, mapped = self.am_adapter.snapshot()
+            # Блок 2: mission-done по DISPLAY-карте (дорисованной), не по
+            # parity. Display заполнена плотнее (углы достроены, дыры < проёма
+            # закрыты) → порог 0.92 ниже parity-0.95; дрон перестаёт гонять
+            # за угловыми пикселями. Модель продолжает obs из parity (выше).
+            disp = build_display_map(
+                self.am_adapter.builder.occ, self.cell_size
+            )
+            disp_cov = display_coverage(disp, self.coverage.free_mask)
+            self._last_display = disp
+            self._last_disp_cov = disp_cov
+            if disp_cov >= self.display_success_threshold:
+                self._mission_complete = True
+                self.mapped_ratio_pub.publish(Float32(data=mapped))
+                self._publish_occupancy()  # финальная display-карта в GIF
+                self.get_logger().info(
+                    f"🏁 MISSION COMPLETE: display_cov {disp_cov:.3f} ≥ "
+                    f"{self.display_success_threshold} (parity mapped "
+                    f"{mapped:.3f}) на шаге {self.step_count} — hover"
+                )
+                return
+            if self._infeasible_actions:
+                action_mask = action_mask.copy()
+                for a in self._infeasible_actions:
+                    action_mask[a] = False
+            deterministic = self.deterministic
+            if deterministic and self._cell_stall_count >= STALL_STEPS:
+                deterministic = False  # stall backstop: сэмпл из распределения
+                self._stall_kick_count += 1
+                self.get_logger().warn(
+                    f"stall backstop: {self._cell_stall_count} шагов без смены "
+                    f"клетки — stochastic predict (kick #{self._stall_kick_count})"
+                )
+            action_arr, _ = self.model.predict(
+                obs, action_masks=action_mask, deterministic=deterministic
+            )
+            self.mapped_ratio_pub.publish(Float32(data=mapped))
+            self._last_mapped = mapped
+            self._publish_occupancy()
+        else:
+            obs = self.obs_builder.build_obs(self.visited.grid)
+            action_arr, _ = self.model.predict(obs, deterministic=False)
         raw_action_from_policy = int(action_arr)
+        self.action_raw_pub.publish(Int32(data=raw_action_from_policy))
 
         # TASK-059 attempt #8 escape v2 (rl-lab @03:18): StuckDetector v2 со
         # smart escape — scoring direction via (free_dist + unvisited_in_cone),
@@ -458,25 +849,30 @@ class PolicyBridgeNode(Node):
         cov_for_stuck = self.coverage.compute(self.visited.grid)
         pose = self.obs_builder.pose
         # Convert pose to cell ix/iy (matches VisitedGridBuilder formula)
-        pos_ix = int((pose.x_m + self.room_size / 2.0) / self.cell_size)
-        pos_iy = int((pose.y_m + self.room_size / 2.0) / self.cell_size)
+        pos_ix = int((pose.x_m + self.room_x / 2.0) / self.cell_size)
+        pos_iy = int((pose.y_m + self.room_y / 2.0) / self.cell_size)
         # Clip к grid bounds (drone может быть outside в edge cases)
-        pos_ix = max(0, min(pos_ix, self.grid_size - 1))
-        pos_iy = max(0, min(pos_iy, self.grid_size - 1))
+        pos_ix = max(0, min(pos_ix, self.nx - 1))
+        pos_iy = max(0, min(pos_iy, self.ny - 1))
 
         perimeter_distances = self.obs_builder.perimeter_distances_m
-        action, escape_active = self.stuck_detector.check_v2(
-            coverage=cov_for_stuck,
-            raw_action=raw_action_from_policy,
-            distances_m=perimeter_distances,
-            visited_grid=self.visited.grid,
-            pos_ix=pos_ix,
-            pos_iy=pos_iy,
-            pose_x_m=pose.x_m,
-            pose_y_m=pose.y_m,
-            heading_rad=pose.heading_rad,
-            node_logger=self.get_logger(),
-        )
+        if self.stuck_enabled:
+            action, escape_active = self.stuck_detector.check_v2(
+                coverage=cov_for_stuck,
+                raw_action=raw_action_from_policy,
+                distances_m=perimeter_distances,
+                visited_grid=self.visited.grid,
+                pos_ix=pos_ix,
+                pos_iy=pos_iy,
+                pose_x_m=pose.x_m,
+                pose_y_m=pose.y_m,
+                heading_rad=pose.heading_rad,
+                node_logger=self.get_logger(),
+            )
+        else:
+            # v1.5c AM: escape-инъекции выключены (stuck_escape=auto) —
+            # измеряем поведение модели, не харнесса.
+            action, escape_active = raw_action_from_policy, False
 
         # TASK-059 attempt #5: AdaptiveSpeedController + B2 (rl-lab @03:18):
         # escape_bypass пропускает action 7 degradation чтобы StuckDetector v2
@@ -487,14 +883,47 @@ class PolicyBridgeNode(Node):
             action, distances_m, escape_bypass=escape_active
         )
 
+        # v2 Block 3: ActionGate — слой изоляции №1. Шаг 0-3 в сторону стены
+        # отклоняем мгновенно (training parity: в env такой шаг не двигает
+        # дрона). Дрон держит позицию, шаг засчитывается, модель получает
+        # свежий obs и выбирает дальше — вместо 8s tug-of-war с safety_guard.
+        if gate_blocks(action_mod, perimeter_distances, self.gate_margin_m):
+            clearance = movement_clearance_m(action_mod, perimeter_distances)
+            self._gate_block_count += 1
+            self.get_logger().info(
+                f"gate: action {action_mod} отклонён — clearance "
+                f"{clearance:.2f}m < margin {self.gate_margin_m:.2f}m "
+                f"(blocks={self._gate_block_count})"
+            )
+            self.action_pub.publish(Int32(data=action_mod))
+            self.step_count += 1
+            # gate-отказ = нет смещения — учитываем в livelock breaker
+            if self.am_adapter is not None:
+                self._feasibility_update(action_mod, moved=False)
+            return
+
         # Publish EXECUTED action (post-stuck/adaptive) для policy logging
         self.action_pub.publish(Int32(data=action_mod))
 
+        # Перед action 7 (длинный move) — snap heading на ОСЬ (90°), не на
+        # 15°-решётку (Aleks Блок 2, обосновано раном B): осевые заходы дают
+        # чистые прямые вдоль стен вместо косых «ёлочкой». Ротации (4/5)
+        # остаются на 15° — модель смотрит в 24 направлениях, но длинный
+        # move летит строго по оси.
+        if action_mod == 7:
+            step = math.radians(90.0)
+            snapped = round(pose.heading_rad / step) * step
+            self.executor_act.snap_to_yaw(snapped)
+
+        cell_before = self._cell_of(pose)
         self.executor_act.execute(
             action_mod,
             override_speed=cfg.linear_speed,
             override_wall_threshold=cfg.wall_threshold,
         )
+        if self.am_adapter is not None:
+            moved = self._cell_of(self.obs_builder.pose) != cell_before
+            self._feasibility_update(action_mod, moved)
 
         cov = self.coverage.compute(self.visited.grid)
         self.coverage_pub.publish(Float32(data=float(cov)))
@@ -518,11 +947,37 @@ class PolicyBridgeNode(Node):
         action_str = "".join(action_chain)
 
         if self.step_count % 50 == 0 or action != action_mod or raw_action_from_policy != action:
+            mapped_tag = (
+                f" · mapped {self._last_mapped:.3f}"
+                if self.am_adapter is not None else ""
+            )
             self.get_logger().info(
                 f"step {self.step_count} · action {action_str}{escape_tag} · "
                 f"mode {mode.value} (v={cfg.linear_speed:.2f}m/s wt={cfg.wall_threshold:.2f}m) · "
-                f"coverage {cov:.3f} · escape_total={self.stuck_detector.escape_count_total}"
+                f"coverage {cov:.3f}{mapped_tag} · escape_total={self.stuck_detector.escape_count_total}"
             )
+
+    def _publish_occupancy(self) -> None:
+        """Occupancy для GIF/трека — Блок 2: DISPLAY-карта (дорисованная),
+        не parity. Модель parity не теряет (она в am_adapter, отдельно)."""
+        occ = (
+            self._last_display
+            if self._last_display is not None
+            else self.am_adapter.builder.occ
+        )
+        msg = OccupancyGrid()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "map"
+        msg.info.resolution = self.cell_size
+        msg.info.width = occ.shape[1]
+        msg.info.height = occ.shape[0]
+        msg.info.origin.position.x = -self.room_x / 2.0
+        msg.info.origin.position.y = -self.room_y / 2.0
+        msg.info.origin.orientation.w = 1.0
+        # UNKNOWN(0)→-1, FREE(1)→0, OCCUPIED(2)→100
+        lut = np.array([-1, 0, 100], dtype=np.int8)
+        msg.data = lut[occ].flatten().tolist()
+        self.occupancy_pub.publish(msg)
 
     def _publish_visited_grid(self, grid: np.ndarray) -> None:
         """Отправляет grid как OccupancyGrid для Foxglove визуализации."""
@@ -530,11 +985,11 @@ class PolicyBridgeNode(Node):
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "map"
         msg.info.resolution = self.cell_size
-        msg.info.width = self.grid_size
-        msg.info.height = self.grid_size
+        msg.info.width = self.nx
+        msg.info.height = self.ny
         # Origin = SW corner мира.
-        msg.info.origin.position.x = -self.room_size / 2.0
-        msg.info.origin.position.y = -self.room_size / 2.0
+        msg.info.origin.position.x = -self.room_x / 2.0
+        msg.info.origin.position.y = -self.room_y / 2.0
         msg.info.origin.orientation.w = 1.0
         # OccupancyGrid expects int8 -1/0/100. Visited=100, unvisited=0.
         data = (grid * 100).astype(np.int8).flatten().tolist()

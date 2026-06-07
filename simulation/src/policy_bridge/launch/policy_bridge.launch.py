@@ -32,7 +32,9 @@ DRONE_MEDIA_ROOT = os.environ.get("DRONE_MEDIA_ROOT", "/data/drone_media")
 
 SIMULATION_ROOT = f"{AEROSEARCH_ROOT}/claudedrone-git/simulation"
 VENV_PYTHON = f"{SIMULATION_ROOT}/.venv-policy/bin/python3"
-DEFAULT_MODEL = f"{RL_LAB_ROOT}/export/sweep02/model.zip"
+# v1.5c deploy (2026-06-07): default = ActiveMapping-v1 (md5 7bd62e23).
+# SWEEP-02 — явными аргументами model_path + model_family:=sweep02.
+DEFAULT_MODEL = f"{RL_LAB_ROOT}/export/activemapping_v1/model.zip"
 DEFAULT_ROSBAG_DIR = f"{DRONE_MEDIA_ROOT}/sim/bags/model-to-sim"
 
 
@@ -40,11 +42,47 @@ def generate_launch_description() -> LaunchDescription:
     args = [
         DeclareLaunchArgument(
             "model_path", default_value=DEFAULT_MODEL,
-            description="Путь к SB3 PPO model.zip (canonical SWEEP-02 seed22).",
+            description="Путь к SB3 model.zip. Default = ActiveMapping-v1 "
+                        "(MaskablePPO, md5 7bd62e23). Для SWEEP-02 передай "
+                        "путь + model_family:=sweep02 ЯВНО.",
+        ),
+        DeclareLaunchArgument(
+            "model_family", default_value="activemapping",
+            description="sweep02 (PPO Dict obs) | activemapping (MaskablePPO "
+                        "Box(21,) + occupancy/frontier + ОБЯЗАТЕЛЬНЫЙ "
+                        "action_masks). AM форсирует mode=rl_only.",
+        ),
+        DeclareLaunchArgument(
+            "deterministic", default_value="true",
+            description="predict(deterministic=...). AM eval-эталоны rl-lab "
+                        "сняты на true; SWEEP-02 исторически летал false.",
+        ),
+        DeclareLaunchArgument(
+            "stuck_escape", default_value="auto",
+            description="StuckDetector escape-инъекции: auto (=только sweep02) "
+                        "| on | off. Для AM выключено — меряем модель.",
+        ),
+        # Блок Б (2026-06-07): per-world геометрия из config/worlds.yaml.
+        DeclareLaunchArgument(
+            "world_name",
+            default_value=os.environ.get("DEFAULT_WORLD", ""),
+            description="Имя мира — ключ в worlds.yaml (обязан существовать, "
+                        "fail-fast). Default из env DEFAULT_WORLD.",
+        ),
+        DeclareLaunchArgument(
+            "worlds_config", default_value="auto",
+            description="Путь к worlds.yaml; auto = "
+                        "src/policy_bridge/config/worlds.yaml.",
+        ),
+        DeclareLaunchArgument(
+            "mapped_success_threshold", default_value="0.95",
+            description="AM: mapped_ratio ≥ этого → эпизод завершён (env "
+                        "терминирует на coverage>95%), bridge hover.",
         ),
         DeclareLaunchArgument(
             "room_size", default_value="6.4",
-            description="Длина стороны bbox мира в метрах (rl_room_* = 6.4).",
+            description="LEGACY (Блок Б): информационный — worlds.yaml "
+                        "выигрывает, расхождение = warn в логе ноды.",
         ),
         DeclareLaunchArgument(
             "cell_size", default_value="0.1",
@@ -112,6 +150,20 @@ def generate_launch_description() -> LaunchDescription:
             "perimeter_laps", default_value="1",
             description="Сколько кругов wall_follow перед switch к RL phase.",
         ),
+        # v2 fix (2026-06-06): obs_builder по умолчанию слушал "/joint_state",
+        # но ros_gz_bridge публикует /world/<world>/model/iris_claudedrone/joint_state
+        # (см. drone.launch.py gz_bridge args). Override сюда никогда не передавался →
+        # servo_angle в obs был вечным 0.0 — модель не знала, куда смотрит
+        # sweep-дальномер (distances[6]). Default резолвим из DEFAULT_WORLD тем же
+        # механизмом, что world в drone.launch.py.
+        DeclareLaunchArgument(
+            "joint_state_topic",
+            default_value=(
+                f"/world/{os.environ.get('DEFAULT_WORLD', 'indoor_room')}"
+                "/model/iris_claudedrone/joint_state"
+            ),
+            description="JointState topic от ros_gz_bridge для servo_angle obs.",
+        ),
     ]
 
     # ExecuteProcess вместо Node т.к. требуется dedicated isolated venv python
@@ -128,6 +180,13 @@ def generate_launch_description() -> LaunchDescription:
             "-m", "policy_bridge.policy_bridge_node",
             "--ros-args",
             "-p", ["model_path:=", LaunchConfiguration("model_path")],
+            "-p", ["model_family:=", LaunchConfiguration("model_family")],
+            "-p", ["world_name:=", LaunchConfiguration("world_name")],
+            "-p", ["worlds_config:=", LaunchConfiguration("worlds_config")],
+            "-p", ["mapped_success_threshold:=",
+                   LaunchConfiguration("mapped_success_threshold")],
+            "-p", ["deterministic:=", LaunchConfiguration("deterministic")],
+            "-p", ["stuck_escape:=", LaunchConfiguration("stuck_escape")],
             "-p", ["room_size:=", LaunchConfiguration("room_size")],
             "-p", ["cell_size:=", LaunchConfiguration("cell_size")],
             "-p", ["wall_threshold:=", LaunchConfiguration("wall_threshold")],
@@ -142,6 +201,7 @@ def generate_launch_description() -> LaunchDescription:
             "-p", ["mode:=", LaunchConfiguration("mode")],
             "-p", ["wall_distance:=", LaunchConfiguration("wall_distance")],
             "-p", ["perimeter_laps:=", LaunchConfiguration("perimeter_laps")],
+            "-p", ["joint_state_topic:=", LaunchConfiguration("joint_state_topic")],
         ],
         output="screen",
         emulate_tty=True,

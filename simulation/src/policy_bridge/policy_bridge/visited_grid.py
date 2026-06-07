@@ -26,12 +26,24 @@ class VisitedGridBuilder:
         room_size_m: float = 6.4,
         cell_size_m: float = 0.1,
         grid_size: int = 64,
+        *,
+        # Блок Б (2026-06-07): прямоугольные миры (indoor_room 16×10).
+        # None → квадрат room_size_m/grid_size (legacy-вызовы, rl_rooms).
+        room_x_m: float | None = None,
+        room_y_m: float | None = None,
+        nx: int | None = None,
+        ny: int | None = None,
     ) -> None:
         self.room_size_m = float(room_size_m)
         self.cell_size_m = float(cell_size_m)
         self.grid_size = int(grid_size)
-        self._half = self.room_size_m / 2.0
-        self._grid = np.zeros((self.grid_size, self.grid_size), dtype=np.float32)
+        self.room_x_m = float(room_x_m if room_x_m is not None else room_size_m)
+        self.room_y_m = float(room_y_m if room_y_m is not None else room_size_m)
+        self.nx = int(nx if nx is not None else grid_size)
+        self.ny = int(ny if ny is not None else grid_size)
+        self._half_x = self.room_x_m / 2.0
+        self._half_y = self.room_y_m / 2.0
+        self._grid = np.zeros((self.ny, self.nx), dtype=np.float32)
 
     def reset(self, *, initial_xy_m: tuple[float, float] | None = None) -> None:
         self._grid.fill(0.0)
@@ -40,12 +52,12 @@ class VisitedGridBuilder:
 
     def update(self, x_m: float, y_m: float) -> tuple[int, int] | None:
         """Mark cell containing (x_m, y_m). Returns (iy, ix) if in bounds, else None."""
-        x_offset = x_m + self._half
-        y_offset = y_m + self._half
+        x_offset = x_m + self._half_x
+        y_offset = y_m + self._half_y
         # int(...) — truncation, same as 2D env Drone2DEnv.
         ix = int(x_offset / self.cell_size_m)
         iy = int(y_offset / self.cell_size_m)
-        if 0 <= ix < self.grid_size and 0 <= iy < self.grid_size:
+        if 0 <= ix < self.nx and 0 <= iy < self.ny:
             self._grid[iy, ix] = 1.0
             return iy, ix
         return None

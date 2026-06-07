@@ -37,10 +37,22 @@ def generate_launch_description():
     )
     launch_gz = LaunchConfiguration('launch_gz')
 
+    # v2 Block 2 (2026-06-06): для RL-ранов autoscan:=false ОБЯЗАТЕЛЕН.
+    # autoscan каждые cooldown_s триггерит sweep_node, который гоняет серву
+    # 0→π — а в тренировке серву двигает ТОЛЬКО action 6 шагами 30°.
+    # Параллельные sweep'ы делают servo_angle/distances[6] в obs бессмысленными.
+    autoscan_arg = DeclareLaunchArgument(
+        'autoscan',
+        default_value='true',
+        description='Автотриггер sweep циклов. false для policy_bridge RL-ранов (серва — у action 6).',
+    )
+    autoscan = LaunchConfiguration('autoscan')
+
     return LaunchDescription([
 
         sweep_storage_arg,
         launch_gz_arg,
+        autoscan_arg,
 
         # Запускаем Gazebo (только если launch_gz:=true — backward compat для standalone)
         ExecuteProcess(
@@ -91,25 +103,45 @@ def generate_launch_description():
             }],
             condition=IfCondition(sweep_storage),
         ),
-        # Autoscan — независимый триггер sweep'ов с cooldown
+        # Autoscan — независимый триггер sweep'ов с cooldown.
+        # Отключаем для RL-ранов (autoscan:=false): серва принадлежит action 6.
         Node(
             package='drone_sim',
             executable='autoscan',
             name='autoscan_node',
-            output='screen'
+            output='screen',
+            condition=IfCondition(autoscan),
         ),
         # Safety guard — TOF-уровневая аварийная остановка (TASK-059 attempt #4).
         # Independent reactive layer ниже policy_bridge: если ANY VL53L0X/sweep
         # читает < 0.5 м, publish zero Twist на /mavros/setpoint_velocity/cmd_vel_unstamped
         # на 50 Hz (выше bridge inner loop 20 Hz) → bridge'овы non-zero Twist'ы
         # overwritten last-write-wins → drone hovers in place до уезда из safety zone.
+        # v2 fix (2026-06-06): параметр назывался 'stop_threshold' — нода такого
+        # не объявляет (safety_guard.py: 'stop_threshold_floor'), значение молча
+        # игнорировалось и реально действовал дефолт 0.8 м.
+        # v2 run E (2026-06-07): floor 0.8 → 0.5 (кольцо 0.8м = 44% комнаты).
+        # v2 run F (решение Aleks 08:26): 0.5 → 0.4 — ⚠ SIM-ONLY. Wall effect
+        # в Gazebo без спецплагина не моделируется; для реального железа
+        # минимальный клиренс считается ЗАНОВО по диаметру пропа и diagonal
+        # frame. Ниже 0.4 не идти: near-wall states за пределами надёжного
+        # переноса модели без дообучения. Cap покрытия при 0.4 ≈ 0.76.
+        # v2 run F checklist #1 (2026-06-07): 0.4 → 0.45 — на floor 0.4 guard
+        # стрелял 11 раз/18 шагов по oblique vl[5]≈0.395-0.400 (action7
+        # tug-of-war на границе). Когерентный сет: gate 0.55, wt 0.70.
+        # v2 run H (решение Aleks после вердикта G): 0.45 → 0.40 НАЗАД.
+        # Ран G (carrot, 0 таймаутов): 135/135 триггеров в полосе
+        # 0.437-0.450 — margin (0.45) == floor (0.45), дрон паркуется на
+        # линии триггера, guard 10.1 с/мин. Фикс: буфер margin−floor=0.05
+        # (дефицит oblique 0.004-0.013, запас ×4); margin/gate/wt НЕ трогать
+        # (0.45/0.55/0.70). Cap покрытия возвращается к ~0.76.
         Node(
             package='drone_sim',
             executable='safety_guard',
             name='safety_guard',
             output='screen',
             parameters=[{
-                'stop_threshold': 0.5,
+                'stop_threshold_floor': 0.40,
                 'check_rate_hz': 50.0,
             }],
         ),

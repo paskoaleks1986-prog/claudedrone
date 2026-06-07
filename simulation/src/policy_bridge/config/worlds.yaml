@@ -1,0 +1,29 @@
+# worlds.yaml — per-world геометрия bridge (Блок Б, директива Aleks 2026-06-07).
+#
+# Источник истины для room_size: SDF мира (bbox стен). Bridge выбирает запись
+# по имени мира (launch arg world_name / env DEFAULT_WORLD). Мир без записи =
+# fail-fast при старте ноды: КАЖДЫЙ летаемый мир обязан быть здесь осознанно
+# (конфиги на особом контроле — никаких тихих дефолтов).
+#
+# Поля:
+#   room_size: [x_m, y_m] — габариты комнаты (внешний bbox стен), origin центр
+#   grid_resolution: м/клетку (0.1 — канон протокола; другое значение = WARN:
+#                    модели обучены на 0.1)
+#
+# ⚠ Модельный obs-контракт ActiveMapping-v1 (64×64 @ 0.1) НЕ растягивается:
+# в мирах больше 6.4×6.4 модель работает OOD (bridge предупреждает в логе).
+# Per-world задаётся ГЕОМЕТРИЯ bridge: safe-box, visited/coverage/occupancy гриды.
+
+worlds:
+  rl_room_empty_6x6:
+    room_size: [6.4, 6.4]      # SDF: интерьер 6.2, bbox стен 6.4 — грид-канон rl_rooms
+    grid_resolution: 0.1
+  rl_room_pillar_center:
+    room_size: [6.4, 6.4]
+    grid_resolution: 0.1
+  rl_room_two_chambers:
+    room_size: [6.4, 6.4]
+    grid_resolution: 0.1
+  indoor_room:
+    room_size: [16.0, 10.0]    # измерено по SDF 2026-06-07: bbox x ±8.0, y ±5.0 (стены 0.15)
+    grid_resolution: 0.1

@@ -1073,8 +1073,14 @@
       </collision>
     </link>
 
+    <!-- v2 Block 3.1 (2026-06-06, obs_parity_check.py): yaw −π/2 на arm pose.
+         Было: joint 0 → луч вперёд, π → назад-через-лево (beam = heading+joint).
+         Тренировка (envs/sensors.py): beam = heading + (servo − 90°), т.е.
+         servo 90° = вперёд, диапазон право→перёд→лево. Сдвиг 90° ломал
+         distances[6] численно (Δtf=0.66 систематический при servo=90°).
+         Теперь joint-угол == env-servo: 0 → −90° (право), π/2 → перёд, π → +90°. -->
     <link name="sg90_arm">
-      <pose>0 0 0.146 0 0 0</pose>
+      <pose>0 0 0.146 0 0 -1.5708</pose>
       <inertial>
         <mass>0.001</mass>
         <inertia>
@@ -1123,8 +1129,9 @@
       </visual>
 
       <!-- TF-Luna sweep-сенсор. Топик /scan/sweep по acceptance.
-           Луч направлен по +X руки (горизонтально) — при servo=0
-           смотрит вперёд дрона, при servo=π — назад через левую сторону. -->
+           Луч направлен по +X руки (горизонтально). После v2 Block 3.1
+           (yaw −π/2 на arm): servo=0 → право (−90°), π/2 → вперёд,
+           π → лево (+90°) — как в тренировочном env. -->
       <sensor name="tf_luna_sweep" type="gpu_lidar">
         <pose>0.025 0 0.005 0 0 0</pose>
         <topic>/scan/sweep</topic>

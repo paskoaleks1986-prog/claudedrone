@@ -37,12 +37,20 @@ STUCK_TRIGGER_COUNT = 3       # 3 windows × 15 steps = 45 steps stall trigger
 POSE_HISTORY_LEN = 20         # последние 20 step poses
 POSE_VARIANCE_THRESHOLD = 0.25  # (max-min)² + (max-min)² < 0.25 → quadrat 0.5×0.5m
 
-# Option C (sim attempt #10 @04:16): action-monotony detection — 3rd trigger.
-# Attempt #10 showed policy emit'ит ONLY action 7 (49/49 steps) — never rotates,
-# never scans. Pose-variance не катит т.к. drone двигается линейно (variance > thr).
-# Если 10+ steps подряд same action → assume policy stuck в monomaniacal mode.
-ACTION_MONOTONY_LEN = 10       # последние N actions
-ACTION_MONOTONY_THRESHOLD = 1  # 1 unique action в window = stuck
+# Option C (attempt #10) action-monotony — УБРАН как триггер (v2 night watch,
+# 2026-06-07, ресёрч RANT/active-mapping): native-профиль политики = rot 83% +
+# action7 14%, длинные стрики одного действия — ЛЕГИТИМНОЕ поведение. Детектить
+# stuck по action stream — анти-паттерн; только по environment state.
+# Заменён AND-гейтом ниже: нет физического прогресса И нет coverage-прогресса.
+ACTION_MONOTONY_LEN = 10       # длина окна — оставлена для лога (не триггер)
+
+# v2 AND-gate (короткое окно): escape ТОЛЬКО если за окно одновременно
+#   XY-смещение < GATE_XY_DISP_M  И  yaw-размах < GATE_YAW_RANGE_DEG
+#   И coverage-приращение < coverage_epsilon.
+# Вращение на месте с новым покрытием/сменой курса гейт проходит свободно.
+STUCK_GATE_WINDOW = 12
+GATE_XY_DISP_M = 0.3
+GATE_YAW_RANGE_DEG = 20.0
 
 # Escape v2 params
 MIN_FEASIBLE_M = 0.5          # direction blocked if sensor dist < this
@@ -171,7 +179,10 @@ class StuckDetector:
         self._stuck_window_count = 0
         self._steps_since_last_eval = 0  # C2
         # Option B (Aleks @03:50): pose-variance — independent stuck signal
-        self._pose_history: deque[tuple[float, float]] = deque(maxlen=POSE_HISTORY_LEN)
+        # v2: (x, y, yaw) — yaw нужен AND-гейту (yaw-размах = признак активности)
+        self._pose_history: deque[tuple[float, float, float]] = deque(
+            maxlen=POSE_HISTORY_LEN
+        )
         # Option C (attempt #10): action-monotony — policy emit same action repeatedly
         self._action_history: deque[int] = deque(maxlen=ACTION_MONOTONY_LEN)
 
@@ -223,14 +234,12 @@ class StuckDetector:
         """
         self._coverage_history.append(coverage)
         self._steps_since_last_eval += 1
-        self._pose_history.append((pose_x_m, pose_y_m))
+        self._pose_history.append((pose_x_m, pose_y_m, heading_rad))
         self._action_history.append(raw_action)
 
         # Detection (only when not already escaping)
         if not self.escape_active:
             coverage_stuck = False
-            pose_stuck = False
-            action_stuck = False
 
             # Window-based coverage check (C2)
             if (
@@ -247,35 +256,57 @@ class StuckDetector:
                 if self._stuck_window_count >= self.stuck_trigger_count:
                     coverage_stuck = True
 
-            # Pose-variance check (Option B)
-            variance = 0.0
-            if len(self._pose_history) >= POSE_HISTORY_LEN:
-                xs = [p[0] for p in self._pose_history]
-                ys = [p[1] for p in self._pose_history]
-                variance = (max(xs) - min(xs)) ** 2 + (max(ys) - min(ys)) ** 2
-                if variance < POSE_VARIANCE_THRESHOLD:
-                    pose_stuck = True
+            # v2 AND-gate (ресёрч RANT / active-mapping, night watch 2026-06-07):
+            # настоящий stuck = НЕТ физического прогресса И НЕТ coverage-прогресса
+            # за одно короткое окно. Action stream — НЕ сигнал (rotate-стрики
+            # легитимны: native-профиль политики rot 83%). Старые OR-триггеры
+            # pose-variance / action-monomania воевали с политикой (15 вмеш./100
+            # шагов на ране v2block31 при цели ≤3).
+            gate_stuck = False
+            xy_disp = yaw_range_deg = cov_delta = 0.0
+            if len(self._pose_history) >= STUCK_GATE_WINDOW:
+                recent_p = list(self._pose_history)[-STUCK_GATE_WINDOW:]
+                xs = [p[0] for p in recent_p]
+                ys = [p[1] for p in recent_p]
+                yaws = [p[2] for p in recent_p]
+                xy_disp = math.hypot(max(xs) - min(xs), max(ys) - min(ys))
+                # yaw-размах через unwrap (переход ±π не должен выглядеть огромным)
+                yaw_unwrapped = [yaws[0]]
+                for y in yaws[1:]:
+                    d = y - yaw_unwrapped[-1]
+                    while d > math.pi:
+                        d -= 2 * math.pi
+                    while d < -math.pi:
+                        d += 2 * math.pi
+                    yaw_unwrapped.append(yaw_unwrapped[-1] + d)
+                yaw_range_deg = math.degrees(max(yaw_unwrapped) - min(yaw_unwrapped))
+                recent_c = list(self._coverage_history)[-STUCK_GATE_WINDOW:]
+                cov_delta = (max(recent_c) - min(recent_c)) if recent_c else 0.0
+                if (
+                    xy_disp < GATE_XY_DISP_M
+                    and yaw_range_deg < GATE_YAW_RANGE_DEG
+                    and cov_delta < self.coverage_epsilon
+                ):
+                    gate_stuck = True
 
-            # Action-monotony check (Option C, attempt #10): policy emit same action
-            # repeatedly = monomaniacal mode (e.g. action 7 forever). Force escape
-            # to diversify behavior.
-            unique_actions = 0
-            if len(self._action_history) >= ACTION_MONOTONY_LEN:
-                unique_actions = len(set(self._action_history))
-                if unique_actions <= ACTION_MONOTONY_THRESHOLD:
-                    action_stuck = True
+            # Лог монотонии оставляем для диагностики (триггером не является)
+            unique_actions = (
+                len(set(self._action_history))
+                if len(self._action_history) >= ACTION_MONOTONY_LEN else 0
+            )
 
-            if coverage_stuck or pose_stuck or action_stuck:
+            if coverage_stuck or gate_stuck:
                 if node_logger is not None:
                     reason = []
                     if coverage_stuck:
                         reason.append(f"COVERAGE stuck ({self._stuck_window_count} windows)")
-                    if pose_stuck:
-                        reason.append(f"POSE variance={variance:.3f}<{POSE_VARIANCE_THRESHOLD}")
-                    if action_stuck:
+                    if gate_stuck:
                         reason.append(
-                            f"ACTION monomania ({unique_actions} unique in {ACTION_MONOTONY_LEN})"
+                            f"GATE: disp={xy_disp:.2f}m yaw={yaw_range_deg:.0f}° "
+                            f"Δcov={cov_delta:.4f} за {STUCK_GATE_WINDOW} шагов"
                         )
+                    if unique_actions == 1:
+                        reason.append("(monomania observed, не триггер)")
                     node_logger.warn(f"🆘 STUCK TRIGGER: {', '.join(reason)} → escape")
                 self._enter_escape(
                     distances_m, visited_grid, pos_ix, pos_iy, heading_rad, node_logger

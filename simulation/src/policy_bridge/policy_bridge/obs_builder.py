@@ -41,6 +41,9 @@ from nav_msgs.msg import Odometry
 
 VL_MAX_RANGE_M = 1.2
 TF_SWEEP_MAX_RANGE_M = 6.4
+# v2 Block 3.1: радиус посадки VL53L0X на лучах рамы (model.sdf sensor poses).
+# Используется ТОЛЬКО для obs-нормализации (центр-референс как в env).
+VL_MOUNT_RADIUS_M = 0.1
 SERVO_MAX_RAD = math.pi
 
 
@@ -49,6 +52,9 @@ class Pose2D:
     x_m: float = 0.0
     y_m: float = 0.0
     heading_rad: float = 0.0
+    # run F fix (в) 2026-06-07: фактический hover z для z-capture at release.
+    # В obs НЕ входит — только для initialize_target (Z-coupling RCA).
+    z_m: float = 0.0
 
 
 class ObsBuilder:
@@ -69,12 +75,20 @@ class ObsBuilder:
         self.sg90_joint_name = sg90_joint_name
 
         # Default = max range = "no obstacle" (нормализованное 1.0 для VL/TF).
-        # servo_angle default = 0 (servo при reset env'а — 90°deg = π/2 rad = norm 0.5),
-        # но без observation просто оставляем 0 чтобы predict работал детерминистично.
+        # servo_angle default = 0.5 — env reset ставит servo 90° (norm 0.5),
+        # v2 Block 2: раньше было 0.0, что противоречило старту эпизода тренировки.
         self._perimeter_norm = np.full(6, 1.0, dtype=np.float32)
+        self._perimeter_raw_m = np.full(6, VL_MAX_RANGE_M, dtype=np.float32)
         self._sweep_norm = 1.0
-        self._servo_angle_norm = 0.0
+        self._servo_angle_norm = 0.5
+        # v2 Block 2: предпочтительный источник servo_angle — commanded angle от
+        # ActionExecutor (set_servo_angle_source). В тренировке servo-динамики нет:
+        # commanded == actual мгновенно, а после scan_hover 0.5s реальная серва
+        # доехала. Это убирает 1 kHz JointState churn (gz шлёт ~966 Hz) из
+        # inference-процесса. JointState остаётся fallback'ом.
+        self._servo_angle_fn = None
         self._pose = Pose2D()
+        self._speed_m_s = 0.0
         self._latest_perimeter_stamp = 0.0
         self._latest_sweep_stamp = 0.0
         self._latest_odom_stamp = 0.0
@@ -100,15 +114,27 @@ class ObsBuilder:
         if len(msg.data) < 6:
             return
         raw = np.array(msg.data[:6], dtype=np.float32)
-        self._perimeter_norm = np.clip(raw, 0.0, VL_MAX_RANGE_M) / VL_MAX_RANGE_M
+        # v2 Block 3.1 (obs parity): env рейкастит из ЦЕНТРА дрона, а VL-сенсоры
+        # в SDF сидят на радиусе 0.1 м (model.sdf poses) — численно ловилось как
+        # систематический Δ≈0.08-0.18 на каналах у стен. Для obs (взгляд модели)
+        # центр-референсим: + mount radius. perimeter_distances_m (safety/gate/WF)
+        # остаётся сырым sensor-frame — для коллизий важна дистанция от корпуса.
+        centered = raw + VL_MOUNT_RADIUS_M
+        self._perimeter_norm = np.clip(centered, 0.0, VL_MAX_RANGE_M) / VL_MAX_RANGE_M
+        self._perimeter_raw_m = raw
         self._latest_perimeter_stamp = self.node.get_clock().now().nanoseconds * 1e-9
 
     def _sweep_cb(self, msg: LaserScan) -> None:
         if not msg.ranges:
             return
         raw = float(msg.ranges[0])
+        # v2 night watch (2026-06-07): inf = «нет препятствия» → cap на MAX,
+        # НЕ drop callback (то же правило, что TASK-059 #5 в sensor_monitor).
+        # Drop оставлял старое значение + замораживал stamp → freshness-гейт
+        # блокировал predict навсегда (ран B: sweep stale 954s, 9251 скипов).
+        # Диагональ комнаты 8.7м > 6.4м диапазона — inf это ШТАТНОЕ чтение.
         if not math.isfinite(raw):
-            return
+            raw = TF_SWEEP_MAX_RANGE_M
         clipped = max(0.0, min(raw, TF_SWEEP_MAX_RANGE_M))
         self._sweep_norm = clipped / TF_SWEEP_MAX_RANGE_M
         self._latest_sweep_stamp = self.node.get_clock().now().nanoseconds * 1e-9
@@ -127,12 +153,17 @@ class ObsBuilder:
     def _odom_cb(self, msg: Odometry) -> None:
         p = msg.pose.pose.position
         q = msg.pose.pose.orientation
+        # v2 run F: |v| горизонтальная для velocity-gated arrival
+        tw = msg.twist.twist.linear
+        self._speed_m_s = math.hypot(tw.x, tw.y)
         # Yaw from quaternion (ZYX intrinsic — стандарт для MAVROS map frame).
         yaw = math.atan2(
             2.0 * (q.w * q.z + q.x * q.y),
             1.0 - 2.0 * (q.y * q.y + q.z * q.z),
         )
-        self._pose = Pose2D(x_m=float(p.x), y_m=float(p.y), heading_rad=yaw)
+        self._pose = Pose2D(
+            x_m=float(p.x), y_m=float(p.y), heading_rad=yaw, z_m=float(p.z)
+        )
         self._latest_odom_stamp = self.node.get_clock().now().nanoseconds * 1e-9
 
     # ---- public API ---------------------------------------------------------
@@ -143,18 +174,24 @@ class ObsBuilder:
 
     @property
     def front_distance_m(self) -> float:
-        """Action 7 stop check — VL53L0X[0] (forward) raw meters."""
-        return float(self._perimeter_norm[0]) * VL_MAX_RANGE_M
+        """Action 7 stop check — VL53L0X[0] (forward) raw sensor-frame meters."""
+        return float(self._perimeter_raw_m[0])
 
     @property
     def perimeter_distances_m(self) -> list[float]:
-        """Все 6 VL53L0X raw meters (denormalized) — для AdaptiveSpeedController."""
-        return [float(p) * VL_MAX_RANGE_M for p in self._perimeter_norm]
+        """Все 6 VL53L0X raw sensor-frame meters — для control-слоёв
+        (AdaptiveSpeed/gate/WF). НЕ центр-референсные (см. _perimeter_cb)."""
+        return [float(p) for p in self._perimeter_raw_m]
 
     @property
     def sweep_distance_m(self) -> float:
         """TF-Luna sweep raw meters (denormalized)."""
         return float(self._sweep_norm) * TF_SWEEP_MAX_RANGE_M
+
+    @property
+    def speed_m_s(self) -> float:
+        """v2 run F: |v| горизонтальная из odom twist (velocity-gated arrival)."""
+        return self._speed_m_s
 
     @property
     def has_received_odom(self) -> bool:
@@ -170,11 +207,18 @@ class ObsBuilder:
             "odom": now_s - self._latest_odom_stamp,
         }
 
+    def set_servo_angle_source(self, fn) -> None:
+        """v2 Block 2: установить commanded-angle источник (executor.servo_deg,
+        градусы [0,180)). Приоритетнее JointState callback'а."""
+        self._servo_angle_fn = fn
+
     def build_obs(self, visited_grid: np.ndarray) -> dict[str, np.ndarray]:
         """Compose Dict obs ready for PPO.predict.
 
         visited_grid: (64,64) float32 from VisitedGridBuilder.
         """
+        if self._servo_angle_fn is not None:
+            self._servo_angle_norm = float(self._servo_angle_fn()) / 180.0
         distances = np.empty(7, dtype=np.float32)
         distances[:6] = self._perimeter_norm
         distances[6] = self._sweep_norm

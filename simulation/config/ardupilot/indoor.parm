@@ -5,6 +5,13 @@
 # stays false -> reload_defaults_file fires every param load = crash loop,
 # no MAVLink heartbeat. See docs/dev-log/05-indoor-parm-cyrillic-loop.md.
 
+# AUDITED 2026-06-07 for ArduCopter 4.8.0-dev (416146b4) param renames.
+# 4.8-dev silently IGNORES unknown names (no warning in SITL log!).
+# Renames are metric: WPNAV_SPEED(cm/s)->WP_SPD(m/s), PSC_VELZ_P->PSC_D_VEL_P,
+# PILOT_ACCEL_Z(cm/s/s)->PILOT_ACC_Z(m/s/s), ATC_ACCEL_Y_MAX(cdeg)->
+# ATC_ACC_Y_MAX(deg). Verify any new name first:
+#   ros2 param list /mavros/param | grep NAME
+
 # GPS enabled for SITL fake GPS (origin auto-set, position control works).
 # Real hardware future: disable to use optflow only.
 GPS1_TYPE 1
@@ -30,22 +37,39 @@ FENCE_ACTION 4
 # Disable battery monitor (sim has no battery)
 BATT_MONITOR 0
 
-# Baseline pre-session.
-WPNAV_ACCEL 50
-# Attempt #19 RCA (2026-05-20): WPNAV_SPEED 30 (30 cm/s) was OK, but
-# combined with 45 deg ANGLE_MAX (ATC_ANGLE_MAX 4500) drone lost 0.28 m
-# of altitude per 1 m XY move. Lock WPNAV to 20 cm/s + ANGLE_MAX 15 deg.
-WPNAV_SPEED 20
-PILOT_ACCEL_Z 100
+# Run F RCA (2026-06-07): old WPNAV_SPEED 20 / WPNAV_ACCEL 50 lines were
+# dead names on 4.8-dev (WP_SPD=10 default acted). XY speed is now governed
+# by the bridge carrot stream (action_executor, plan (a)) on the PSC path
+# (GUID_OPTIONS 0 below), so WP_SPD/WP_ACC stay at defaults on purpose.
+# Do NOT re-add a WP_SPD cap: carrot enforces mode linear_speed.
+
+# Attempt #19 RCA (2026-05-20): 45 deg ANGLE_MAX lost 0.28 m altitude
+# per 1 m XY move. Keep 15 deg.
 ATC_ANGLE_MAX 15
 
-# Boost z velocity P gain для faster recovery от tilt-induced altitude loss.
-# Default 5.0, doubled to 10.0 после attempt #19 diagnostic.
-PSC_VELZ_P 10.0
+# Pilot vertical accel: old PILOT_ACCEL_Z 100 cm/s/s -> 1.0 m/s/s (4.8 name).
+PILOT_ACC_Z 1.0
+
+# Boost down(z) velocity P gain for faster recovery from tilt-induced
+# altitude loss. Default 5.0, doubled to 10.0 after attempt #19 diagnostic.
+# 4.8 rename: PSC_VELZ_P -> PSC_D_VEL_P (same scale, default 5.0 verified).
+PSC_D_VEL_P 10.0
 
 # DISARM_DELAY 0: cheap insurance against slow setpoint publisher startup.
 DISARM_DELAY 0
 
-# GUID_OPTIONS bit 6 (=64): waypoint nav for position targets in GUIDED.
-# Enables position setpoints to trigger takeoff when drone on ground.
-GUID_OPTIONS 64
+# Run F RCA (2026-06-07): GUID_OPTIONS 64 (UseWPNavForPosControl) +
+# 10 Hz position stream = WPNav S-curve restart every 100 ms -> XY crawl
+# ~0.05 m/s regardless of commanded speed. 0 = native PSC input shaping,
+# built for streamed offboard targets. Live A/B on run F-4: median XY
+# 0.051 -> 0.102, p90 0.156 (= commanded 0.15), arrival timeouts 9..6/100
+# -> 0/110. Takeoff via position setpoint still works (verified F-4).
+GUID_OPTIONS 0
+
+# v2 night watch (2026-06-07): yaw tracked at ~15 deg/s -> rotate actions
+# (15-120 deg) hit 8 s arrival timeouts near walls. In GUIDED yaw runs on
+# the attitude chain (NOT WPNav); ceilings are rate + accel. 90 deg/s +
+# 360 deg/s/s is safe for an indoor small quad SITL.
+ATC_RATE_Y_MAX 90
+# 4.8 rename: ATC_ACCEL_Y_MAX 36000 cdeg/s/s -> ATC_ACC_Y_MAX 360 deg/s/s.
+ATC_ACC_Y_MAX 360
