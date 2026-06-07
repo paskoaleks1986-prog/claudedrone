@@ -32,7 +32,9 @@ DRONE_MEDIA_ROOT = os.environ.get("DRONE_MEDIA_ROOT", "/data/drone_media")
 
 SIMULATION_ROOT = f"{AEROSEARCH_ROOT}/claudedrone-git/simulation"
 VENV_PYTHON = f"{SIMULATION_ROOT}/.venv-policy/bin/python3"
-DEFAULT_MODEL = f"{RL_LAB_ROOT}/export/sweep02/model.zip"
+# v1.5c deploy (2026-06-07): default = ActiveMapping-v1 (md5 7bd62e23).
+# SWEEP-02 — явными аргументами model_path + model_family:=sweep02.
+DEFAULT_MODEL = f"{RL_LAB_ROOT}/export/activemapping_v1/model.zip"
 DEFAULT_ROSBAG_DIR = f"{DRONE_MEDIA_ROOT}/sim/bags/model-to-sim"
 
 
@@ -40,7 +42,25 @@ def generate_launch_description() -> LaunchDescription:
     args = [
         DeclareLaunchArgument(
             "model_path", default_value=DEFAULT_MODEL,
-            description="Путь к SB3 PPO model.zip (canonical SWEEP-02 seed22).",
+            description="Путь к SB3 model.zip. Default = ActiveMapping-v1 "
+                        "(MaskablePPO, md5 7bd62e23). Для SWEEP-02 передай "
+                        "путь + model_family:=sweep02 ЯВНО.",
+        ),
+        DeclareLaunchArgument(
+            "model_family", default_value="activemapping",
+            description="sweep02 (PPO Dict obs) | activemapping (MaskablePPO "
+                        "Box(21,) + occupancy/frontier + ОБЯЗАТЕЛЬНЫЙ "
+                        "action_masks). AM форсирует mode=rl_only.",
+        ),
+        DeclareLaunchArgument(
+            "deterministic", default_value="true",
+            description="predict(deterministic=...). AM eval-эталоны rl-lab "
+                        "сняты на true; SWEEP-02 исторически летал false.",
+        ),
+        DeclareLaunchArgument(
+            "stuck_escape", default_value="auto",
+            description="StuckDetector escape-инъекции: auto (=только sweep02) "
+                        "| on | off. Для AM выключено — меряем модель.",
         ),
         DeclareLaunchArgument(
             "room_size", default_value="6.4",
@@ -142,6 +162,9 @@ def generate_launch_description() -> LaunchDescription:
             "-m", "policy_bridge.policy_bridge_node",
             "--ros-args",
             "-p", ["model_path:=", LaunchConfiguration("model_path")],
+            "-p", ["model_family:=", LaunchConfiguration("model_family")],
+            "-p", ["deterministic:=", LaunchConfiguration("deterministic")],
+            "-p", ["stuck_escape:=", LaunchConfiguration("stuck_escape")],
             "-p", ["room_size:=", LaunchConfiguration("room_size")],
             "-p", ["cell_size:=", LaunchConfiguration("cell_size")],
             "-p", ["wall_threshold:=", LaunchConfiguration("wall_threshold")],

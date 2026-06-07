@@ -36,6 +36,7 @@ from nav_msgs.msg import OccupancyGrid
 from rclpy.qos import QoSProfile, DurabilityPolicy, HistoryPolicy
 
 from policy_bridge.action_gate import gate_blocks, movement_clearance_m
+from policy_bridge.am_adapter import ActiveMappingAdapter
 from policy_bridge.obs_builder import ObsBuilder
 from policy_bridge.visited_grid import VisitedGridBuilder
 from policy_bridge.action_executor import ActionExecutor, InvalidActionError
@@ -82,6 +83,17 @@ PARAM_DEFAULTS: dict[str, object] = {
     # v2 run F (Aleks 08:26): 0.5 (= floor 0.4 + cell). SIM-ONLY клиренс.
     # run F checklist #1 (2026-06-07): floor 0.4 → 0.45 ⇒ gate 0.55.
     "gate_margin_m": 0.55,
+    # v1.5c deploy (2026-06-07): модельная семья.
+    #   sweep02       — legacy PPO Dict obs (distances+servo+visited)
+    #   activemapping — MaskablePPO Box(21,) + occupancy/frontier (AM-v1);
+    #                   predict ОБЯЗАН получать action_masks (F1), mode
+    #                   принудительно rl_only (wall-phase не в тренировке).
+    "model_family": "activemapping",
+    # AM eval-эталоны rl-lab сняты deterministic=True; sweep02 летал False.
+    "deterministic": True,
+    # StuckDetector escape-инъекции: auto = только sweep02 (для AM ломает
+    # распределение — у модели есть frontier obs, меряем ЕЁ поведение).
+    "stuck_escape": "auto",
 }
 
 
@@ -111,6 +123,25 @@ class PolicyBridgeNode(Node):
         # v2 Block 3
         self.gate_margin_m = float(self.get_parameter("gate_margin_m").value)
         self._gate_block_count = 0
+        self._last_mapped = 0.0
+        # v1.5c deploy
+        self.model_family = str(self.get_parameter("model_family").value)
+        if self.model_family not in ("sweep02", "activemapping"):
+            raise ValueError(f"model_family={self.model_family!r} — "
+                             "ожидаю sweep02 | activemapping")
+        self.deterministic = bool(self.get_parameter("deterministic").value)
+        stuck_escape = str(self.get_parameter("stuck_escape").value)
+        if stuck_escape not in ("auto", "on", "off"):
+            raise ValueError(f"stuck_escape={stuck_escape!r} — auto|on|off")
+        self.stuck_enabled = stuck_escape == "on" or (
+            stuck_escape == "auto" and self.model_family == "sweep02"
+        )
+        if self.model_family == "activemapping" and self.mode != "rl_only":
+            self.get_logger().warn(
+                f"model_family=activemapping несовместим с mode={self.mode!r} "
+                "(wall-phase не в тренировке AM-v1) — форсирую rl_only"
+            )
+            self.mode = "rl_only"
 
         self.grid_size = int(round(self.room_size / self.cell_size))
         if self.grid_size != 64:
@@ -143,6 +174,24 @@ class PolicyBridgeNode(Node):
             grid_size=self.grid_size,
         )
         self.coverage = self._build_coverage()
+
+        # ----- ActiveMapping adapter (v1.5c deploy 2026-06-07) -----
+        # Box(21,) obs + occupancy/frontier + action_masks (протокол v1.0).
+        # free_mask ОБЯЗАТЕЛЕН (§5.1 mapped_ratio) — без него fail-fast,
+        # никаких тихих fallback'ов. servo_deg — late-bound c executor'а
+        # (создаётся ниже), вызовы идут только в runtime.
+        self.am_adapter: ActiveMappingAdapter | None = None
+        if self.model_family == "activemapping":
+            self.am_adapter = ActiveMappingAdapter(
+                room_size_m=self.room_size,
+                cell_size_m=self.cell_size,
+                free_mask=self.coverage.free_mask,
+                get_pose=lambda: self.obs_builder.pose,
+                get_vl_raw_m=lambda: self.obs_builder.perimeter_distances_m,
+                get_tf_raw_m=lambda: self.obs_builder.sweep_distance_m,
+                get_servo_deg=lambda: self.executor_act.servo_deg,
+            )
+
         self.executor_act = ActionExecutor(
             self,
             cell_size_m=self.cell_size,
@@ -158,7 +207,9 @@ class PolicyBridgeNode(Node):
             get_yaw_rad=lambda: self.obs_builder.pose.heading_rad,
             # v2 Block 2: training parity — env помечает visited все клетки
             # пройденные за action (включая промежуточные у action 7).
-            visited_update_fn=self.visited.update,
+            # v1.5c: для AM тот же хук дополнительно интегрирует occupancy
+            # при каждой НОВОЙ клетке (§2.5 п.2 — action 7 / translations).
+            visited_update_fn=self._on_pose_update,
             # v2 run F: velocity-gated arrival (Aleks 08:26)
             get_speed_m_s=lambda: self.obs_builder.speed_m_s,
         )
@@ -251,7 +302,16 @@ class PolicyBridgeNode(Node):
 
         # ----- publishers -----
         self.action_pub = self.create_publisher(Int32, "/rl_policy/action", 10)
+        # v1.5c: сырое действие политики ДО stuck/adaptive/gate — для чистого
+        # профиля действий (analyze: частоты 0-7, strafe vs rotate).
+        self.action_raw_pub = self.create_publisher(
+            Int32, "/rl_policy/action_raw", 10
+        )
         self.coverage_pub = self.create_publisher(Float32, "/rl_policy/coverage", 10)
+        # v1.5c: mapped_ratio (§5.1) — собственная метрика модели AM.
+        self.mapped_ratio_pub = self.create_publisher(
+            Float32, "/rl_policy/mapped_ratio", 10
+        )
         self.visited_grid_pub = self.create_publisher(
             OccupancyGrid, "/rl_policy/visited_grid", 10
         )
@@ -261,7 +321,10 @@ class PolicyBridgeNode(Node):
         self.timer = self.create_timer(period_s, self._tick, callback_group=self.timer_cb_group)
 
         self.get_logger().info(
-            f"policy_bridge_node ready · rate={self.rate_hz} Hz · room {self.room_size}×{self.room_size} m · "
+            f"policy_bridge_node ready · family={self.model_family} · "
+            f"mode={self.mode} · deterministic={self.deterministic} · "
+            f"stuck_escape={'on' if self.stuck_enabled else 'off'} · "
+            f"rate={self.rate_hz} Hz · room {self.room_size}×{self.room_size} m · "
             f"defaults linear={self.linear_speed} m/s angular={self.angular_speed} rad/s "
             f"wall_threshold={self.wall_threshold} m"
         )
@@ -278,13 +341,35 @@ class PolicyBridgeNode(Node):
     def _load_model(self):
         if not self.model_path:
             raise RuntimeError("model_path param empty — set it via launch arg.")
-        # Late import чтобы node мог быть импортирован без SB3 (для unit тестов).
-        from stable_baselines3 import PPO
         path = Path(self.model_path)
         if not path.exists():
             raise FileNotFoundError(f"model.zip not found: {path}")
+        # Late imports чтобы node мог быть импортирован без SB3 (unit тесты).
+        if self.model_family == "activemapping":
+            from sb3_contrib import MaskablePPO
+            self.get_logger().info(
+                f"loading MaskablePPO (AM-v1) from {path} (device=cpu, "
+                f"deterministic={self.deterministic})"
+            )
+            model = MaskablePPO.load(str(path), device="cpu")
+            obs_shape = tuple(model.observation_space.shape)
+            if obs_shape != (21,):
+                raise ValueError(
+                    f"model obs space {obs_shape} ≠ (21,) — это не "
+                    "ActiveMapping-v1 модель? Проверь model_path/model_family."
+                )
+            return model
+        from stable_baselines3 import PPO
         self.get_logger().info(f"loading PPO from {path} (device=cpu)")
         return PPO.load(str(path), device="cpu")
+
+    def _on_pose_update(self, x_m: float, y_m: float) -> None:
+        """Hook ActionExecutor'а на каждом poll'е arrival-ожидания (20 Hz):
+        visited (training parity, v2 Block 2) + occupancy при смене клетки
+        (AM, §2.5 п.2)."""
+        self.visited.update(x_m, y_m)
+        if self.am_adapter is not None:
+            self.am_adapter.on_pose_update(x_m, y_m)
 
     def _build_coverage(self) -> Coverage:
         path = self.free_mask_path
@@ -349,6 +434,14 @@ class PolicyBridgeNode(Node):
                 f"/takeoff/ready received — bridge taking over setpoint control "
                 f"at ({pose.x_m:.2f}, {pose.y_m:.2f}, yaw={pose.heading_rad:.2f}rad)"
             )
+            # v1.5c: §2.5 п.3 — начало эпизода: клетка спавна FREE +
+            # первичный взгляд (7 лучей) из hover-позы.
+            if self.am_adapter is not None:
+                self.am_adapter.reset_episode()
+                self.get_logger().info(
+                    "AM adapter: episode reset + первичный взгляд "
+                    f"(integrations={self.am_adapter.integrations})"
+                )
 
     def _tick(self) -> None:
         if self.step_count >= self.max_steps:
@@ -541,9 +634,22 @@ class PolicyBridgeNode(Node):
 
         self.visited.update(pose.x_m, pose.y_m)
 
-        obs = self.obs_builder.build_obs(self.visited.grid)
-        action_arr, _ = self.model.predict(obs, deterministic=False)
+        if self.am_adapter is not None:
+            # v1.5c: §2.5 п.1 — интеграция на step boundary (снапшот obs
+            # ПОСЛЕ завершения предыдущего действия), затем obs+mask одним
+            # BFS-расчётом. predict БЕЗ action_masks запрещён (F1).
+            self.am_adapter.integrate_now()
+            obs, action_mask, mapped = self.am_adapter.snapshot()
+            action_arr, _ = self.model.predict(
+                obs, action_masks=action_mask, deterministic=self.deterministic
+            )
+            self.mapped_ratio_pub.publish(Float32(data=mapped))
+            self._last_mapped = mapped
+        else:
+            obs = self.obs_builder.build_obs(self.visited.grid)
+            action_arr, _ = self.model.predict(obs, deterministic=False)
         raw_action_from_policy = int(action_arr)
+        self.action_raw_pub.publish(Int32(data=raw_action_from_policy))
 
         # TASK-059 attempt #8 escape v2 (rl-lab @03:18): StuckDetector v2 со
         # smart escape — scoring direction via (free_dist + unvisited_in_cone),
@@ -559,18 +665,23 @@ class PolicyBridgeNode(Node):
         pos_iy = max(0, min(pos_iy, self.grid_size - 1))
 
         perimeter_distances = self.obs_builder.perimeter_distances_m
-        action, escape_active = self.stuck_detector.check_v2(
-            coverage=cov_for_stuck,
-            raw_action=raw_action_from_policy,
-            distances_m=perimeter_distances,
-            visited_grid=self.visited.grid,
-            pos_ix=pos_ix,
-            pos_iy=pos_iy,
-            pose_x_m=pose.x_m,
-            pose_y_m=pose.y_m,
-            heading_rad=pose.heading_rad,
-            node_logger=self.get_logger(),
-        )
+        if self.stuck_enabled:
+            action, escape_active = self.stuck_detector.check_v2(
+                coverage=cov_for_stuck,
+                raw_action=raw_action_from_policy,
+                distances_m=perimeter_distances,
+                visited_grid=self.visited.grid,
+                pos_ix=pos_ix,
+                pos_iy=pos_iy,
+                pose_x_m=pose.x_m,
+                pose_y_m=pose.y_m,
+                heading_rad=pose.heading_rad,
+                node_logger=self.get_logger(),
+            )
+        else:
+            # v1.5c AM: escape-инъекции выключены (stuck_escape=auto) —
+            # измеряем поведение модели, не харнесса.
+            action, escape_active = raw_action_from_policy, False
 
         # TASK-059 attempt #5: AdaptiveSpeedController + B2 (rl-lab @03:18):
         # escape_bypass пропускает action 7 degradation чтобы StuckDetector v2
@@ -628,10 +739,14 @@ class PolicyBridgeNode(Node):
         action_str = "".join(action_chain)
 
         if self.step_count % 50 == 0 or action != action_mod or raw_action_from_policy != action:
+            mapped_tag = (
+                f" · mapped {self._last_mapped:.3f}"
+                if self.am_adapter is not None else ""
+            )
             self.get_logger().info(
                 f"step {self.step_count} · action {action_str}{escape_tag} · "
                 f"mode {mode.value} (v={cfg.linear_speed:.2f}m/s wt={cfg.wall_threshold:.2f}m) · "
-                f"coverage {cov:.3f} · escape_total={self.stuck_detector.escape_count_total}"
+                f"coverage {cov:.3f}{mapped_tag} · escape_total={self.stuck_detector.escape_count_total}"
             )
 
     def _publish_visited_grid(self, grid: np.ndarray) -> None:
