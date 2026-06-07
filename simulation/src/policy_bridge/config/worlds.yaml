@@ -31,11 +31,19 @@ worlds:
     room_size: [6.4, 6.4]      # wall_height 4.0 ✓ pillar 1×1×4.0; spawn зона SW
     grid_resolution: 0.1
   rl_room_two_chambers:
-    room_size: [6.4, 6.4]      # wall_height 4.0 ✓; дверь между камерами 1.2 м
+    room_size: [6.4, 6.4]      # wall_height 4.0 ✓
     grid_resolution: 0.1
+    # doorway ИЗМЕРЕН по SDF (audit 2026-06-08): wall_middle_{south,north} pose
+    # y=±1.8, size_y=2.6 → сегменты [-3.1,-0.5] и [0.5,3.1] → зазор [-0.5,0.5] =
+    # 1.0 м (НЕ 1.2 как в прежнем комменте — расхождение doc↔SDF). ⚠ BACKLOG:
+    # 1.0 < N=6 standoff×2 (1.2 м) → центр дрона не пролезает без нарушения
+    # margin → multiroom OOD/eval-просадка. Расширить до ≥1.4 м след. спринт
+    # (изменит train-env → синхронно с rl-lab). СЕЙЧАС SDF НЕ менять.
+    doorway_width: 1.0
   indoor_room:
     # измерено по SDF: bbox x ±8.0, y ±5.0 (стены 0.15). wall_height 3.0→4.0
     # поднято (Alignment Блок 1). multi-room: spawn (-6.5,-3.5) камера 1,
-    # grid_origin = центр bbox (0,0); дверь-проём 3.0 м.
+    # grid_origin = центр bbox (0,0).
     room_size: [16.0, 10.0]
     grid_resolution: 0.1
+    doorway_width: 3.0         # дверь-проём ≥1.4 ✓ (измерено по SDF)

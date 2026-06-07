@@ -103,7 +103,10 @@ def load_world_geometry(config_path: str | Path, world_name: str) -> WorldGeomet
             f"{world_name}: grid_resolution {res!r} — ожидаю число > 0"
         )
 
-    unknown = set(entry) - {"room_size", "grid_resolution"}
+    # doorway_width — информационное поле (audit 2026-06-08), bridge его НЕ
+    # читает (как wall_height живёт в SDF/комментах). В whitelist, чтобы
+    # fail-fast не падал на осознанной аудиторской метрике.
+    unknown = set(entry) - {"room_size", "grid_resolution", "doorway_width"}
     if unknown:
         raise WorldConfigError(
             f"{world_name}: неизвестные ключи {sorted(unknown)} — "
