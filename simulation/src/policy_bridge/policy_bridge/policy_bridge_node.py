@@ -79,9 +79,8 @@ PARAM_DEFAULTS: dict[str, object] = {
     # v2 Block 3 (2026-06-06): ActionGate — шаг 0-3, который закончится ближе
     # этого к препятствию, отклоняется до исполнения (training parity: env не
     # двигает дрона в стену). Правило: gate_margin = safety floor + cell.
-    # v2 run E (2026-06-07): 0.9 → 0.6 вместе с floor 0.8 → 0.5 (кольцо 0.8м
-    # = 44% комнаты было недостижимо, coverage cap ~0.56).
-    "gate_margin_m": 0.6,
+    # v2 run F (Aleks 08:26): 0.5 (= floor 0.4 + cell). SIM-ONLY клиренс.
+    "gate_margin_m": 0.5,
 }
 
 
@@ -159,6 +158,8 @@ class PolicyBridgeNode(Node):
             # v2 Block 2: training parity — env помечает visited все клетки
             # пройденные за action (включая промежуточные у action 7).
             visited_update_fn=self.visited.update,
+            # v2 run F: velocity-gated arrival (Aleks 08:26)
+            get_speed_m_s=lambda: self.obs_builder.speed_m_s,
         )
         # v2 Block 2: servo_angle obs = commanded angle executor'а (training
         # parity: в env servo-динамики нет). Убирает 1 kHz JointState churn.

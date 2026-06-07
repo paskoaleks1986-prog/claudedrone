@@ -55,13 +55,13 @@ MODE_TABLE: dict[SpeedMode, ModeConfig] = {
     # (~0.1-0.2м на 0.3 м/с) — action 7 останавливается выше кольца guard'а.
     SpeedMode.FAST: ModeConfig(
         linear_speed=0.30,        # was 0.50 (attempt #5 crash root cause)
-        wall_threshold=0.75,
+        wall_threshold=0.65,
         allow_action_7=True,
         allow_translation=True,
     ),
     SpeedMode.CRUISE: ModeConfig(
         linear_speed=0.30,
-        wall_threshold=0.75,
+        wall_threshold=0.65,
         allow_action_7=True,
         allow_translation=True,
     ),
@@ -79,13 +79,13 @@ MODE_TABLE: dict[SpeedMode, ModeConfig] = {
     # gate на 0-3, safety_guard 50 Hz последним рубежом.
     SpeedMode.EXPLORE: ModeConfig(
         linear_speed=0.15,
-        wall_threshold=0.75,      # run E: 0.95 → 0.75 (см. блок выше)
+        wall_threshold=0.65,      # run F: 0.75 → 0.65 (floor 0.4 + overshoot-запас)
         allow_action_7=True,     # v2 Block 3.1: было False — душило политику
         allow_translation=True,
     ),
     SpeedMode.CAUTIOUS: ModeConfig(
         linear_speed=0.05,
-        wall_threshold=0.75,      # run E: 0.95 → 0.75
+        wall_threshold=0.65,      # run F: floor 0.4 + overshoot-запас
         allow_action_7=False,
         allow_translation=False,  # all translation actions → rotate
     ),

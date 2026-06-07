@@ -33,12 +33,27 @@ from collections.abc import Callable
 
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
+from mavros_msgs.msg import PositionTarget
 from std_msgs.msg import Float64
 
 
 CMD_POSE_TOPIC = "/mavros/setpoint_position/local"
+CMD_RAW_TOPIC = "/mavros/setpoint_raw/local"
 SG90_CMD_TOPIC = "/drone/sg90/cmd"
 MAINTAIN_RATE_HZ = 10.0
+
+# v2 run F (Aleks 08:26): ротации через yaw_rate, не position-yaw.
+# PoseStamped-yaw шёл через медленную rate-shaped цепочку (yaw timeouts);
+# mask 1479 = velocity(0,0,0) + yaw_rate — held position, прямое вращение.
+# Open-loop: duration = angle/rate, obs по таймеру (НЕ arrival event) —
+# паритет с тренировкой. Калибровка rate×duration — лог achieved/commanded.
+YAW_RATE_DEG_S = 45.0
+RAW_STREAM_HZ = 20.0
+RAW_TYPE_MASK_VEL_YAWRATE = (
+    PositionTarget.IGNORE_PX | PositionTarget.IGNORE_PY | PositionTarget.IGNORE_PZ
+    | PositionTarget.IGNORE_AFX | PositionTarget.IGNORE_AFY | PositionTarget.IGNORE_AFZ
+    | PositionTarget.IGNORE_YAW
+)  # = 1479: velocity + yaw_rate активны
 DEFAULT_SCAN_HOVER_S = 0.5
 SERVO_STEP_DEG = 30.0
 SERVO_MAX_DEG = 180.0
@@ -52,6 +67,11 @@ ARRIVAL_TOL_YAW_DEG = 3.0     # was 2.0 — smoke showed drone достигае�
 ARRIVAL_TIMEOUT_S = 8.0       # max wait per action (safety cap)
 ARRIVAL_TIMEOUT_ACTION7_S = 15.0  # action 7 может далеко лететь
 ARRIVAL_POLL_S = 0.05
+# v2 run F (Aleks 08:26): velocity-gated arrival — «остановился и устойчив»,
+# а не точная сходимость позиции. arrival = pos_err < tol AND |v| < eps.
+# Drift-контроль: накопленную ошибку логируем каждые 50 транзакций; если за
+# 300+ шагов систематический дрейф от grid-позиций — порог опустить.
+ARRIVAL_SPEED_EPS_M_S = 0.10
 
 # Action 7 stop margin
 ACTION7_WALL_MARGIN_M = 0.4
@@ -112,8 +132,11 @@ class ActionExecutor:
         angular_speed: float = 0.26,
         get_yaw_rad: Callable[[], float] | None = None,
         scan_hover_s: float = DEFAULT_SCAN_HOVER_S,
-        settle_hover_s: float = 0.3,
+        # v2 run F: 0.3 → 0.1 — velocity-gate в arrival уже гарантирует
+        # «остановился и устойчив», длинный settle стал двойной страховкой.
+        settle_hover_s: float = 0.1,
         visited_update_fn: Callable[[float, float], None] | None = None,
+        get_speed_m_s: Callable[[], float] | None = None,
     ) -> None:
         self.node = node
         self.cell_size_m = cell_size_m
@@ -133,8 +156,17 @@ class ActionExecutor:
         self._visited_update_fn = visited_update_fn
         self._get_front_m = get_front_distance_m
         self._get_pose = get_pose
+        # v2 run F: |v| для velocity-gated arrival (None → гейт отключён)
+        self._get_speed_m_s = get_speed_m_s
 
         self.pose_pub = node.create_publisher(PoseStamped, cmd_pose_topic, 10)
+        # v2 run F: raw setpoint для yaw_rate ротаций (mask 1479)
+        self.raw_pub = node.create_publisher(PositionTarget, CMD_RAW_TOPIC, 10)
+        self._rotating = False
+        self._yaw_calib_sum = 0.0
+        self._yaw_calib_n = 0
+        self._drift_err_sum = 0.0
+        self._drift_n = 0
         self.sg90_cmd_pub = node.create_publisher(Float64, sg90_cmd_topic, 10)
         # v2 Block 2: training parity — env reset ставит servo = 90°
         # (drone_2d_env.py:96), а тут было 0.0. Модель в начале эпизода ждёт
@@ -199,7 +231,7 @@ class ActionExecutor:
 
     def _publish_maintenance(self) -> None:
         """10 Hz publish current target pose (mandatory ArduPilot GUIDED)."""
-        if self._target_pose is None or self._safety_hold:
+        if self._target_pose is None or self._safety_hold or self._rotating:
             return
         self._target_pose.header.stamp = self.node.get_clock().now().to_msg()
         self.pose_pub.publish(self._target_pose)
@@ -282,12 +314,60 @@ class ActionExecutor:
     def _rotation(
         self, cur_x: float, cur_y: float, cur_yaw: float, dyaw_rad: float
     ) -> dict[str, float]:
+        """v2 run F: open-loop yaw_rate ротация (Aleks 08:26).
+
+        Стримим mask-1479 setpoint (velocity 0 + yaw_rate) ровно
+        duration = angle/rate, затем стоп и возврат на position maintenance
+        с новым yaw. Никаких arrival event'ов — obs снимается по таймеру
+        (settle), как в тренировке. Калибровка: лог achieved/commanded.
+        """
         target_yaw = cur_yaw + dyaw_rad
-        # Position unchanged, only yaw target updated
-        self._set_target(cur_x, cur_y, target_yaw)
-        arrived = self._wait_arrival_yaw(target_yaw, math.radians(ARRIVAL_TOL_YAW_DEG),
-                                         ARRIVAL_TIMEOUT_S)
-        return {"kind": 1.0, "arrived": float(arrived)}
+        duration_s = abs(dyaw_rad) / math.radians(YAW_RATE_DEG_S)
+        rate_rad_s = math.copysign(math.radians(YAW_RATE_DEG_S), dyaw_rad)
+
+        pt = PositionTarget()
+        pt.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
+        pt.type_mask = RAW_TYPE_MASK_VEL_YAWRATE
+        pt.velocity.x = pt.velocity.y = pt.velocity.z = 0.0
+        pt.yaw_rate = rate_rad_s
+
+        self._rotating = True  # maintenance молчит — не спорит с yaw_rate
+        try:
+            t_end = time.monotonic() + duration_s
+            while time.monotonic() < t_end:
+                if self._safety_hold:
+                    self.node.get_logger().warn("rotation aborted: safety hold")
+                    return {"kind": 1.0, "arrived": 0.0}
+                pt.header.stamp = self.node.get_clock().now().to_msg()
+                self.raw_pub.publish(pt)
+                time.sleep(1.0 / RAW_STREAM_HZ)
+            # стоп вращения
+            pt.yaw_rate = 0.0
+            pt.header.stamp = self.node.get_clock().now().to_msg()
+            self.raw_pub.publish(pt)
+        finally:
+            # возврат на position-режим: target = СВЕЖАЯ поза + целевой yaw
+            pose = self._get_pose()
+            self._set_target(pose.x_m, pose.y_m, target_yaw)
+            self._rotating = False
+
+        self._settle()
+        # калибровка rate×duration: achieved vs commanded
+        achieved_deg = math.degrees(
+            _angle_diff(self._get_pose().heading_rad, cur_yaw)
+        )
+        commanded_deg = math.degrees(dyaw_rad)
+        if abs(commanded_deg) > 1e-6:
+            self._yaw_calib_sum += achieved_deg / commanded_deg
+            self._yaw_calib_n += 1
+            if self._yaw_calib_n % 25 == 0:
+                self.node.get_logger().info(
+                    f"yaw calib: mean achieved/commanded = "
+                    f"{self._yaw_calib_sum / self._yaw_calib_n:.3f} "
+                    f"за {self._yaw_calib_n} ротаций (последняя: "
+                    f"{achieved_deg:+.1f}°/{commanded_deg:+.1f}°)"
+                )
+        return {"kind": 1.0, "arrived": 1.0}
 
     def _scan(self) -> dict[str, float]:
         self._servo_deg = (self._servo_deg + SERVO_STEP_DEG) % SERVO_MAX_DEG
@@ -344,7 +424,17 @@ class ActionExecutor:
             dx = pose.x_m - target_x
             dy = pose.y_m - target_y
             dist = math.hypot(dx, dy)
-            if dist < tolerance:
+            # v2 run F: velocity-gated — позиция в допуске И скорость погашена
+            speed = self._get_speed_m_s() if self._get_speed_m_s else 0.0
+            if dist < tolerance and speed < ARRIVAL_SPEED_EPS_M_S:
+                self._drift_err_sum += dist
+                self._drift_n += 1
+                if self._drift_n % 50 == 0:
+                    self.node.get_logger().info(
+                        f"drift check: mean arrival err "
+                        f"{self._drift_err_sum / self._drift_n:.3f}m "
+                        f"за {self._drift_n} транзакций"
+                    )
                 self._settle()
                 return True
             time.sleep(ARRIVAL_POLL_S)

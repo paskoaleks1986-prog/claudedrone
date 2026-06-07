@@ -85,6 +85,7 @@ class ObsBuilder:
         # inference-процесса. JointState остаётся fallback'ом.
         self._servo_angle_fn = None
         self._pose = Pose2D()
+        self._speed_m_s = 0.0
         self._latest_perimeter_stamp = 0.0
         self._latest_sweep_stamp = 0.0
         self._latest_odom_stamp = 0.0
@@ -149,6 +150,9 @@ class ObsBuilder:
     def _odom_cb(self, msg: Odometry) -> None:
         p = msg.pose.pose.position
         q = msg.pose.pose.orientation
+        # v2 run F: |v| горизонтальная для velocity-gated arrival
+        tw = msg.twist.twist.linear
+        self._speed_m_s = math.hypot(tw.x, tw.y)
         # Yaw from quaternion (ZYX intrinsic — стандарт для MAVROS map frame).
         yaw = math.atan2(
             2.0 * (q.w * q.z + q.x * q.y),
@@ -178,6 +182,11 @@ class ObsBuilder:
     def sweep_distance_m(self) -> float:
         """TF-Luna sweep raw meters (denormalized)."""
         return float(self._sweep_norm) * TF_SWEEP_MAX_RANGE_M
+
+    @property
+    def speed_m_s(self) -> float:
+        """v2 run F: |v| горизонтальная из odom twist (velocity-gated arrival)."""
+        return self._speed_m_s
 
     @property
     def has_received_odom(self) -> bool:

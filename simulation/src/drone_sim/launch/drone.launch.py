@@ -120,19 +120,19 @@ def generate_launch_description():
         # v2 fix (2026-06-06): параметр назывался 'stop_threshold' — нода такого
         # не объявляет (safety_guard.py: 'stop_threshold_floor'), значение молча
         # игнорировалось и реально действовал дефолт 0.8 м.
-        # v2 night run E (2026-06-07): floor 0.8 → 0.5. Кольцо 0.8м у стен =
-        # 44% площади комнаты недостижимы — coverage упирался в ~0.56 (ран D:
-        # 122 hold-цикла «пасьбы» у кольца, cov@338=0.14). 0.8 выбирался в
-        # attempt #6 под 0.5 м/с и БЕЗ арбитража guard↔bridge; сейчас скорости
-        # 0.15-0.3 (тормозной путь ~0.03м) и есть retreat+hold. Физика запаса:
-        # 0.5м = 6× стоп-дистанция + sensor offset.
+        # v2 run E (2026-06-07): floor 0.8 → 0.5 (кольцо 0.8м = 44% комнаты).
+        # v2 run F (решение Aleks 08:26): 0.5 → 0.4 — ⚠ SIM-ONLY. Wall effect
+        # в Gazebo без спецплагина не моделируется; для реального железа
+        # минимальный клиренс считается ЗАНОВО по диаметру пропа и diagonal
+        # frame. Ниже 0.4 не идти: near-wall states за пределами надёжного
+        # переноса модели без дообучения. Cap покрытия при 0.4 ≈ 0.76.
         Node(
             package='drone_sim',
             executable='safety_guard',
             name='safety_guard',
             output='screen',
             parameters=[{
-                'stop_threshold_floor': 0.5,
+                'stop_threshold_floor': 0.4,
                 'check_rate_hz': 50.0,
             }],
         ),
