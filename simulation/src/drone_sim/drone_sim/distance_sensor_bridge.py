@@ -41,8 +41,11 @@ TF_FOV_RAD = 0.04   # TF-Luna ~2°
 
 # Канал (0..5, body 0/60/.../300°) → имя mavros-блока. Ориентация задаётся
 # в apm_config_claudedrone.yaml (NONE/YAW_45/.../YAW_315), здесь только тракт.
-VL_TOPIC_FMT = "/mavros/distance_sensor/vl53_ch{ch}"
-TF_DOWN_TOPIC = "/mavros/distance_sensor/tf_luna_down"
+# FC-smoke 2026-06-07 (ок Aleks): mavros distance_sensor подписывается на
+# ~/<имя> СВОЕГО узла → /mavros/vl53_ch0 (verified: Subscription count 1).
+# Прежний /mavros/distance_sensor/* был паблишем в пустоту.
+VL_TOPIC_FMT = "/mavros/vl53_ch{ch}"
+TF_DOWN_TOPIC = "/mavros/tf_luna_down"
 
 PUBLISH_RATE_HZ = 10.0
 
