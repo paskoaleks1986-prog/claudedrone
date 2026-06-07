@@ -47,15 +47,21 @@ class ModeConfig:
 # setpoint 0.5 m/s → drone hits wall до safety_guard reaction time. Все modes
 # теперь ≤ 0.3 m/s. Wall_threshold увеличены до 1.0m для extra buffer.
 MODE_TABLE: dict[SpeedMode, ModeConfig] = {
+    # v2 run E (2026-06-07): wt 1.00/0.95 → 0.75 согласованно с floor 0.5 +
+    # gate 0.6 (правило wt ≥ floor+cell держится: 0.75 ≥ 0.6). Политика
+    # тренирована красить ВДОЛЬ стен — wt 0.95 не пускал её главный локомотив
+    # (action 7) ближе метра, внешнее кольцо оставалось некрашеным (ран D
+    # cov@338=0.14 при 122 hold-циклах). 0.75 = floor + overshoot-запас
+    # (~0.1-0.2м на 0.3 м/с) — action 7 останавливается выше кольца guard'а.
     SpeedMode.FAST: ModeConfig(
         linear_speed=0.30,        # was 0.50 (attempt #5 crash root cause)
-        wall_threshold=1.00,      # was 0.50
+        wall_threshold=0.75,
         allow_action_7=True,
         allow_translation=True,
     ),
     SpeedMode.CRUISE: ModeConfig(
         linear_speed=0.30,
-        wall_threshold=1.00,      # was 0.60
+        wall_threshold=0.75,
         allow_action_7=True,
         allow_translation=True,
     ),
@@ -73,13 +79,13 @@ MODE_TABLE: dict[SpeedMode, ModeConfig] = {
     # gate на 0-3, safety_guard 50 Hz последним рубежом.
     SpeedMode.EXPLORE: ModeConfig(
         linear_speed=0.15,
-        wall_threshold=0.95,      # was 0.80 == safety floor (boundary trap)
+        wall_threshold=0.75,      # run E: 0.95 → 0.75 (см. блок выше)
         allow_action_7=True,     # v2 Block 3.1: было False — душило политику
         allow_translation=True,
     ),
     SpeedMode.CAUTIOUS: ModeConfig(
         linear_speed=0.05,
-        wall_threshold=0.95,      # was 0.50 (внутри safety zone!)
+        wall_threshold=0.75,      # run E: 0.95 → 0.75
         allow_action_7=False,
         allow_translation=False,  # all translation actions → rotate
     ),

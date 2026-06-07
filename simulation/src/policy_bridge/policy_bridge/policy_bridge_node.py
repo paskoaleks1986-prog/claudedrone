@@ -78,9 +78,10 @@ PARAM_DEFAULTS: dict[str, object] = {
     "perimeter_laps": 1,
     # v2 Block 3 (2026-06-06): ActionGate — шаг 0-3, который закончится ближе
     # этого к препятствию, отклоняется до исполнения (training parity: env не
-    # двигает дрона в стену). 0.9 = safety_guard floor 0.8 + cell 0.1, чтобы
-    # не начинать шаги, которые safety_guard всё равно задушит (tug-of-war).
-    "gate_margin_m": 0.9,
+    # двигает дрона в стену). Правило: gate_margin = safety floor + cell.
+    # v2 run E (2026-06-07): 0.9 → 0.6 вместе с floor 0.8 → 0.5 (кольцо 0.8м
+    # = 44% комнаты было недостижимо, coverage cap ~0.56).
+    "gate_margin_m": 0.6,
 }
 
 

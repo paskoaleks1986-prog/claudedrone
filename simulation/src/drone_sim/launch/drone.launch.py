@@ -119,16 +119,20 @@ def generate_launch_description():
         # overwritten last-write-wins → drone hovers in place до уезда из safety zone.
         # v2 fix (2026-06-06): параметр назывался 'stop_threshold' — нода такого
         # не объявляет (safety_guard.py: 'stop_threshold_floor'), значение молча
-        # игнорировалось и реально действовал дефолт 0.8 м. Передаём правильное
-        # имя и явные 0.8 — это фактическое поведение, под которое тюнился
-        # wall_distance=0.95 (attempt #21 RCA).
+        # игнорировалось и реально действовал дефолт 0.8 м.
+        # v2 night run E (2026-06-07): floor 0.8 → 0.5. Кольцо 0.8м у стен =
+        # 44% площади комнаты недостижимы — coverage упирался в ~0.56 (ран D:
+        # 122 hold-цикла «пасьбы» у кольца, cov@338=0.14). 0.8 выбирался в
+        # attempt #6 под 0.5 м/с и БЕЗ арбитража guard↔bridge; сейчас скорости
+        # 0.15-0.3 (тормозной путь ~0.03м) и есть retreat+hold. Физика запаса:
+        # 0.5м = 6× стоп-дистанция + sensor offset.
         Node(
             package='drone_sim',
             executable='safety_guard',
             name='safety_guard',
             output='screen',
             parameters=[{
-                'stop_threshold_floor': 0.8,
+                'stop_threshold_floor': 0.5,
                 'check_rate_hz': 50.0,
             }],
         ),
