@@ -129,13 +129,19 @@ def generate_launch_description():
         # v2 run F checklist #1 (2026-06-07): 0.4 → 0.45 — на floor 0.4 guard
         # стрелял 11 раз/18 шагов по oblique vl[5]≈0.395-0.400 (action7
         # tug-of-war на границе). Когерентный сет: gate 0.55, wt 0.70.
+        # v2 run H (решение Aleks после вердикта G): 0.45 → 0.40 НАЗАД.
+        # Ран G (carrot, 0 таймаутов): 135/135 триггеров в полосе
+        # 0.437-0.450 — margin (0.45) == floor (0.45), дрон паркуется на
+        # линии триггера, guard 10.1 с/мин. Фикс: буфер margin−floor=0.05
+        # (дефицит oblique 0.004-0.013, запас ×4); margin/gate/wt НЕ трогать
+        # (0.45/0.55/0.70). Cap покрытия возвращается к ~0.76.
         Node(
             package='drone_sim',
             executable='safety_guard',
             name='safety_guard',
             output='screen',
             parameters=[{
-                'stop_threshold_floor': 0.45,
+                'stop_threshold_floor': 0.40,
                 'check_rate_hz': 50.0,
             }],
         ),

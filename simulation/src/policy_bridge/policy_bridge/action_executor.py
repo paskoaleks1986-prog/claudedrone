@@ -75,7 +75,11 @@ ARRIVAL_SPEED_EPS_M_S = 0.10
 
 # Action 7 stop margin
 # run F checklist #1 (2026-06-07): 0.4 → 0.45 вместе с safety floor —
-# на 0.4 guard стрелял по oblique vl[5]≈0.395-0.400 сразу после arrival
+# на 0.4 guard стрелял по oblique vl[5]≈0.395-0.400 сразу после arrival.
+# run H (Aleks после вердикта G): margin НАМЕРЕННО != floor. Floor вернулся
+# на 0.40, margin остаётся 0.45 — буфер 0.05 между парковкой action7 и
+# линией триггера guard'а (ран G: margin==floor → 135 триггеров на границе,
+# guard 10.1 с/мин). НЕ выравнивать margin с floor — буфер обязателен.
 ACTION7_WALL_MARGIN_M = 0.45
 
 # run F план (а) (2026-06-07): carrot streaming. Republish полного target
