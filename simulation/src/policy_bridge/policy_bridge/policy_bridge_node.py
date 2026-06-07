@@ -392,7 +392,7 @@ class PolicyBridgeNode(Node):
             f"policy_bridge_node ready · family={self.model_family} · "
             f"mode={self.mode} · deterministic={self.deterministic} · "
             f"stuck_escape={'on' if self.stuck_enabled else 'off'} · "
-            f"rate={self.rate_hz} Hz · room {self.room_size}×{self.room_size} m · "
+            f"rate={self.rate_hz} Hz · room {self.room_x}×{self.room_y} m · "
             f"defaults linear={self.linear_speed} m/s angular={self.angular_speed} rad/s "
             f"wall_threshold={self.wall_threshold} m"
         )
