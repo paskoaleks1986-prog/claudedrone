@@ -78,6 +78,42 @@ ARRIVAL_SPEED_EPS_M_S = 0.10
 # на 0.4 guard стрелял по oblique vl[5]≈0.395-0.400 сразу после arrival
 ACTION7_WALL_MARGIN_M = 0.45
 
+# run F план (а) (2026-06-07): carrot streaming. Republish полного target
+# на 10 Hz давал XY median 0.065 м/с при WPNAV cap 0.2 (S-curve shaping
+# рестартует каждые 100мс, jerk-ramp не успевает). Carrot движется от
+# старта сегмента к цели со скоростью linear_speed режима (override_speed
+# в execute() ожил) — AP трекает близкую цель непрерывно. Lead clamp:
+# carrot не убегает дальше этого вперёд фактического прогресса дрона
+# (стоп/затык → carrot ждёт). При v режима > WPNAV cap дрон едет на капе,
+# carrot подтягивается clamp'ом — это ок.
+CARROT_LEAD_MAX_M = 0.30
+
+
+def carrot_point(
+    seg: tuple[float, float, float, float, float, float],
+    drone_x: float,
+    drone_y: float,
+    now_monotonic: float,
+) -> tuple[float, float] | None:
+    """run F план (а): точка carrot'а на сегменте или None (дошёл/вырожден).
+
+    seg = (sx, sy, tx, ty, t0_monotonic, speed_m_s).
+    progress = min(время × скорость, прогресс дрона + lead, длина сегмента):
+    энфорсит командную скорость и не даёт carrot'у убежать, если дрон встал
+    (safety hold, затык) — иначе после release дрон рванул бы догонять.
+    """
+    sx, sy, tx, ty, t0, speed = seg
+    total = math.hypot(tx - sx, ty - sy)
+    if total < 1e-6:
+        return None
+    ux, uy = (tx - sx) / total, (ty - sy) / total
+    progress_t = (now_monotonic - t0) * speed
+    progress_drone = (drone_x - sx) * ux + (drone_y - sy) * uy
+    progress = min(progress_t, progress_drone + CARROT_LEAD_MAX_M, total)
+    if progress >= total:
+        return None
+    return sx + ux * progress, sy + uy * progress
+
 
 def _angle_diff(a: float, b: float) -> float:
     """Shortest signed angle (a - b) wrapped to [-π, π]."""
@@ -178,6 +214,11 @@ class ActionExecutor:
 
         # Target pose — initialized после takeoff release (см. initialize_target())
         self._target_pose: PoseStamped | None = None
+        # run F план (а): carrot-сегмент (sx, sy, tx, ty, t0_monotonic, speed)
+        # или None → maintenance публикует финальный target как раньше.
+        # Один tuple — atomic swap между tick-потоком и maintenance-таймером.
+        self._carrot_seg: tuple[float, float, float, float, float, float] | None = None
+        self._target_yaw = 0.0
         # v2: true пока safety_guard владеет дроном (см. set_safety_hold)
         self._safety_hold = False
         # 10 Hz maintenance timer (необходим для ArduPilot GUIDED setpoint stream)
@@ -194,6 +235,8 @@ class ActionExecutor:
         if z is None:
             z = self.target_altitude
         self._target_pose = _make_pose(x, y, z, yaw)
+        self._target_yaw = yaw
+        self._carrot_seg = None
         # v2 Block 2: физическую серву — в стартовое положение эпизода (90°,
         # как env reset), чтобы commanded == actual с первого obs.
         cmd = Float64()
@@ -222,6 +265,8 @@ class ActionExecutor:
                 if self._target_pose is not None else self.target_altitude
             )
             self._target_pose = _make_pose(pose.x_m, pose.y_m, z, pose.heading_rad)
+            self._target_yaw = pose.heading_rad
+            self._carrot_seg = None  # план (а): старый carrot вёл к brошенному target
             self.node.get_logger().info(
                 f"safety released — target re-init на текущую позу "
                 f"({pose.x_m:.2f}, {pose.y_m:.2f})"
@@ -232,16 +277,48 @@ class ActionExecutor:
         return self._safety_hold
 
     def _publish_maintenance(self) -> None:
-        """10 Hz publish current target pose (mandatory ArduPilot GUIDED)."""
-        if self._target_pose is None or self._safety_hold or self._rotating:
-            return
-        self._target_pose.header.stamp = self.node.get_clock().now().to_msg()
-        self.pose_pub.publish(self._target_pose)
+        """10 Hz publish target pose (mandatory ArduPilot GUIDED).
 
-    def _set_target(self, x: float, y: float, yaw: float) -> None:
-        """Update target pose (altitude held constant)."""
+        run F план (а): при активном carrot-сегменте публикуем промежуточную
+        точку, движущуюся к финальному target со скоростью режима. Иначе —
+        финальный target как раньше.
+        """
+        final = self._target_pose
+        if final is None or self._safety_hold or self._rotating:
+            return
+        seg = self._carrot_seg
+        pub = final
+        if seg is not None:
+            pose = self._get_pose()
+            pt = carrot_point(seg, pose.x_m, pose.y_m, time.monotonic())
+            if pt is None:
+                self._carrot_seg = None  # carrot дошёл — дальше финальный
+            else:
+                pub = _make_pose(
+                    pt[0], pt[1], final.pose.position.z, self._target_yaw
+                )
+        pub.header.stamp = self.node.get_clock().now().to_msg()
+        self.pose_pub.publish(pub)
+
+    def _set_target(
+        self, x: float, y: float, yaw: float, speed_m_s: float | None = None
+    ) -> None:
+        """Update target pose (altitude held constant).
+
+        speed_m_s не None → carrot-сегмент от ТЕКУЩЕЙ позы дрона к target
+        со скоростью режима (run F план (а)); None → прямой target (ротации,
+        re-init, нулевые сегменты).
+        """
         z = self.target_altitude if self._target_pose is None else self._target_pose.pose.position.z
         self._target_pose = _make_pose(x, y, z, yaw)
+        self._target_yaw = yaw
+        if speed_m_s is not None and speed_m_s > 1e-3:
+            pose = self._get_pose()
+            self._carrot_seg = (
+                pose.x_m, pose.y_m, x, y, time.monotonic(), speed_m_s
+            )
+        else:
+            self._carrot_seg = None
 
     @property
     def target_pose(self) -> PoseStamped | None:
@@ -256,7 +333,9 @@ class ActionExecutor:
     def execute(
         self,
         action: int,
-        override_speed: float | None = None,         # legacy compat, ignored
+        # run F план (а): ожил — carrot-скорость движений (cfg.linear_speed
+        # режима из bridge). None → прямой target без carrot (как раньше).
+        override_speed: float | None = None,
         override_wall_threshold: float | None = None, # legacy compat
     ) -> dict[str, float]:
         wt = override_wall_threshold if override_wall_threshold is not None else self.wall_threshold
@@ -267,13 +346,13 @@ class ActionExecutor:
         cur_yaw = pose.heading_rad
 
         if action == 0:
-            return self._translation(cur_x, cur_y, cur_yaw, 1.0, 0.0)
+            return self._translation(cur_x, cur_y, cur_yaw, 1.0, 0.0, override_speed)
         if action == 1:
-            return self._translation(cur_x, cur_y, cur_yaw, -1.0, 0.0)
+            return self._translation(cur_x, cur_y, cur_yaw, -1.0, 0.0, override_speed)
         if action == 2:
-            return self._translation(cur_x, cur_y, cur_yaw, 0.0, 1.0)
+            return self._translation(cur_x, cur_y, cur_yaw, 0.0, 1.0, override_speed)
         if action == 3:
-            return self._translation(cur_x, cur_y, cur_yaw, 0.0, -1.0)
+            return self._translation(cur_x, cur_y, cur_yaw, 0.0, -1.0, override_speed)
         if action == 4:
             return self._rotation(cur_x, cur_y, cur_yaw, +math.radians(15.0))
         if action == 5:
@@ -281,7 +360,7 @@ class ActionExecutor:
         if action == 6:
             return self._scan()
         if action == 7:
-            return self._forward_until_collision(cur_x, cur_y, cur_yaw, wt)
+            return self._forward_until_collision(cur_x, cur_y, cur_yaw, wt, override_speed)
         raise InvalidActionError(f"invalid action {action} (Discrete(8): 0..7)")
 
     def stop(self) -> None:
@@ -298,6 +377,7 @@ class ActionExecutor:
         cur_yaw: float,
         body_dx_cells: float,
         body_dy_cells: float,
+        speed_m_s: float | None = None,
     ) -> dict[str, float]:
         """Move 1 cell в body-frame direction (translate, keep yaw)."""
         # Body→world transform via current yaw
@@ -308,7 +388,7 @@ class ActionExecutor:
 
         target_x = cur_x + dx_world
         target_y = cur_y + dy_world
-        self._set_target(target_x, target_y, cur_yaw)
+        self._set_target(target_x, target_y, cur_yaw, speed_m_s=speed_m_s)
         arrived = self._wait_arrival_position(target_x, target_y, ARRIVAL_TOL_TRANSLATION_M,
                                               ARRIVAL_TIMEOUT_S)
         return {"kind": 0.0, "arrived": float(arrived)}
@@ -381,11 +461,13 @@ class ActionExecutor:
         return {"kind": 2.0, "duration_s": self.scan_hover_s, "servo_deg": self._servo_deg}
 
     def _forward_until_collision(
-        self, cur_x: float, cur_y: float, cur_yaw: float, wall_margin: float
+        self, cur_x: float, cur_y: float, cur_yaw: float, wall_margin: float,
+        speed_m_s: float | None = None,
     ) -> dict[str, float]:
         """Action 7: target = current + (front_dist - margin) forward.
 
-        ArduPilot navigates autonomously. We poll arrival.
+        ArduPilot navigates autonomously (carrot streaming, план (а)).
+        We poll arrival.
         """
         front = max(0.0, self._get_front_m())
         margin = max(ACTION7_WALL_MARGIN_M, wall_margin)
@@ -394,7 +476,7 @@ class ActionExecutor:
         s = math.sin(cur_yaw)
         target_x = cur_x + c * travel
         target_y = cur_y + s * travel
-        self._set_target(target_x, target_y, cur_yaw)
+        self._set_target(target_x, target_y, cur_yaw, speed_m_s=speed_m_s)
 
         if travel <= 0.01:
             self.node.get_logger().warn(
