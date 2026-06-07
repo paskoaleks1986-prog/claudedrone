@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import signal
 import sys
 
@@ -37,7 +38,7 @@ class TrackRecorder(Node):
         self._files = {}
         self._writers = {}
         for name, header in (
-            ("odom", ["t", "x", "y", "z"]),
+            ("odom", ["t", "x", "y", "z", "yaw"]),
             ("actions", ["t", "source", "action"]),
             ("metrics", ["t", "name", "value"]),
         ):
@@ -78,8 +79,15 @@ class TrackRecorder(Node):
 
     def _odom_cb(self, msg: Odometry) -> None:
         p = msg.pose.pose.position
+        q = msg.pose.pose.orientation
+        # yaw для heading-drift диагностики (план Aleks 2026-06-07)
+        yaw = math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y),
+            1.0 - 2.0 * (q.y * q.y + q.z * q.z),
+        )
         self._writers["odom"].writerow(
-            [f"{self._now():.3f}", f"{p.x:.4f}", f"{p.y:.4f}", f"{p.z:.4f}"]
+            [f"{self._now():.3f}", f"{p.x:.4f}", f"{p.y:.4f}",
+             f"{p.z:.4f}", f"{yaw:.5f}"]
         )
         self.n_odom += 1
         if self.n_odom % 500 == 0:

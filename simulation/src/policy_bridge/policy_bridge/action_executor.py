@@ -129,6 +129,15 @@ def _angle_diff(a: float, b: float) -> float:
     return d
 
 
+def _lattice_dev_deg(yaw_rad: float, step_deg: float) -> float:
+    """Подписанное отклонение yaw от ближайшего кратного step_deg (градусы).
+
+    Heading-drift диагностика (план Aleks 2026-06-07): env живёт на решётке
+    θ₀ + k·15° (ротации точные), sim сходит с неё (open-loop yaw_rate)."""
+    deg = math.degrees(yaw_rad)
+    return ((deg + step_deg / 2.0) % step_deg) - step_deg / 2.0
+
+
 def _make_pose(x: float, y: float, z: float, yaw: float, frame: str = "map") -> PoseStamped:
     ps = PoseStamped()
     ps.header.frame_id = frame
@@ -372,6 +381,26 @@ class ActionExecutor:
         # Target unchanged → drone holds. Nothing к do.
         pass
 
+    def snap_to_yaw(self, target_yaw: float, timeout_s: float = 6.0) -> bool:
+        """Closed-loop абсолютный yaw (план Aleks Шаг 3 / candidate fix).
+
+        НЕ open-loop yaw_rate (источник drift'а): ставим maintenance-target
+        с целевым yaw на ТЕКУЩЕЙ позиции и ждём yaw arrival — ArduPilot
+        доводит сам. Возвращает arrived."""
+        pose = self._get_pose()
+        before_deg = math.degrees(pose.heading_rad)
+        self._set_target(pose.x_m, pose.y_m, target_yaw)
+        arrived = self._wait_arrival_yaw(
+            target_yaw, math.radians(ARRIVAL_TOL_YAW_DEG), timeout_s
+        )
+        after = math.degrees(self._get_pose().heading_rad)
+        self.node.get_logger().info(
+            f"snapH: {before_deg:+.1f} → target "
+            f"{math.degrees(target_yaw):+.1f} → факт {after:+.1f} "
+            f"(arrived={int(arrived)})"
+        )
+        return arrived
+
     # ---- internals ----
 
     def _translation(
@@ -439,13 +468,23 @@ class ActionExecutor:
 
         self._settle()
         # калибровка rate×duration: achieved vs commanded
-        achieved_deg = math.degrees(
-            _angle_diff(self._get_pose().heading_rad, cur_yaw)
-        )
+        new_heading = self._get_pose().heading_rad
+        achieved_deg = math.degrees(_angle_diff(new_heading, cur_yaw))
         commanded_deg = math.degrees(dyaw_rad)
         if abs(commanded_deg) > 1e-6:
             self._yaw_calib_sum += achieved_deg / commanded_deg
             self._yaw_calib_n += 1
+            # heading-drift диагностика (план Aleks 2026-06-07 Шаг 2):
+            # КАЖДАЯ ротация, greppable. d15 = отклонение от 15°-решётки
+            # (takeoff yaw≈0 → решётка абсолютная k·15°).
+            self.node.get_logger().info(
+                f"yawcal: cmd={commanded_deg:+.1f} ach={achieved_deg:+.1f} "
+                f"err={achieved_deg - commanded_deg:+.2f} "
+                f"ratio={achieved_deg / commanded_deg:.3f} "
+                f"heading={math.degrees(new_heading):+.1f} "
+                f"d15={_lattice_dev_deg(new_heading, 15.0):+.2f} "
+                f"n={self._yaw_calib_n}"
+            )
             if self._yaw_calib_n % 25 == 0:
                 self.node.get_logger().info(
                     f"yaw calib: mean achieved/commanded = "
@@ -481,6 +520,14 @@ class ActionExecutor:
         target_x = cur_x + c * travel
         target_y = cur_y + s * travel
         self._set_target(target_x, target_y, cur_yaw, speed_m_s=speed_m_s)
+        # heading-drift диагностика (план Aleks Шаг 1): heading на старте
+        # каждого action7 + отклонение от 90°-осей и 15°-решётки.
+        self.node.get_logger().info(
+            f"a7H: start={math.degrees(cur_yaw):+.1f} "
+            f"d90={_lattice_dev_deg(cur_yaw, 90.0):+.2f} "
+            f"d15={_lattice_dev_deg(cur_yaw, 15.0):+.2f} "
+            f"travel={travel:.2f}"
+        )
 
         if travel <= 0.01:
             self.node.get_logger().warn(
@@ -490,6 +537,14 @@ class ActionExecutor:
 
         arrived = self._wait_arrival_position(
             target_x, target_y, ARRIVAL_TOL_ACTION7_M, ARRIVAL_TIMEOUT_ACTION7_S
+        )
+        end_yaw = self._get_pose().heading_rad
+        self.node.get_logger().info(
+            f"a7H: end={math.degrees(end_yaw):+.1f} "
+            f"d90={_lattice_dev_deg(end_yaw, 90.0):+.2f} "
+            f"d15={_lattice_dev_deg(end_yaw, 15.0):+.2f} "
+            f"Δyaw_in_a7={math.degrees(_angle_diff(end_yaw, cur_yaw)):+.2f} "
+            f"arrived={int(arrived)}"
         )
         return {"kind": 3.0, "travel": travel, "arrived": float(arrived)}
 
