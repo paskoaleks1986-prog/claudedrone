@@ -58,11 +58,6 @@ def generate_launch_description() -> LaunchDescription:
                         "сняты на true; SWEEP-02 исторически летал false.",
         ),
         DeclareLaunchArgument(
-            "snap_heading_axis", default_value="false",
-            description="Шаг 3 heading-drift диагностики: closed-loop snap "
-                        "к 90°-оси перед каждым action 7 (эксперимент).",
-        ),
-        DeclareLaunchArgument(
             "stuck_escape", default_value="auto",
             description="StuckDetector escape-инъекции: auto (=только sweep02) "
                         "| on | off. Для AM выключено — меряем модель.",
@@ -192,8 +187,6 @@ def generate_launch_description() -> LaunchDescription:
                    LaunchConfiguration("mapped_success_threshold")],
             "-p", ["deterministic:=", LaunchConfiguration("deterministic")],
             "-p", ["stuck_escape:=", LaunchConfiguration("stuck_escape")],
-            "-p", ["snap_heading_axis:=",
-                   LaunchConfiguration("snap_heading_axis")],
             "-p", ["room_size:=", LaunchConfiguration("room_size")],
             "-p", ["cell_size:=", LaunchConfiguration("cell_size")],
             "-p", ["wall_threshold:=", LaunchConfiguration("wall_threshold")],

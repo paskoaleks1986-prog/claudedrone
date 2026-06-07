@@ -105,11 +105,6 @@ PARAM_DEFAULTS: dict[str, object] = {
     # StuckDetector escape-инъекции: auto = только sweep02 (для AM ломает
     # распределение — у модели есть frontier obs, меряем ЕЁ поведение).
     "stuck_escape": "auto",
-    # Шаг 3 плана Aleks (2026-06-07, heading-drift диагностика): перед каждым
-    # action 7 closed-loop snap heading к ближайшему кратному 90°
-    # (executor.snap_to_yaw — абсолютный yaw setpoint, не open-loop rate).
-    # Контрольный эксперимент: зигзаг исчез → root cause = heading drift.
-    "snap_heading_axis": False,
 }
 
 # v1.5c livelock breaker (ран 2026-06-07 15:0x RCA): deterministic policy +
@@ -183,9 +178,6 @@ class PolicyBridgeNode(Node):
             raise ValueError(f"stuck_escape={stuck_escape!r} — auto|on|off")
         self.stuck_enabled = stuck_escape == "on" or (
             stuck_escape == "auto" and self.model_family == "sweep02"
-        )
-        self.snap_heading_axis = bool(
-            self.get_parameter("snap_heading_axis").value
         )
         if self.model_family == "activemapping" and self.mode != "rl_only":
             self.get_logger().warn(
@@ -895,11 +887,12 @@ class PolicyBridgeNode(Node):
         # Publish EXECUTED action (post-stuck/adaptive) для policy logging
         self.action_pub.publish(Int32(data=action_mod))
 
-        # Шаг 3 (эксперимент): snap к ближайшему 90° перед action 7 —
-        # closed-loop абсолютный yaw, возвращает дрона на «оси» мира.
-        if self.snap_heading_axis and action_mod == 7:
-            quarter = math.pi / 2.0
-            snapped = round(pose.heading_rad / quarter) * quarter
+        # Перед action 7 (длинный move) — snap heading на 15°-решётку
+        # θ₀+k·15° (closed-loop, Aleks Блок 1). Ротации уже приземляют на
+        # решётку, snap добивает дрейф от предыдущих translation'ов.
+        if action_mod == 7:
+            step = math.radians(15.0)
+            snapped = round(pose.heading_rad / step) * step
             self.executor_act.snap_to_yaw(snapped)
 
         cell_before = self._cell_of(pose)

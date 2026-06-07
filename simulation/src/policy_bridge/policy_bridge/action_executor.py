@@ -47,6 +47,16 @@ MAINTAIN_RATE_HZ = 10.0
 # mask 1479 = velocity(0,0,0) + yaw_rate — held position, прямое вращение.
 # Open-loop: duration = angle/rate, obs по таймеру (НЕ arrival event) —
 # паритет с тренировкой. Калибровка rate×duration — лог achieved/commanded.
+# Heading-решётка модели (env: θ₀ + k·15°, ротации точные). Closed-loop
+# ротации (Aleks Блок 1, 2026-06-07) приземляют дрон ровно на неё.
+GRID_STEP_RAD = math.radians(15.0)
+ROTATION_YAW_TOL_RAD = math.radians(2.0)   # ±2° = в пределах шага решётки
+ROTATION_TIMEOUT_S = 8.0
+
+# LEGACY (не используются после перехода на closed-loop absolute yaw,
+# Блок 1 Aleks): открытый yaw_rate был источником heading drift
+# (ratio 0.265…1.510 у ±180°, ArduPilot Issue #20444). Оставлены определения,
+# publisher self.raw_pub — на случай отката; в _rotation больше не вызываются.
 YAW_RATE_DEG_S = 45.0
 RAW_STREAM_HZ = 20.0
 RAW_TYPE_MASK_VEL_YAWRATE = (
@@ -136,6 +146,12 @@ def _lattice_dev_deg(yaw_rad: float, step_deg: float) -> float:
     θ₀ + k·15° (ротации точные), sim сходит с неё (open-loop yaw_rate)."""
     deg = math.degrees(yaw_rad)
     return ((deg + step_deg / 2.0) % step_deg) - step_deg / 2.0
+
+
+def _snap_to_grid(angle_rad: float, step_rad: float) -> float:
+    """Ближайший кратный step_rad угол (радианы). НЕ wrap — ArduPilot GUIDED
+    принимает любой float yaw, кратчайшую дугу выбирает сам по кватерниону."""
+    return round(angle_rad / step_rad) * step_rad
 
 
 def _make_pose(x: float, y: float, z: float, yaw: float, frame: str = "map") -> PoseStamped:
@@ -429,48 +445,39 @@ class ActionExecutor:
     def _rotation(
         self, cur_x: float, cur_y: float, cur_yaw: float, dyaw_rad: float
     ) -> dict[str, float]:
-        """v2 run F: open-loop yaw_rate ротация (Aleks 08:26).
+        """Closed-loop absolute yaw (Aleks Блок 1, 2026-06-07) — заменяет
+        open-loop yaw_rate.
 
-        Стримим mask-1479 setpoint (velocity 0 + yaw_rate) ровно
-        duration = angle/rate, затем стоп и возврат на position maintenance
-        с новым yaw. Никаких arrival event'ов — obs снимается по таймеру
-        (settle), как в тренировке. Калибровка: лог achieved/commanded.
+        Открытый yaw_rate (mask 1479) был источником heading drift: ratio
+        0.82 в среднем, нестабилен у ±180° (0.265…1.510), ArduPilot Issue
+        #20444 (yaw_rate конфликтует с position loop в Copter 4.2+). RCA-данные:
+        dev-log 27 (ран A |d15| 5.2° → ран B closed-loop 0.84°).
+
+        Механизм: целевой yaw = СНЭП на решётку θ₀+k·15° от cur_yaw+dyaw;
+        удерживаем текущую позицию, меняем только yaw через position setpoint
+        (тот же maintenance-stream PoseStamped, yaw в кватернионе — ArduPilot
+        GUIDED берёт его из SET_POSITION_TARGET_LOCAL_NED). Ждём arrival по
+        yaw (±2°), не по таймеру. Снэп гарантирует возврат на решётку даже
+        при накопленном дрейфе от translation'ов.
         """
-        target_yaw = cur_yaw + dyaw_rad
-        duration_s = abs(dyaw_rad) / math.radians(YAW_RATE_DEG_S)
-        rate_rad_s = math.copysign(math.radians(YAW_RATE_DEG_S), dyaw_rad)
+        target_yaw = _snap_to_grid(cur_yaw + dyaw_rad, GRID_STEP_RAD)
 
-        pt = PositionTarget()
-        pt.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
-        pt.type_mask = RAW_TYPE_MASK_VEL_YAWRATE
-        pt.velocity.x = pt.velocity.y = pt.velocity.z = 0.0
-        pt.yaw_rate = rate_rad_s
+        if self._safety_hold:
+            self.node.get_logger().warn("rotation aborted: safety hold")
+            return {"kind": 1.0, "arrived": 0.0}
 
-        self._rotating = True  # maintenance молчит — не спорит с yaw_rate
-        try:
-            t_end = time.monotonic() + duration_s
-            while time.monotonic() < t_end:
-                if self._safety_hold:
-                    self.node.get_logger().warn("rotation aborted: safety hold")
-                    return {"kind": 1.0, "arrived": 0.0}
-                pt.header.stamp = self.node.get_clock().now().to_msg()
-                self.raw_pub.publish(pt)
-                time.sleep(1.0 / RAW_STREAM_HZ)
-            # стоп вращения
-            pt.yaw_rate = 0.0
-            pt.header.stamp = self.node.get_clock().now().to_msg()
-            self.raw_pub.publish(pt)
-        finally:
-            # возврат на position-режим: target = СВЕЖАЯ поза + целевой yaw
-            pose = self._get_pose()
-            self._set_target(pose.x_m, pose.y_m, target_yaw)
-            self._rotating = False
+        # Position hold + новый yaw; maintenance-stream публикует target
+        # (НЕ глушим его — closed-loop требует непрерывного setpoint'а).
+        self._set_target(cur_x, cur_y, target_yaw)
+        arrived = self._wait_arrival_yaw(
+            target_yaw, ROTATION_YAW_TOL_RAD, ROTATION_TIMEOUT_S
+        )
 
-        self._settle()
-        # калибровка rate×duration: achieved vs commanded
+        # калибровка: achieved vs commanded. commanded = СНЭПНУТАЯ дельта
+        # (target_yaw − cur_yaw), а не сырые ±15° — closed-loop целится в неё.
         new_heading = self._get_pose().heading_rad
         achieved_deg = math.degrees(_angle_diff(new_heading, cur_yaw))
-        commanded_deg = math.degrees(dyaw_rad)
+        commanded_deg = math.degrees(_angle_diff(target_yaw, cur_yaw))
         if abs(commanded_deg) > 1e-6:
             self._yaw_calib_sum += achieved_deg / commanded_deg
             self._yaw_calib_n += 1
@@ -483,7 +490,7 @@ class ActionExecutor:
                 f"ratio={achieved_deg / commanded_deg:.3f} "
                 f"heading={math.degrees(new_heading):+.1f} "
                 f"d15={_lattice_dev_deg(new_heading, 15.0):+.2f} "
-                f"n={self._yaw_calib_n}"
+                f"arrived={int(arrived)} n={self._yaw_calib_n}"
             )
             if self._yaw_calib_n % 25 == 0:
                 self.node.get_logger().info(
@@ -492,7 +499,7 @@ class ActionExecutor:
                     f"за {self._yaw_calib_n} ротаций (последняя: "
                     f"{achieved_deg:+.1f}°/{commanded_deg:+.1f}°)"
                 )
-        return {"kind": 1.0, "arrived": 1.0}
+        return {"kind": 1.0, "arrived": float(arrived)}
 
     def _scan(self) -> dict[str, float]:
         self._servo_deg = (self._servo_deg + SERVO_STEP_DEG) % SERVO_MAX_DEG
