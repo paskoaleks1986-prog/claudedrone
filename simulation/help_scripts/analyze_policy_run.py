@@ -23,6 +23,11 @@ STEP = re.compile(r"step (\d+) · action (\S+).*coverage ([0-9.]+) · escape_tot
 GATE = re.compile(r"gate: action (\d) отклонён")
 SAFETY = re.compile(r"safety still active")
 DEGRADE = re.compile(r"action 7→(\d)")
+# no-travel: action 7 у стены (front ≤ margin → travel ≤ 0.01, дрон не сдвинулся).
+# Acceptance Alignment-v1 (Aleks): no-travel ≤ 2% за полный ран (до MISSION
+# COMPLETE или 500 шагов). См. action_executor.py "no travel" warn.
+NOTRAVEL = re.compile(r"no travel")
+NOTRAVEL_ACCEPTANCE_PCT = 2.0
 
 
 def minute_of(line: str, t0: int) -> int | None:
@@ -49,7 +54,8 @@ def main() -> None:
         sys.exit(1)
 
     per_min: dict[int, dict[str, float]] = defaultdict(
-        lambda: {"steps": 0, "gate": 0, "degrade7": 0, "cov": 0.0, "esc": 0})
+        lambda: {"steps": 0, "gate": 0, "degrade7": 0, "cov": 0.0, "esc": 0,
+                 "notravel": 0})
     last_esc = 0
     for ln in lines:
         mn = minute_of(ln, t0)
@@ -66,6 +72,8 @@ def main() -> None:
             per_min[mn]["gate"] += 1
         if DEGRADE.search(ln):
             per_min[mn]["degrade7"] += 1
+        if NOTRAVEL.search(ln):
+            per_min[mn]["notravel"] += 1
 
     safety_per_min: dict[int, int] = defaultdict(int)
     if ros_log:
@@ -85,10 +93,18 @@ def main() -> None:
 
     total_steps = sum(int(d["steps"]) for d in per_min.values())
     total_int = sum(int(d["gate"]) + int(d["esc"]) for d in per_min.values())
+    total_notravel = sum(int(d["notravel"]) for d in per_min.values())
     if total_steps:
         print(f"\nИтого: {total_steps} логированных шагов, "
               f"{total_int} вмешательств (gate+escape) "
               f"= {100 * total_int / total_steps:.1f} на 100 шагов")
+        # ── ACCEPTANCE Alignment-v1 (Aleks): no-travel ≤ 2% за полный ран ──
+        nt_pct = 100 * total_notravel / total_steps
+        ok = nt_pct <= NOTRAVEL_ACCEPTANCE_PCT
+        print(f"\n=== ACCEPTANCE Alignment-v1 (no-travel) ===")
+        print(f"  no-travel: {total_notravel}/{total_steps} = {nt_pct:.2f}% "
+              f"(цель ≤ {NOTRAVEL_ACCEPTANCE_PCT:.0f}%) {'✓ PASS' if ok else '✗ FAIL'}")
+        print(f"  (v1.5c baseline до alignment: 5-8%; aligned N=6 цель ≤2%)")
         mins = sorted(per_min)
         if len(mins) >= 6:
             half = len(mins) // 2
