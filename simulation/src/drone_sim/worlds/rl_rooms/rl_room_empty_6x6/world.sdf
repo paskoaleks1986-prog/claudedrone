@@ -148,6 +148,27 @@
       </link>
     </model>
 
+    <!-- Прозрачный физический потолок (Aleks 2026-06-08): держит дрон от
+         вертикального ухода + виден дрон на видео (alpha 0.3). z=4.0 = top of
+         walls. Parity-нейтрален: obs = 2D scan на высоте дрона, потолок не виден. -->
+    <model name="ceiling">
+      <static>true</static>
+      <link name="ceiling_link">
+        <collision name="ceiling_col">
+          <pose>0 0 4.0 0 0 0</pose>
+          <geometry><box><size>6.4 6.4 0.05</size></box></geometry>
+        </collision>
+        <visual name="ceiling_vis">
+          <pose>0 0 4.0 0 0 0</pose>
+          <geometry><box><size>6.4 6.4 0.05</size></box></geometry>
+          <material>
+            <ambient>0.8 0.8 0.8 0.3</ambient>
+            <diffuse>0.8 0.8 0.8 0.3</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
     <!-- Drone spawn — point in spawn_zone — z = 0.2 m (clearance),
          takeoff_node поднимет на operational z = 0.5 m. -->
     <include>
