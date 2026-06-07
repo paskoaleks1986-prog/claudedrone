@@ -103,9 +103,19 @@ PARAM_DEFAULTS: dict[str, object] = {
 # дрона до соседней со стеной клетки, а наш safety-слой держит margin 0.7 м.
 # Решение: движенческое действие, не давшее смены клетки NOOP_MASK_LIMIT раз
 # подряд, временно убирается из action_mask (динамическая маска — штатный
-# режим MaskablePPO) до смены клетки или ротации (меняет body→world directions).
+# режим MaskablePPO) до смены клетки ИЛИ накопленного поворота ≥ 45°.
+# Release по ОДНОЙ ротации (первая версия) дал corner-dance: 15° мало,
+# gate блокирует снова → цикл 3 блока + 1 ротация навечно (2953 gate-block
+# в ране 15:2x). 45° = 3 ротации — направление действия реально сменилось.
 NOOP_MASK_LIMIT = 3
+RELEASE_HEADING_DEG = 45.0
 MOVEMENT_ACTIONS = (0, 1, 2, 3, 7)
+# Backstop: rot-осцилляция (+15/−15) не копит Δheading и не меняет клетку —
+# детерминированный argmax может зациклиться и на ротациях. После
+# STALL_STEPS шагов без смены клетки predict один раз сэмплирует из
+# распределения модели (deterministic=False) — выход из цикла действиями
+# самой модели, не хардкодом.
+STALL_STEPS = 30
 
 
 class PolicyBridgeNode(Node):
@@ -137,7 +147,11 @@ class PolicyBridgeNode(Node):
         self._last_mapped = 0.0
         # v1.5c livelock breaker (см. NOOP_MASK_LIMIT)
         self._noop_streak: dict[int, int] = {}
-        self._infeasible_actions: set[int] = set()
+        # action -> heading на момент маскировки (release: cell change ИЛИ
+        # |Δheading| ≥ RELEASE_HEADING_DEG — направление реально сменилось)
+        self._infeasible_actions: dict[int, float] = {}
+        self._cell_stall_count = 0
+        self._stall_kick_count = 0
         # v1.5c deploy
         self.model_family = str(self.get_parameter("model_family").value)
         if self.model_family not in ("sweep02", "activemapping"):
@@ -398,6 +412,7 @@ class PolicyBridgeNode(Node):
         """Учёт no-op'ов исполнения. moved = клетка дрона сменилась за шаг."""
         if moved:
             self._noop_streak.clear()
+            self._cell_stall_count = 0
             if self._infeasible_actions:
                 self.get_logger().info(
                     "feasibility mask released (cell change): "
@@ -405,26 +420,32 @@ class PolicyBridgeNode(Node):
                 )
                 self._infeasible_actions.clear()
             return
-        if action in (4, 5):
-            # ротация меняет body→world направление actions 0-3/7 —
-            # прежняя инфизибильность устаревает
-            self._noop_streak.clear()
-            if self._infeasible_actions:
-                self.get_logger().info(
-                    "feasibility mask released (rotation): "
-                    f"{sorted(self._infeasible_actions)}"
-                )
-                self._infeasible_actions.clear()
-            return
+        self._cell_stall_count += 1
+        # ротации меняют body→world направления — release только после
+        # НАКОПЛЕННОГО поворота ≥ RELEASE_HEADING_DEG (см. RCA corner-dance)
+        heading = self.obs_builder.pose.heading_rad
+        released = [
+            a for a, h0 in self._infeasible_actions.items()
+            if abs(math.degrees(self._angle_diff(heading, h0)))
+            >= RELEASE_HEADING_DEG
+        ]
+        for a in released:
+            del self._infeasible_actions[a]
+            self._noop_streak.pop(a, None)
+        if released:
+            self.get_logger().info(
+                f"feasibility mask released (Δheading ≥ {RELEASE_HEADING_DEG}°): "
+                f"{sorted(released)}"
+            )
         if action not in MOVEMENT_ACTIONS:
             return
         n = self._noop_streak.get(action, 0) + 1
         self._noop_streak[action] = n
         if n >= NOOP_MASK_LIMIT and action not in self._infeasible_actions:
-            self._infeasible_actions.add(action)
+            self._infeasible_actions[action] = heading
             self.get_logger().warn(
                 f"feasibility mask: action {action} no-op ×{n} подряд — "
-                "маскирую до смены клетки/ротации"
+                f"маскирую до смены клетки / Δheading {RELEASE_HEADING_DEG}°"
             )
 
     def _build_coverage(self) -> Coverage:
@@ -700,8 +721,16 @@ class PolicyBridgeNode(Node):
                 action_mask = action_mask.copy()
                 for a in self._infeasible_actions:
                     action_mask[a] = False
+            deterministic = self.deterministic
+            if deterministic and self._cell_stall_count >= STALL_STEPS:
+                deterministic = False  # stall backstop: сэмпл из распределения
+                self._stall_kick_count += 1
+                self.get_logger().warn(
+                    f"stall backstop: {self._cell_stall_count} шагов без смены "
+                    f"клетки — stochastic predict (kick #{self._stall_kick_count})"
+                )
             action_arr, _ = self.model.predict(
-                obs, action_masks=action_mask, deterministic=self.deterministic
+                obs, action_masks=action_mask, deterministic=deterministic
             )
             self.mapped_ratio_pub.publish(Float32(data=mapped))
             self._last_mapped = mapped
