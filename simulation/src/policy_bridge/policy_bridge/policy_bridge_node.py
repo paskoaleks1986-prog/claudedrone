@@ -68,6 +68,11 @@ PARAM_DEFAULTS: dict[str, object] = {
     # Блок 2 (Aleks 2026-06-07): mission-done по DISPLAY-карте (дорисованной).
     # Ниже parity-0.95 — display заполнена плотнее (углы/дыры<проёма закрыты).
     "display_success_threshold": 0.92,
+    # Alignment §3.1: фильтр мелких frontier-кластеров (parity-карта, в obs).
+    # 1 = bit-exact с историческим env (v1.5c, AM-4 фикстуры). 3 = aligned-
+    # build ПОСЛЕ retrain (env + bridge оба на 3). Меняет obs → НЕ ставить 3
+    # пока модель не дообучена с фильтром (иначе off-distribution).
+    "min_frontier_cluster_cells": 1,
     # TASK-059 attempt #1 RCA (2026-05-19): 0.15 m оказался слишком тесный
     # для real Gazebo (drone 0.3 m/s, VL53L0X max 2 m → no warning до впритык).
     # 0.50 m = ~1.7 cell stop distance, безопаснее.
@@ -264,6 +269,9 @@ class PolicyBridgeNode(Node):
                 get_vl_raw_m=lambda: self.obs_builder.perimeter_distances_m,
                 get_tf_raw_m=lambda: self.obs_builder.sweep_distance_m,
                 get_servo_deg=lambda: self.executor_act.servo_deg,
+                min_frontier_cluster_cells=int(
+                    self.get_parameter("min_frontier_cluster_cells").value
+                ),
             )
 
         self.executor_act = ActionExecutor(

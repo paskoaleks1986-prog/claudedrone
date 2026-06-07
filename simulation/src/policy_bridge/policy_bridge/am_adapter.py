@@ -46,6 +46,7 @@ class ActiveMappingAdapter:
         get_tf_raw_m: Callable[[], float],        # sweep, метры (inf уже capped)
         get_servo_deg: Callable[[], float],       # commanded angle executor'а
         room_y_m: float | None = None,            # Блок Б: rect-миры; None = квадрат
+        min_frontier_cluster_cells: int = 1,      # §3.1: 1=parity, 3=aligned
     ) -> None:
         # Протокол §1: модельный obs-контракт = 64×64 @ 0.1 м. В мирах
         # больше карта строится rect-гридом по миру (Блок Б), но нормализации
@@ -75,7 +76,10 @@ class ActiveMappingAdapter:
         self._get_tf_raw_m = get_tf_raw_m
         self._get_servo_deg = get_servo_deg
 
-        self.builder = OccupancyMapBuilder(nx=nx, ny=ny)
+        self.builder = OccupancyMapBuilder(
+            nx=nx, ny=ny,
+            min_frontier_cluster_cells=min_frontier_cluster_cells,
+        )
         self._last_cell: tuple[int, int] | None = None
         self.integrations = 0
 

@@ -15,6 +15,7 @@ import math
 from collections import deque
 
 import numpy as np
+from scipy import ndimage
 
 GRID = 64
 UNKNOWN, FREE, OCCUPIED = 0, 1, 2
@@ -102,6 +103,32 @@ def update_frontiers(occ: np.ndarray) -> np.ndarray:
     adj_unknown[:, 1:] |= unknown[:, :-1]
     adj_unknown[:, :-1] |= unknown[:, 1:]
     return free & adj_unknown
+
+
+# §3.1 (Alignment Sprint, Aleks 2026-06-07): фильтр мелких frontier-кластеров.
+# Изолированный кластер < MIN клеток (< 0.3м) = угловой артефакт, не реальное
+# неизведанное — рейкаст его закроет. Ref Yamauchi 1997 + практика.
+# ⚠ ПАРИТЕТ: меняет frontier-маску (она в obs). min=1 → НИ-ОДНОГО-ОП,
+# bit-exact с историческим env (v1.5c обучена без фильтра, AM-4 фикстуры
+# тоже). Aligned-build = 3 на ОБЕИХ сторонах (env + bridge) после retrain.
+MIN_FRONTIER_CLUSTER_CELLS_DEFAULT = 1   # off = parity-safe; aligned = 3
+_FRONTIER_4CONN = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=bool)
+
+
+def filter_small_frontiers(mask: np.ndarray, min_cells: int) -> np.ndarray:
+    """Убрать 4-связные frontier-кластеры размером < min_cells.
+
+    min_cells ≤ 1 → возврат без изменений (parity-safe no-op). Кластеризация
+    через connected components (4-связность) — детерминированный результат,
+    эквивалент BFS из §3.1 протокола."""
+    if min_cells <= 1 or not mask.any():
+        return mask
+    labels, n = ndimage.label(mask, structure=_FRONTIER_4CONN)
+    if n == 0:
+        return mask
+    sizes = np.bincount(labels.ravel())
+    keep = np.isin(labels, np.flatnonzero(sizes >= min_cells))
+    return mask & keep
 
 
 def frontier_bfs(
@@ -208,8 +235,13 @@ class OccupancyMapBuilder:
     вызывающего предупредить).
     """
 
-    def __init__(self, *, nx: int = GRID, ny: int = GRID) -> None:
+    def __init__(
+        self, *, nx: int = GRID, ny: int = GRID,
+        min_frontier_cluster_cells: int = MIN_FRONTIER_CLUSTER_CELLS_DEFAULT,
+    ) -> None:
         self.nx, self.ny = int(nx), int(ny)
+        # §3.1: 1 = parity-safe (v1.5c, фикстуры); 3 = aligned-build (retrain)
+        self.min_frontier_cluster_cells = int(min_frontier_cluster_cells)
         self.occ = np.zeros((self.ny, self.nx), dtype=np.uint8)
         self._frontier_mask = np.zeros((self.ny, self.nx), dtype=bool)
 
@@ -239,7 +271,10 @@ class OccupancyMapBuilder:
             self.occ, x_cells, y_cells, heading_rad,
             vl_cells, servo_deg, tf_cells,
         )
-        self._frontier_mask = update_frontiers(self.occ)
+        # §3.1: фильтр мелких кластеров (no-op при min ≤ 1 → bit-exact)
+        self._frontier_mask = filter_small_frontiers(
+            update_frontiers(self.occ), self.min_frontier_cluster_cells
+        )
 
     @property
     def frontier_mask(self) -> np.ndarray:
