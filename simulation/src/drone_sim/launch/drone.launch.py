@@ -126,13 +126,16 @@ def generate_launch_description():
         # минимальный клиренс считается ЗАНОВО по диаметру пропа и diagonal
         # frame. Ниже 0.4 не идти: near-wall states за пределами надёжного
         # переноса модели без дообучения. Cap покрытия при 0.4 ≈ 0.76.
+        # v2 run F checklist #1 (2026-06-07): 0.4 → 0.45 — на floor 0.4 guard
+        # стрелял 11 раз/18 шагов по oblique vl[5]≈0.395-0.400 (action7
+        # tug-of-war на границе). Когерентный сет: gate 0.55, wt 0.70.
         Node(
             package='drone_sim',
             executable='safety_guard',
             name='safety_guard',
             output='screen',
             parameters=[{
-                'stop_threshold_floor': 0.4,
+                'stop_threshold_floor': 0.45,
                 'check_rate_hz': 50.0,
             }],
         ),

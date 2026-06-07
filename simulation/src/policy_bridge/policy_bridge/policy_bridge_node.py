@@ -80,7 +80,8 @@ PARAM_DEFAULTS: dict[str, object] = {
     # этого к препятствию, отклоняется до исполнения (training parity: env не
     # двигает дрона в стену). Правило: gate_margin = safety floor + cell.
     # v2 run F (Aleks 08:26): 0.5 (= floor 0.4 + cell). SIM-ONLY клиренс.
-    "gate_margin_m": 0.5,
+    # run F checklist #1 (2026-06-07): floor 0.4 → 0.45 ⇒ gate 0.55.
+    "gate_margin_m": 0.55,
 }
 
 

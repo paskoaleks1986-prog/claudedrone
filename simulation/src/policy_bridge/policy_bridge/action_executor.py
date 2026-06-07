@@ -74,7 +74,9 @@ ARRIVAL_POLL_S = 0.05
 ARRIVAL_SPEED_EPS_M_S = 0.10
 
 # Action 7 stop margin
-ACTION7_WALL_MARGIN_M = 0.4
+# run F checklist #1 (2026-06-07): 0.4 → 0.45 вместе с safety floor —
+# на 0.4 guard стрелял по oblique vl[5]≈0.395-0.400 сразу после arrival
+ACTION7_WALL_MARGIN_M = 0.45
 
 
 def _angle_diff(a: float, b: float) -> float:
