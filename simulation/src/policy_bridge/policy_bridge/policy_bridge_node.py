@@ -96,6 +96,17 @@ PARAM_DEFAULTS: dict[str, object] = {
     "stuck_escape": "auto",
 }
 
+# v1.5c livelock breaker (ран 2026-06-07 15:0x RCA): deterministic policy +
+# физический отказ исполнения (front ≤ margin → action 7 «no travel») =
+# замороженный obs → модель вечно повторяет одно действие (2800 шагов у
+# стены, 1558 no-travel warn'ов). В env такого состояния НЕТ — env двигает
+# дрона до соседней со стеной клетки, а наш safety-слой держит margin 0.7 м.
+# Решение: движенческое действие, не давшее смены клетки NOOP_MASK_LIMIT раз
+# подряд, временно убирается из action_mask (динамическая маска — штатный
+# режим MaskablePPO) до смены клетки или ротации (меняет body→world directions).
+NOOP_MASK_LIMIT = 3
+MOVEMENT_ACTIONS = (0, 1, 2, 3, 7)
+
 
 class PolicyBridgeNode(Node):
     def __init__(self) -> None:
@@ -124,6 +135,9 @@ class PolicyBridgeNode(Node):
         self.gate_margin_m = float(self.get_parameter("gate_margin_m").value)
         self._gate_block_count = 0
         self._last_mapped = 0.0
+        # v1.5c livelock breaker (см. NOOP_MASK_LIMIT)
+        self._noop_streak: dict[int, int] = {}
+        self._infeasible_actions: set[int] = set()
         # v1.5c deploy
         self.model_family = str(self.get_parameter("model_family").value)
         if self.model_family not in ("sweep02", "activemapping"):
@@ -370,6 +384,48 @@ class PolicyBridgeNode(Node):
         self.visited.update(x_m, y_m)
         if self.am_adapter is not None:
             self.am_adapter.on_pose_update(x_m, y_m)
+
+    # ---- v1.5c livelock breaker ---------------------------------------------
+
+    def _cell_of(self, pose) -> tuple[int, int]:
+        half = self.room_size / 2.0
+        return (
+            int((pose.x_m + half) / self.cell_size),
+            int((pose.y_m + half) / self.cell_size),
+        )
+
+    def _feasibility_update(self, action: int, moved: bool) -> None:
+        """Учёт no-op'ов исполнения. moved = клетка дрона сменилась за шаг."""
+        if moved:
+            self._noop_streak.clear()
+            if self._infeasible_actions:
+                self.get_logger().info(
+                    "feasibility mask released (cell change): "
+                    f"{sorted(self._infeasible_actions)}"
+                )
+                self._infeasible_actions.clear()
+            return
+        if action in (4, 5):
+            # ротация меняет body→world направление actions 0-3/7 —
+            # прежняя инфизибильность устаревает
+            self._noop_streak.clear()
+            if self._infeasible_actions:
+                self.get_logger().info(
+                    "feasibility mask released (rotation): "
+                    f"{sorted(self._infeasible_actions)}"
+                )
+                self._infeasible_actions.clear()
+            return
+        if action not in MOVEMENT_ACTIONS:
+            return
+        n = self._noop_streak.get(action, 0) + 1
+        self._noop_streak[action] = n
+        if n >= NOOP_MASK_LIMIT and action not in self._infeasible_actions:
+            self._infeasible_actions.add(action)
+            self.get_logger().warn(
+                f"feasibility mask: action {action} no-op ×{n} подряд — "
+                "маскирую до смены клетки/ротации"
+            )
 
     def _build_coverage(self) -> Coverage:
         path = self.free_mask_path
@@ -640,6 +696,10 @@ class PolicyBridgeNode(Node):
             # BFS-расчётом. predict БЕЗ action_masks запрещён (F1).
             self.am_adapter.integrate_now()
             obs, action_mask, mapped = self.am_adapter.snapshot()
+            if self._infeasible_actions:
+                action_mask = action_mask.copy()
+                for a in self._infeasible_actions:
+                    action_mask[a] = False
             action_arr, _ = self.model.predict(
                 obs, action_masks=action_mask, deterministic=self.deterministic
             )
@@ -706,16 +766,23 @@ class PolicyBridgeNode(Node):
             )
             self.action_pub.publish(Int32(data=action_mod))
             self.step_count += 1
+            # gate-отказ = нет смещения — учитываем в livelock breaker
+            if self.am_adapter is not None:
+                self._feasibility_update(action_mod, moved=False)
             return
 
         # Publish EXECUTED action (post-stuck/adaptive) для policy logging
         self.action_pub.publish(Int32(data=action_mod))
 
+        cell_before = self._cell_of(pose)
         self.executor_act.execute(
             action_mod,
             override_speed=cfg.linear_speed,
             override_wall_threshold=cfg.wall_threshold,
         )
+        if self.am_adapter is not None:
+            moved = self._cell_of(self.obs_builder.pose) != cell_before
+            self._feasibility_update(action_mod, moved)
 
         cov = self.coverage.compute(self.visited.grid)
         self.coverage_pub.publish(Float32(data=float(cov)))
