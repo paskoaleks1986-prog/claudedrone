@@ -37,6 +37,7 @@ from rclpy.qos import QoSProfile, DurabilityPolicy, HistoryPolicy
 
 from policy_bridge.action_gate import gate_blocks, movement_clearance_m
 from policy_bridge.am_adapter import ActiveMappingAdapter
+from policy_bridge.display_map import build_display_map, display_coverage
 from policy_bridge.obs_builder import ObsBuilder
 from policy_bridge.world_config import WorldGeometry, load_world_geometry
 from policy_bridge.visited_grid import VisitedGridBuilder
@@ -64,6 +65,9 @@ PARAM_DEFAULTS: dict[str, object] = {
     # Пост-терминальное поведение модели вырождено (frontiers исчерпаны,
     # ран 3: stall-шторм после mapped 0.975) — миссия завершена, hover.
     "mapped_success_threshold": 0.95,
+    # Блок 2 (Aleks 2026-06-07): mission-done по DISPLAY-карте (дорисованной).
+    # Ниже parity-0.95 — display заполнена плотнее (углы/дыры<проёма закрыты).
+    "display_success_threshold": 0.92,
     # TASK-059 attempt #1 RCA (2026-05-19): 0.15 m оказался слишком тесный
     # для real Gazebo (drone 0.3 m/s, VL53L0X max 2 m → no warning до впритык).
     # 0.50 m = ~1.7 cell stop distance, безопаснее.
@@ -141,7 +145,12 @@ class PolicyBridgeNode(Node):
         self.mapped_success_threshold = float(
             self.get_parameter("mapped_success_threshold").value
         )
+        self.display_success_threshold = float(
+            self.get_parameter("display_success_threshold").value
+        )
         self._mission_complete = False
+        self._last_display = None       # Блок 2: дорисованная display-карта
+        self._last_disp_cov = 0.0
         self.wall_threshold = float(self.get_parameter("wall_threshold").value)
         self.linear_speed = float(self.get_parameter("linear_speed").value)
         self.angular_speed = float(self.get_parameter("angular_speed").value)
@@ -789,15 +798,24 @@ class PolicyBridgeNode(Node):
             # BFS-расчётом. predict БЕЗ action_masks запрещён (F1).
             self.am_adapter.integrate_now()
             obs, action_mask, mapped = self.am_adapter.snapshot()
-            # v1.5c: терминация эпизода (env: coverage>95% → done). Дальше
-            # модель вырождена (frontiers исчерпаны) — миссия выполнена, hover.
-            if mapped >= self.mapped_success_threshold:
+            # Блок 2: mission-done по DISPLAY-карте (дорисованной), не по
+            # parity. Display заполнена плотнее (углы достроены, дыры < проёма
+            # закрыты) → порог 0.92 ниже parity-0.95; дрон перестаёт гонять
+            # за угловыми пикселями. Модель продолжает obs из parity (выше).
+            disp = build_display_map(
+                self.am_adapter.builder.occ, self.cell_size
+            )
+            disp_cov = display_coverage(disp, self.coverage.free_mask)
+            self._last_display = disp
+            self._last_disp_cov = disp_cov
+            if disp_cov >= self.display_success_threshold:
                 self._mission_complete = True
                 self.mapped_ratio_pub.publish(Float32(data=mapped))
+                self._publish_occupancy()  # финальная display-карта в GIF
                 self.get_logger().info(
-                    f"🏁 MISSION COMPLETE: mapped {mapped:.3f} ≥ "
-                    f"{self.mapped_success_threshold} на шаге {self.step_count} "
-                    f"— эпизод завершён, hover (env-семантика терминации)"
+                    f"🏁 MISSION COMPLETE: display_cov {disp_cov:.3f} ≥ "
+                    f"{self.display_success_threshold} (parity mapped "
+                    f"{mapped:.3f}) на шаге {self.step_count} — hover"
                 )
                 return
             if self._infeasible_actions:
@@ -940,8 +958,13 @@ class PolicyBridgeNode(Node):
             )
 
     def _publish_occupancy(self) -> None:
-        """Occupancy AM-эпизода как OccupancyGrid (для GIF-карт и Foxglove)."""
-        occ = self.am_adapter.builder.occ
+        """Occupancy для GIF/трека — Блок 2: DISPLAY-карта (дорисованная),
+        не parity. Модель parity не теряет (она в am_adapter, отдельно)."""
+        occ = (
+            self._last_display
+            if self._last_display is not None
+            else self.am_adapter.builder.occ
+        )
         msg = OccupancyGrid()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "map"
