@@ -19,7 +19,12 @@ import sys
 from collections import defaultdict
 
 TS = re.compile(r"\[(\d{10})\.\d+\]")
-STEP = re.compile(r"step (\d+) · action (\S+).*coverage ([0-9.]+) · escape_total=(\d+)")
+# .*? между coverage и escape_total — лог теперь содержит '· mapped X ·' между
+# ними (формат изменился; старый ` · escape_total` вплотную больше не матчился).
+STEP = re.compile(r"step (\d+) · action (\S+).*coverage ([0-9.]+).*escape_total=(\d+)")
+# любой счётчик шага (action-строки, WF-строки, 'на шаге N' в MISSION COMPLETE) —
+# для реального знаменателя no-travel (step-строки логируются разреженно).
+ANY_STEP = re.compile(r"(?:step|шаге) (\d+)")
 GATE = re.compile(r"gate: action (\d) отклонён")
 SAFETY = re.compile(r"safety still active")
 DEGRADE = re.compile(r"action 7→(\d)")
@@ -99,10 +104,15 @@ def main() -> None:
               f"{total_int} вмешательств (gate+escape) "
               f"= {100 * total_int / total_steps:.1f} на 100 шагов")
         # ── ACCEPTANCE Alignment-v1 (Aleks): no-travel ≤ 2% за полный ран ──
-        nt_pct = 100 * total_notravel / total_steps
+        # Знаменатель = реальный max достигнутый шаг (step-строки логируются
+        # разреженно, ~раз в 50; берём max из step/'на шаге N').
+        max_step = max((int(m.group(1)) for ln in lines
+                        for m in [ANY_STEP.search(ln)] if m), default=total_steps)
+        denom = max(max_step, 1)
+        nt_pct = 100 * total_notravel / denom
         ok = nt_pct <= NOTRAVEL_ACCEPTANCE_PCT
         print(f"\n=== ACCEPTANCE Alignment-v1 (no-travel) ===")
-        print(f"  no-travel: {total_notravel}/{total_steps} = {nt_pct:.2f}% "
+        print(f"  no-travel: {total_notravel}/{denom} шагов = {nt_pct:.2f}% "
               f"(цель ≤ {NOTRAVEL_ACCEPTANCE_PCT:.0f}%) {'✓ PASS' if ok else '✗ FAIL'}")
         print(f"  (v1.5c baseline до alignment: 5-8%; aligned N=6 цель ≤2%)")
         mins = sorted(per_min)
