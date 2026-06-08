@@ -17,6 +17,11 @@ ch3=180° зад, ch4=+240°, ch5=+300°.
 """
 from __future__ import annotations
 
+import math
+
+# §3.2 v2: офсеты 6 VL-каналов (body frame, градусы) — порядок ch0..ch5.
+VL_OFFSETS_DEG = (0.0, 60.0, 120.0, 180.0, 240.0, 300.0)
+
 # Направление движения (body frame, градусы) для каждого movement-action.
 # Strafe 90°/270° лежит между двумя сенсорами — берём min() пары.
 _ACTION_SENSORS: dict[int, tuple[int, ...]] = {
@@ -109,3 +114,37 @@ def sensor_action_mask(free_runs: list[int], n_cells: int) -> list[bool]:
         True,                            # 6 scan
         f[0] > n_cells,                  # 7 action7 = heading (= ch0)
     ]
+
+
+def sensor_free_runs(
+    grid,
+    x_cells: float,
+    y_cells: float,
+    heading_rad: float,
+    *,
+    cap: int = 64,
+    grid_size: int = 64,
+    offsets_deg: tuple[float, ...] = VL_OFFSETS_DEG,
+) -> list[int]:
+    """6 free_run по VL-каналам — БИТ-в-бит зеркало drone_map_env._free_run
+    (occ=False): целочисленный raycast (k+1)*u по сетке, `grid[cy,cx] != 0` =
+    стена, cap клеток, возвращает k достигнутых FREE-клеток на канал.
+
+    ⚠ grid здесь = ground-truth/сенсорная карта свободы (0=free, !=0=стена),
+    НЕ occupancy-builder (там UNKNOWN=0/FREE=1/OCC=2). Это вход v2 sensor-mask
+    (env occ=False). Verified parity 44/44 (test_parity_replay_v2)."""
+    runs: list[int] = []
+    for o in offsets_deg:
+        a = heading_rad + math.radians(o)
+        ux, uy = math.cos(a), math.sin(a)
+        k = 0
+        while k < cap:
+            cx = int(x_cells + (k + 1) * ux)
+            cy = int(y_cells + (k + 1) * uy)
+            if not (0 <= cx < grid_size and 0 <= cy < grid_size):
+                break
+            if grid[cy, cx] != 0:
+                break
+            k += 1
+        runs.append(k)
+    return runs

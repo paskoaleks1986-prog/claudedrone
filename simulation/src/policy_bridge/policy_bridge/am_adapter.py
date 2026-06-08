@@ -36,6 +36,38 @@ TF_MAX_M = 6.4
 TWO_PI = 2.0 * math.pi
 
 
+def build_obs_vector(
+    *,
+    x_cells: float,
+    y_cells: float,
+    heading_rad: float,
+    vl_raw_m: list[float],          # 6 каналов, sensor-frame (БЕЗ mount)
+    tf_raw_m: float,                # sweep, метры (inf уже capped)
+    servo_deg: float,
+    frontier_directions: np.ndarray,  # [8] из obs_fields
+    frontier_count: float,            # из obs_fields (норм. /4096)
+    mapped_ratio: float,              # из obs_fields
+) -> np.ndarray:
+    """Чистая сборка obs Box(21,) по §5 (ROS2-free). Единый источник для
+    ActiveMappingAdapter.snapshot И InferenceCore.build_obs — paritetы
+    (test_parity_replay) сторожат бит-точность. vl центр-референсим (+mount)
+    как в integrate; heading wrap [0,2π); clip [0,1] (поза вне грида)."""
+    obs = np.empty(OBS_DIM, dtype=np.float32)
+    vl_centered = [d + VL_MOUNT_RADIUS_M for d in vl_raw_m]
+    for i, d in enumerate(vl_centered):
+        obs[i] = min(max(d, 0.0), VL_MAX_M) / VL_MAX_M
+    obs[6] = min(max(tf_raw_m, 0.0), TF_MAX_M) / TF_MAX_M
+    obs[7] = (servo_deg % 180.0) / 180.0
+    obs[8] = x_cells / GRID
+    obs[9] = y_cells / GRID
+    obs[10] = (heading_rad % TWO_PI) / TWO_PI
+    obs[11:19] = frontier_directions
+    obs[19] = frontier_count
+    obs[20] = mapped_ratio
+    np.clip(obs, 0.0, 1.0, out=obs)
+    return obs
+
+
 class ActiveMappingAdapter:
     """Связка OccupancyMapBuilder ↔ bridge-нода для модельной семьи AM-v1."""
 
@@ -143,21 +175,13 @@ class ActiveMappingAdapter:
         xc, yc = self._to_cells(pose.x_m, pose.y_m)
         heading = pose.heading_rad % TWO_PI          # §5: wrap [0, 2π)
 
-        obs = np.empty(OBS_DIM, dtype=np.float32)
-        vl_centered = [d + VL_MOUNT_RADIUS_M for d in self._get_vl_raw_m()]
-        for i, d in enumerate(vl_centered):
-            obs[i] = min(max(d, 0.0), VL_MAX_M) / VL_MAX_M
-        obs[6] = min(max(self._get_tf_raw_m(), 0.0), TF_MAX_M) / TF_MAX_M
-        obs[7] = (self._get_servo_deg() % 180.0) / 180.0
-        obs[8] = xc / GRID
-        obs[9] = yc / GRID
-        obs[10] = heading / TWO_PI
-
         fields = self.builder.obs_fields(xc, yc, heading, self.free_mask)
-        obs[11:19] = fields["frontier_directions"]
-        obs[19] = fields["frontier_count"]
-        obs[20] = fields["mapped_ratio"]
-        # Box(0,1) контракт модели — поза вне грида (safe-box edge cases)
-        # не должна выдавать out-of-range значения.
-        np.clip(obs, 0.0, 1.0, out=obs)
+        obs = build_obs_vector(
+            x_cells=xc, y_cells=yc, heading_rad=pose.heading_rad,
+            vl_raw_m=self._get_vl_raw_m(), tf_raw_m=self._get_tf_raw_m(),
+            servo_deg=self._get_servo_deg(),
+            frontier_directions=fields["frontier_directions"],
+            frontier_count=fields["frontier_count"],
+            mapped_ratio=fields["mapped_ratio"],
+        )
         return obs, fields["action_mask"], float(fields["mapped_ratio"])
