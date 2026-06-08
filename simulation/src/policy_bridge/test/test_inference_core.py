@@ -19,6 +19,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from policy_bridge.action_gate import raw_free_runs, sensor_action_mask
 from policy_bridge.inference_core import InferenceCore, Pose
 from policy_bridge.occupancy_map_builder import (
     GRID, MAX_TF_RANGE_CELLS, MAX_VL_RANGE_CELLS, RAY_STEP, VL_OFFSETS_DEG,
@@ -64,6 +65,18 @@ def _readings_cells(grid, x, y, heading, servo_deg):
 def _integrate_at(builder, grid, x, y, heading, servo):
     vl, tf = _readings_cells(grid, x, y, heading, servo)
     integrate_pose(builder.occ, x, y, heading, vl, servo, tf)
+
+
+def test_raw_free_runs_formula():
+    """raw_free_runs (ЕДИНАЯ с rl-lab формула): int((perim+mount)/cell), ch0..5,
+    center-frame. Контракт: функция == та же формула (RL зовёт тот же код).
+    Не требует пака/модели. NB: int() флорит (float) — node и rl-lab идентичны."""
+    p = [0.3, 0.7, 1.0, 0.0, 2.0, 0.45]
+    ref = [int((v + 0.1) / 0.1) for v in p]              # эталон формулы ноды
+    assert raw_free_runs(p) == ref
+    assert len(raw_free_runs([0.0] * 6)) == 6            # 6 каналов ch0..5
+    assert raw_free_runs([0.0] * 6, mount_radius_m=0.0) == [0] * 6   # без mount
+    assert raw_free_runs([0.0] * 6, mount_radius_m=0.1) == [1] * 6   # mount=+1 клетка
 
 
 def _load():

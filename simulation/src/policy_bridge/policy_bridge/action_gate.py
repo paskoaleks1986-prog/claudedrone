@@ -116,6 +116,26 @@ def sensor_action_mask(free_runs: list[int], n_cells: int) -> list[bool]:
     ]
 
 
+VL_MOUNT_RADIUS_M = 0.1   # §2.4: VL53 на радиусе 0.1м от центра дрона
+
+
+def raw_free_runs(
+    perim_m,
+    *,
+    cell_size_m: float = 0.1,
+    mount_radius_m: float = VL_MOUNT_RADIUS_M,
+    n: int = 6,
+) -> list[int]:
+    """free_run по 6 RAW VL-сенсорам (sensor-frame метры из /drone/vl53l0x/ch0..5)
+    → center-frame целые клетки. ЕДИНАЯ формула для bridge-ноды (v2 sensor-mask)
+    И rl-lab SITLDroneEnv (избегаем дрейфа): int((perim_m[i] + mount)/cell),
+    канал-порядок ch0..5, БЕЗ clamp. mount (+0.1м=+1 клетка §2.4) переводит
+    sensor-frame в center-frame (= нативный фрейм env._free_run). Далее →
+    sensor_action_mask(free_runs, N). (env/parity-вариант = occupancy-raycast
+    sensor_free_runs ниже.)"""
+    return [int((perim_m[i] + mount_radius_m) / cell_size_m) for i in range(n)]
+
+
 def sensor_free_runs(
     grid,
     x_cells: float,

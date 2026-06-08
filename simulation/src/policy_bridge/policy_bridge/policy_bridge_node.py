@@ -40,6 +40,7 @@ from policy_bridge.action_gate import (
     action7_sensor_blocks,
     gate_blocks,
     movement_clearance_m,
+    raw_free_runs,
 )
 from policy_bridge.am_adapter import ActiveMappingAdapter, VL_MOUNT_RADIUS_M
 from policy_bridge.inference_core import InferenceCore, Pose
@@ -1046,10 +1047,12 @@ class PolicyBridgeNode(Node):
                 # free_run по 6 VL-каналам (centered raw+mount → клетки, занимает
                 # место F1-маски). free_run[0] снапшотим → executor travel
                 # (тот же → нет jitter). Зеркало drone_map_env sensor_mask=True.
-                free_runs = [
-                    int((perim[i] + VL_MOUNT_RADIUS_M) / self.cell_size)
-                    for i in range(6)
-                ]
+                # Единая формула с rl-lab SITLDroneEnv (action_gate.raw_free_runs):
+                # int((perim+mount)/cell), center-frame, ch0..5.
+                free_runs = raw_free_runs(
+                    perim, cell_size_m=self.cell_size,
+                    mount_radius_m=VL_MOUNT_RADIUS_M,
+                )
                 self._a7_free_run = free_runs[0]
                 # core.build_mask(free_runs=...) — RAW-сенсорный free_run путь
                 # (sim-runtime); env/parity путь — через grid (см. InferenceCore).
