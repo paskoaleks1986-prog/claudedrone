@@ -74,17 +74,15 @@ ATC_RATE_Y_MAX 90
 # 4.8 rename: ATC_ACCEL_Y_MAX 36000 cdeg/s/s -> ATC_ACC_Y_MAX 360 deg/s/s.
 ATC_ACC_Y_MAX 360
 
-# Стенд З4 (Aleks 2026-06-08): DS->AP — AP принимает DISTANCE_SENSOR по MAVLink.
-# ⚠ VERIFY-РЕЗУЛЬТАТ (бенч-ран empty_6x6, 2026-06-08): включение этих параметров
-# БЕЗ активного DISTANCE_SENSOR-сендера в стеке даёт жёсткие prearm-фейлы:
-#   "PreArm: Rangefinder 1: No Data" + "PreArm: PRX1: No Data"
-# (ARMING_SKIPCHK 1 их НЕ снимает — sensor configured-but-no-data = отдельный
-# класс). RNGFND1_TYPE 10 также перекрывает симулированный gz-iris downward
-# rangefinder. Стандартный launch (--full) сендера не поднимает → ломает arm/
-# взлёт во ВСЕХ ранах (indoor.parm общий). ПОЭТОМУ ГЕЙЧУ (disabled by default).
-# Чтобы включить: (1) поднять node-сендер gz-дистанций → MAVLink DISTANCE_SENSOR
-# (PRX/RNGFND), (2) prearm-обработка, (3) RNGFND2 для TF-Luna (RNGFND1 = gz-iris).
-# См. dev-log 29. Раскомментировать ТОЛЬКО вместе с сендером.
-# PRX1_TYPE 2
-# PRX1_ORIENT 0
-# RNGFND1_TYPE 10
+# Стенд DS->AP (Aleks 2026-06-08): AP принимает DISTANCE_SENSOR по MAVLink.
+# ВКЛЮЧЕНО в паре с sender-нодой drone_sim/distance_sensor_forwarder (читает
+# /drone/vl53l0x/ch0..5 + /drone/tf_luna_down LaserScan → mavros distance_sensor
+# → DISTANCE_SENSOR → FC). Без forwarder'а = "PreArm: No Data" (запускать вместе).
+# PRX1 = 6×VL53 proximity (id 1-6, yaw-ориентации). RNGFND2 = TF-Luna down
+# (id 7 PITCH_270). RNGFND1 type 10 + min/max 0.10/6.40.
+PRX1_TYPE 2
+PRX1_ORIENT 0
+RNGFND1_TYPE 10
+RNGFND1_MIN 0.10
+RNGFND1_MAX 6.40
+RNGFND2_TYPE 10

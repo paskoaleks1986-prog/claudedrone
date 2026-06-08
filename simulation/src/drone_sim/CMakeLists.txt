@@ -22,6 +22,11 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
 )
 install(PROGRAMS
+  drone_sim/distance_sensor_forwarder.py
+  RENAME distance_sensor_forwarder
+  DESTINATION lib/${PROJECT_NAME}
+)
+install(PROGRAMS
   drone_sim/sensor_monitor.py
   RENAME sensor_monitor
   DESTINATION lib/${PROJECT_NAME}

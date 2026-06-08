@@ -70,6 +70,16 @@ def generate_launch_description():
             name='sensor_monitor',
             output='screen'
         ),
+        # DS->AP forwarder (Стенд 2026-06-08): сырые VL53/TF-Luna LaserScan →
+        # sensor_msgs/Range на /mavros/* → mavros distance_sensor → MAVLink
+        # DISTANCE_SENSOR → FC. Нужен пока в indoor.parm активны PRX1/RNGFND
+        # (иначе AP: PreArm No Data). Harmless если параметры закомментированы.
+        Node(
+            package='drone_sim',
+            executable='distance_sensor_forwarder',
+            name='distance_sensor_forwarder',
+            output='screen'
+        ),
         # SG90 servo command node — клемп target_angle → /drone/sg90/cmd
         Node(
             package='drone_sim',
