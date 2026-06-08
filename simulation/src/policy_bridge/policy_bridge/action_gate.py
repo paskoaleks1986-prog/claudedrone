@@ -66,5 +66,24 @@ def action7_sensor_blocks(front_m: float, action7_margin_m: float) -> bool:
     текущий mode wall_threshold)) — ЧИТАЕТСЯ из режима, НЕ хардкод. Маска до
     predict → модель выбирает поворот вместо бесполезного action7 → no-travel→0.
     front_m = VL ch0 (фронтальный), свежий (freshness-gate ноды это гарантирует).
+
+    ⚠ Это RAW-сенсорный ПРОКСИ. Точное зеркало train — action7_free_run_blocks
+    на occupancy free_run (см. §3.2 v2). Переключается флагом v2_sensor_mask.
     """
     return front_m < action7_margin_m
+
+
+def action7_free_run_blocks(free_cells: int, n_cells: int) -> bool:
+    """§3.2 v2 (КАНОН, заглушка до v2-экспорта) — action7 по occupancy free_run.
+
+    action7 невалиден если `free_cells(ch0) ≤ N` (строгое >: нужно ≥ N+1 free,
+    чтобы travel = free_cells − N ≥ 1). free_cells = целые FREE-клетки луча ch0
+    по ИНТЕГРИРОВАННОЙ occupancy (НЕ мгновенный raw-сенсор — потому нет
+    timing-jitter, который оставлял 3 no-op у raw-gate). Точное зеркало
+    train-маски env `_free_run > N`, поэтому в обучении no-op action7 не было.
+
+    Заменит RAW action7_sensor_blocks при v2 (флаг `v2_sensor_mask`, default off).
+    ⚠ Геометрию free_cells (RAY_STEP, int-семплирование) финализировать ПРОТИВ
+    v2 parity-фикстур при получении export — иначе разъедется (урок TF-Luna).
+    """
+    return free_cells <= n_cells

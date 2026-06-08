@@ -22,7 +22,11 @@ from typing import Callable
 
 import numpy as np
 
-from policy_bridge.occupancy_map_builder import GRID, OccupancyMapBuilder
+from policy_bridge.occupancy_map_builder import (
+    GRID,
+    OccupancyMapBuilder,
+    free_run_cells,
+)
 
 OBS_DIM = 21
 # §2.4: VL53 сидят на радиусе 0.1 м — для карты/obs центр-референсим.
@@ -111,6 +115,14 @@ class ActiveMappingAdapter:
         )
         self._last_cell = (int(xc), int(yc))
         self.integrations += 1
+
+    def free_run_ch0(self) -> int:
+        """§3.2 v2 (STUB): free_run целых FREE-клеток вперёд (ch0 heading) по
+        occupancy. Для action7-маски при v2_sensor_mask. ⚠ геометрию
+        финализировать против v2 parity-фикстур."""
+        pose = self._get_pose()
+        xc, yc = self._to_cells(pose.x_m, pose.y_m)
+        return free_run_cells(self.builder.occ, xc, yc, pose.heading_rad)
 
     def on_pose_update(self, x_m: float, y_m: float) -> None:
         """§2.5 п.2: хук visited_update_fn (20 Hz poll'ы arrival-ожидания) —

@@ -36,6 +36,7 @@ from nav_msgs.msg import OccupancyGrid
 from rclpy.qos import QoSProfile, DurabilityPolicy, HistoryPolicy
 
 from policy_bridge.action_gate import (
+    action7_free_run_blocks,
     action7_sensor_blocks,
     gate_blocks,
     movement_clearance_m,
@@ -81,6 +82,12 @@ PARAM_DEFAULTS: dict[str, object] = {
     # build ПОСЛЕ retrain (env + bridge оба на 3). Меняет obs → НЕ ставить 3
     # пока модель не дообучена с фильтром (иначе off-distribution).
     "min_frontier_cluster_cells": 1,
+    # v2-stub (Aleks 2026-06-08): occupancy-free_run sensor-gate для action7.
+    # default FALSE = текущее RAW-сенсорное поведение (action7_sensor_blocks).
+    # При v2-экспорте → True: маска по free_cells(ch0) > N (§3.2 v2, точное
+    # зеркало train, без timing-jitter). wall_stop_cells = N (граница).
+    "v2_sensor_mask": False,
+    "wall_stop_cells": 6,
     # TASK-059 attempt #1 RCA (2026-05-19): 0.15 m оказался слишком тесный
     # для real Gazebo (drone 0.3 m/s, VL53L0X max 2 m → no warning до впритык).
     # 0.50 m = ~1.7 cell stop distance, безопаснее.
@@ -180,6 +187,8 @@ class PolicyBridgeNode(Node):
         self.perimeter_laps = int(self.get_parameter("perimeter_laps").value)
         # v2 Block 3
         self.gate_margin_m = float(self.get_parameter("gate_margin_m").value)
+        self.v2_sensor_mask = bool(self.get_parameter("v2_sensor_mask").value)
+        self.wall_stop_cells = int(self.get_parameter("wall_stop_cells").value)
         self._gate_block_count = 0
         self._last_mapped = 0.0
         # v1.5c livelock breaker (см. NOOP_MASK_LIMIT)
@@ -304,6 +313,11 @@ class PolicyBridgeNode(Node):
             visited_update_fn=self._on_pose_update,
             # v2 run F: velocity-gated arrival (Aleks 08:26)
             get_speed_m_s=lambda: self.obs_builder.speed_m_s,
+            # v2-stub (Aleks 2026-06-08): action7 travel по occupancy free_run.
+            # default off (v2_sensor_mask=False) → текущее raw-поведение.
+            v2_sensor_mask=self.v2_sensor_mask,
+            wall_stop_cells=self.wall_stop_cells,
+            get_free_run_cells=lambda: self.am_adapter.free_run_ch0(),
         )
         # v2 Block 2: servo_angle obs = commanded angle executor'а (training
         # parity: в env servo-динамики нет). Убирает 1 kHz JointState churn.
@@ -780,6 +794,13 @@ class PolicyBridgeNode(Node):
             d += 2 * math.pi
         return d
 
+    def _free_run_cells_ch0(self) -> int:
+        """v2-stub (Aleks 2026-06-08): free_run ch0 целых FREE-клеток для
+        action7-маски §3.2 v2 (occupancy, не raw). Зовётся только при
+        v2_sensor_mask=True (default off). ⚠ финализировать геометрию против
+        v2 parity-фикстур при v2-экспорте."""
+        return self.am_adapter.free_run_ch0()
+
     def _predict_and_execute_one_step(self) -> None:
         pose = self.obs_builder.pose
 
@@ -841,14 +862,24 @@ class PolicyBridgeNode(Node):
             # читаем из режима, НЕ хардкод). Рассинхрон порогов давал no-travel
             # в зоне [0.60, mode_wt] (3 события @0.67-0.68 в N=6 acceptance).
             # См. action_gate.action7_sensor_blocks.
+            # v2-stub (Aleks 2026-06-08): при v2_sensor_mask=True маска action7
+            # по occupancy free_run (§3.2 v2, точное зеркало train, без
+            # timing-jitter). Default False = RAW-сенсорный путь ниже (b3a1c6d).
             perim = self.obs_builder.perimeter_distances_m
             a7_sensor_masked = False
-            if perim and len(perim) >= 6 and bool(action_mask[7]):
-                eff_wt = self.adaptive_speed.mode_table[
-                    classify_mode(min(perim))
-                ].wall_threshold
-                a7_margin = max(ACTION7_WALL_MARGIN_M, eff_wt)
-                a7_sensor_masked = action7_sensor_blocks(perim[0], a7_margin)
+            a7_margin = 0.0
+            if bool(action_mask[7]):
+                if self.v2_sensor_mask:
+                    free_cells = self._free_run_cells_ch0()
+                    a7_sensor_masked = action7_free_run_blocks(
+                        free_cells, self.wall_stop_cells
+                    )
+                elif perim and len(perim) >= 6:
+                    eff_wt = self.adaptive_speed.mode_table[
+                        classify_mode(min(perim))
+                    ].wall_threshold
+                    a7_margin = max(ACTION7_WALL_MARGIN_M, eff_wt)
+                    a7_sensor_masked = action7_sensor_blocks(perim[0], a7_margin)
             if self._infeasible_actions or a7_sensor_masked:
                 action_mask = action_mask.copy()
                 for a in self._infeasible_actions:
@@ -859,9 +890,11 @@ class PolicyBridgeNode(Node):
                     action_mask[7] = False
                     self._a7_sensor_mask_count += 1
                     if self._a7_sensor_mask_count % 10 == 1:
+                        why = ("free_run" if self.v2_sensor_mask
+                               else f"front={perim[0]:.2f}m<{a7_margin:.2f}m")
                         self.get_logger().info(
-                            f"sensor gate: action7 masked (front={perim[0]:.2f}m "
-                            f"< margin {a7_margin:.2f}m) ×{self._a7_sensor_mask_count}"
+                            f"sensor gate: action7 masked ({why}) "
+                            f"×{self._a7_sensor_mask_count}"
                         )
             deterministic = self.deterministic
             if deterministic and self._cell_stall_count >= STALL_STEPS:

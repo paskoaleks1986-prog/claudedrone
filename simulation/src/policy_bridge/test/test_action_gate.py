@@ -1,9 +1,30 @@
 """Тесты ActionGate (v2 Block 3) — отказ движения в сторону препятствия."""
 from policy_bridge.action_gate import (
+    action7_free_run_blocks,
     action7_sensor_blocks,
     gate_blocks,
     movement_clearance_m,
 )
+
+
+class TestAction7FreeRunGate:
+    """§3.2 v2 (occupancy free_run): action7 невалиден если free_cells ≤ N."""
+
+    def test_at_or_below_n_blocked(self):
+        # free_run 6 при N=6 → travel = 6−6 = 0 → no-op → блок (это были мои 3).
+        assert action7_free_run_blocks(6, 6)
+        assert action7_free_run_blocks(5, 6)
+        assert action7_free_run_blocks(0, 6)
+
+    def test_above_n_allowed(self):
+        # free_run ≥ N+1 → travel ≥ 1 → валиден.
+        assert not action7_free_run_blocks(7, 6)
+        assert not action7_free_run_blocks(20, 6)
+
+    def test_strict_inequality(self):
+        # Граница: ровно N → блок (строгое > в валидности).
+        assert action7_free_run_blocks(6, 6)
+        assert not action7_free_run_blocks(7, 6)
 
 
 class TestAction7SensorGate:

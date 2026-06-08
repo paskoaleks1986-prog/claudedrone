@@ -194,6 +194,34 @@ def frontier_directions(
     return out
 
 
+def free_run_cells(
+    occ: np.ndarray, x_cells: float, y_cells: float, heading_rad: float,
+    max_cells: int = MAX_VL_RANGE_CELLS,
+) -> int:
+    """§3.2 v2 (STUB до v2-экспорта): целые FREE-клетки луча heading вперёд.
+
+    Считает непрерывный free-пробег от (x,y) вдоль heading до первой не-FREE
+    клетки / края, той же геометрией, что integrate_pose (RAY_STEP, int()).
+    Используется action7_free_run_blocks (маска: free_cells > N) и v2-executor
+    travel (= free_cells − N). Зеркало env `_free_run`.
+
+    ⚠ STUB: точную семантику (включительно/исключительно, семплинг) ФИНАЛИЗИРОВАТЬ
+    против v2 parity-фикстур при получении export — иначе разъедется (TF-Luna).
+    """
+    dx, dy = math.cos(heading_rad), math.sin(heading_rad)
+    reached = 0
+    d = RAY_STEP
+    while d <= max_cells:
+        cx, cy = int(x_cells + dx * d), int(y_cells + dy * d)
+        if cx < 0 or cy < 0 or cx >= GRID or cy >= GRID:
+            break
+        if occ[cy, cx] != FREE:
+            break
+        reached = int(d)
+        d += RAY_STEP
+    return reached
+
+
 def mapped_ratio(occ: np.ndarray, free_mask: np.ndarray) -> float:
     """Протокол §5.1 (согласовано E3): (known ∩ free_mask) / free_count."""
     free_count = int(free_mask.sum())

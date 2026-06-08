@@ -204,6 +204,11 @@ class ActionExecutor:
         settle_hover_s: float = 0.1,
         visited_update_fn: Callable[[float, float], None] | None = None,
         get_speed_m_s: Callable[[], float] | None = None,
+        # v2-stub (Aleks 2026-06-08): action7 travel по occupancy free_run
+        # (travel = free_cells − N) вместо raw (front − margin). default off.
+        v2_sensor_mask: bool = False,
+        wall_stop_cells: int = 6,
+        get_free_run_cells: Callable[[], int] | None = None,
     ) -> None:
         self.node = node
         self.cell_size_m = cell_size_m
@@ -223,6 +228,9 @@ class ActionExecutor:
         self._visited_update_fn = visited_update_fn
         self._get_front_m = get_front_distance_m
         self._get_pose = get_pose
+        self.v2_sensor_mask = v2_sensor_mask
+        self.wall_stop_cells = wall_stop_cells
+        self._get_free_run_cells = get_free_run_cells
         # v2 run F: |v| для velocity-gated arrival (None → гейт отключён)
         self._get_speed_m_s = get_speed_m_s
 
@@ -521,7 +529,15 @@ class ActionExecutor:
         """
         front = max(0.0, self._get_front_m())
         margin = max(ACTION7_WALL_MARGIN_M, wall_margin)
-        travel = max(0.0, front - margin)
+        if self.v2_sensor_mask and self._get_free_run_cells is not None:
+            # v2-stub (§3.2 v2, Aleks 2026-06-08): travel = (free_cells − N)
+            # клеток occupancy free_run (зеркало train env step action7) — НЕ
+            # raw (front − margin). Mask и travel на ОДНОЙ free_run-геометрии →
+            # нет sensor-vs-occupancy gap. ⚠ финализировать vs v2 parity-фикстур.
+            free_cells = self._get_free_run_cells()
+            travel = max(0.0, (free_cells - self.wall_stop_cells) * self.cell_size_m)
+        else:
+            travel = max(0.0, front - margin)
         c = math.cos(cur_yaw)
         s = math.sin(cur_yaw)
         target_x = cur_x + c * travel

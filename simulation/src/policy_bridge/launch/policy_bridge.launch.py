@@ -164,6 +164,18 @@ def generate_launch_description() -> LaunchDescription:
             ),
             description="JointState topic от ros_gz_bridge для servo_angle obs.",
         ),
+        # v2-stub (Aleks 2026-06-08): occupancy free_run action7-маска/travel.
+        # default off = текущее raw-поведение. При v2-экспорте: v2_sensor_mask:=true.
+        DeclareLaunchArgument(
+            "v2_sensor_mask", default_value="false",
+            description="action7 gate/travel по occupancy free_run (§3.2 v2) "
+                        "вместо raw front. false = текущее. Включать при v2-export.",
+        ),
+        DeclareLaunchArgument(
+            "wall_stop_cells", default_value="6",
+            description="N (клетки) для free_run-маски: action7 валиден если "
+                        "free_cells(ch0) > N. = train wall_stop_cells.",
+        ),
     ]
 
     # ExecuteProcess вместо Node т.к. требуется dedicated isolated venv python
@@ -202,6 +214,8 @@ def generate_launch_description() -> LaunchDescription:
             "-p", ["wall_distance:=", LaunchConfiguration("wall_distance")],
             "-p", ["perimeter_laps:=", LaunchConfiguration("perimeter_laps")],
             "-p", ["joint_state_topic:=", LaunchConfiguration("joint_state_topic")],
+            "-p", ["v2_sensor_mask:=", LaunchConfiguration("v2_sensor_mask")],
+            "-p", ["wall_stop_cells:=", LaunchConfiguration("wall_stop_cells")],
         ],
         output="screen",
         emulate_tty=True,
