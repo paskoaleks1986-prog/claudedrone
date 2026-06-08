@@ -1,5 +1,38 @@
 """Тесты ActionGate (v2 Block 3) — отказ движения в сторону препятствия."""
-from policy_bridge.action_gate import gate_blocks, movement_clearance_m
+from policy_bridge.action_gate import (
+    action7_sensor_blocks,
+    gate_blocks,
+    movement_clearance_m,
+)
+
+
+class TestAction7SensorGate:
+    """v2 sensor gate (Aleks 2026-06-08): action7 маскируется при front < eff margin."""
+
+    def test_no_travel_zone_blocked(self):
+        # N=6 acceptance: front 0.67-0.68 при EXPLORE margin 0.70 → no-travel.
+        # Маска ловит ровно эту зону (порог = executor eff margin 0.70).
+        assert action7_sensor_blocks(0.67, 0.70)
+        assert action7_sensor_blocks(0.68, 0.70)
+
+    def test_clear_front_allowed(self):
+        # Достаточно места впереди → action7 валиден (travel будет > 0).
+        assert not action7_sensor_blocks(1.50, 0.70)
+        assert not action7_sensor_blocks(0.71, 0.70)
+
+    def test_boundary_strict(self):
+        # front == margin → travel == 0 → бесполезно → блокируем (строгое <
+        # в executor'е: travel=max(0,front-margin)=0 при равенстве). НО сам
+        # comparator строгий <: на границе НЕ блокирует (travel ровно 0 → no-op
+        # executor залогирует, но это граница; ловим front < margin).
+        assert not action7_sensor_blocks(0.70, 0.70)
+
+    def test_threshold_reads_from_mode(self):
+        # Порог мода-зависимый: FAST/CRUISE 0.65 vs EXPLORE 0.70. Один и тот же
+        # front=0.67 валиден в EXPLORE-зоне? нет (0.67<0.70 блок), а при margin
+        # 0.65 (FAST) — 0.67>0.65 → разрешён. Демонстрирует важность чтения wt.
+        assert action7_sensor_blocks(0.67, 0.70)        # EXPLORE
+        assert not action7_sensor_blocks(0.67, 0.65)    # FAST/CRUISE
 
 MARGIN = 0.9
 FREE = [2.0] * 6  # все каналы — max range, препятствий нет

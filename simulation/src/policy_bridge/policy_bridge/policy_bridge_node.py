@@ -35,16 +35,24 @@ from std_msgs.msg import Int32, Float32, Bool
 from nav_msgs.msg import OccupancyGrid
 from rclpy.qos import QoSProfile, DurabilityPolicy, HistoryPolicy
 
-from policy_bridge.action_gate import gate_blocks, movement_clearance_m
+from policy_bridge.action_gate import (
+    action7_sensor_blocks,
+    gate_blocks,
+    movement_clearance_m,
+)
 from policy_bridge.am_adapter import ActiveMappingAdapter
 from policy_bridge.display_map import build_display_map, display_coverage
 from policy_bridge.obs_builder import ObsBuilder
 from policy_bridge.world_config import WorldGeometry, load_world_geometry
 from policy_bridge.visited_grid import VisitedGridBuilder
-from policy_bridge.action_executor import ActionExecutor, InvalidActionError
+from policy_bridge.action_executor import (
+    ACTION7_WALL_MARGIN_M,
+    ActionExecutor,
+    InvalidActionError,
+)
 from policy_bridge.coverage import Coverage
 from policy_bridge.failure_modes import FailureHandler
-from policy_bridge.adaptive_speed import AdaptiveSpeedController
+from policy_bridge.adaptive_speed import AdaptiveSpeedController, classify_mode
 from policy_bridge.stuck_detector import StuckDetector
 from policy_bridge.wall_follower import WallFollower
 from policy_bridge.wall_map_builder import WallMapBuilder
@@ -181,6 +189,7 @@ class PolicyBridgeNode(Node):
         self._infeasible_actions: dict[int, float] = {}
         self._cell_stall_count = 0
         self._stall_kick_count = 0
+        self._a7_sensor_mask_count = 0   # v2 sensor gate action7 (Aleks 2026-06-08)
         # v1.5c deploy
         self.model_family = str(self.get_parameter("model_family").value)
         if self.model_family not in ("sweep02", "activemapping"):
@@ -826,10 +835,34 @@ class PolicyBridgeNode(Node):
                     f"{mapped:.3f}) на шаге {self.step_count} — hover"
                 )
                 return
-            if self._infeasible_actions:
+            # Sensor gate action7 (Aleks v2 2026-06-08): маскируем action7 ДО
+            # predict, если front-сенсор внутри executor's ЭФФЕКТИВНОЙ маржи
+            # (= max(ACTION7_WALL_MARGIN_M, текущий mode wall_threshold) —
+            # читаем из режима, НЕ хардкод). Рассинхрон порогов давал no-travel
+            # в зоне [0.60, mode_wt] (3 события @0.67-0.68 в N=6 acceptance).
+            # См. action_gate.action7_sensor_blocks.
+            perim = self.obs_builder.perimeter_distances_m
+            a7_sensor_masked = False
+            if perim and len(perim) >= 6 and bool(action_mask[7]):
+                eff_wt = self.adaptive_speed.mode_table[
+                    classify_mode(min(perim))
+                ].wall_threshold
+                a7_margin = max(ACTION7_WALL_MARGIN_M, eff_wt)
+                a7_sensor_masked = action7_sensor_blocks(perim[0], a7_margin)
+            if self._infeasible_actions or a7_sensor_masked:
                 action_mask = action_mask.copy()
                 for a in self._infeasible_actions:
                     action_mask[a] = False
+                # маскируем action7 только если останется ≥1 валидное действие
+                # (rotate 4/5 сенсором не гейтятся → почти всегда True).
+                if a7_sensor_masked and int(action_mask.sum()) > 1:
+                    action_mask[7] = False
+                    self._a7_sensor_mask_count += 1
+                    if self._a7_sensor_mask_count % 10 == 1:
+                        self.get_logger().info(
+                            f"sensor gate: action7 masked (front={perim[0]:.2f}m "
+                            f"< margin {a7_margin:.2f}m) ×{self._a7_sensor_mask_count}"
+                        )
             deterministic = self.deterministic
             if deterministic and self._cell_stall_count >= STALL_STEPS:
                 deterministic = False  # stall backstop: сэмпл из распределения

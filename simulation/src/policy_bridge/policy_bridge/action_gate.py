@@ -49,3 +49,22 @@ def gate_blocks(action: int, perimeter_m: list[float], gate_margin_m: float) -> 
     if clearance is None:
         return False
     return clearance < gate_margin_m
+
+
+def action7_sensor_blocks(front_m: float, action7_margin_m: float) -> bool:
+    """True → action7 даст no-travel (front внутри executor-маржи) → маскировать.
+
+    Sensor gate (Aleks v2 2026-06-08, рассинхрон порогов). Три слоя были
+    несогласованы:
+        train wall_stop N=6 = 0.60 м  (модель обучена с маской здесь)
+        gate_margin_m       = 0.55 м
+        executor action7 margin = max(0.45, mode wt) = 0.65-0.70 м ← реально блокирует
+    В зоне [0.60, mode_wt] модель считала action7 валидным (≥0.60), а executor
+    давал travel=0 → no-travel (3 события @0.67-0.68 в N=6 acceptance).
+
+    Порог = executor's ЭФФЕКТИВНАЯ action7-маржа (= max(ACTION7_WALL_MARGIN_M,
+    текущий mode wall_threshold)) — ЧИТАЕТСЯ из режима, НЕ хардкод. Маска до
+    predict → модель выбирает поворот вместо бесполезного action7 → no-travel→0.
+    front_m = VL ch0 (фронтальный), свежий (freshness-gate ноды это гарантирует).
+    """
+    return front_m < action7_margin_m
