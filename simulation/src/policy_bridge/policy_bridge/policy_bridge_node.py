@@ -79,15 +79,14 @@ PARAM_DEFAULTS: dict[str, object] = {
     # Ниже parity-0.95 — display заполнена плотнее (углы/дыры<проёма закрыты).
     "display_success_threshold": 0.92,
     # Alignment §3.1: фильтр мелких frontier-кластеров (parity-карта, в obs).
-    # 1 = bit-exact с историческим env (v1.5c, AM-4 фикстуры). 3 = aligned-
-    # build ПОСЛЕ retrain (env + bridge оба на 3). Меняет obs → НЕ ставить 3
-    # пока модель не дообучена с фильтром (иначе off-distribution).
-    "min_frontier_cluster_cells": 1,
-    # v2-stub (Aleks 2026-06-08): occupancy-free_run sensor-gate для action7.
-    # default FALSE = текущее RAW-сенсорное поведение (action7_sensor_blocks).
-    # При v2-экспорте → True: маска по free_cells(ch0) > N (§3.2 v2, точное
-    # зеркало train, без timing-jitter). wall_stop_cells = N (граница).
-    "v2_sensor_mask": False,
+    # v2 promote (Aleks 2026-06-08): 3 = aligned-build (env + bridge оба на 3),
+    # модель v2 (md5 40673767) дообучена с фильтром. 1 = legacy v1.5c/N6-v1.
+    "min_frontier_cluster_cells": 3,
+    # v2 promote (Aleks 2026-06-08): occupancy-free_run sensor-gate ВКЛЮЧЁН.
+    # True = маска по free_cells(ch0) > N (§3.2 v2, точное зеркало train).
+    # no-travel 0% primary-гейт взят. False = legacy RAW (action7_sensor_blocks).
+    # wall_stop_cells = N (граница).
+    "v2_sensor_mask": True,
     "wall_stop_cells": 6,
     # TASK-059 attempt #1 RCA (2026-05-19): 0.15 m оказался слишком тесный
     # для real Gazebo (drone 0.3 m/s, VL53L0X max 2 m → no warning до впритык).
@@ -119,9 +118,9 @@ PARAM_DEFAULTS: dict[str, object] = {
     # v2 run F (Aleks 08:26): 0.5 (= floor 0.4 + cell). SIM-ONLY клиренс.
     # run F checklist #1 (2026-06-07): floor 0.4 → 0.45 ⇒ gate 0.55.
     "gate_margin_m": 0.55,
-    # v1.5c deploy (2026-06-07): модельная семья.
+    # v2 promote (2026-06-08): модельная семья.
     #   sweep02       — legacy PPO Dict obs (distances+servo+visited)
-    #   activemapping — MaskablePPO Box(21,) + occupancy/frontier (AM-v1);
+    #   activemapping — MaskablePPO Box(21,) + occupancy/frontier (AM-v1/v2);
     #                   predict ОБЯЗАН получать action_masks (F1), mode
     #                   принудительно rl_only (wall-phase не в тренировке).
     "model_family": "activemapping",

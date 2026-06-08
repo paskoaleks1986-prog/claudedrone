@@ -32,9 +32,10 @@ DRONE_MEDIA_ROOT = os.environ.get("DRONE_MEDIA_ROOT", "/data/drone_media")
 
 SIMULATION_ROOT = f"{AEROSEARCH_ROOT}/claudedrone-git/simulation"
 VENV_PYTHON = f"{SIMULATION_ROOT}/.venv-policy/bin/python3"
-# v1.5c deploy (2026-06-07): default = ActiveMapping-v1 (md5 7bd62e23).
-# SWEEP-02 — явными аргументами model_path + model_family:=sweep02.
-DEFAULT_MODEL = f"{RL_LAB_ROOT}/export/activemapping_v1/model.zip"
+# v2 promote (Aleks 2026-06-08): default = ActiveMapping-v1-v2 (md5 40673767),
+# Alignment primary-гейт взят (no-travel 0%). N6-v1 (md5 1d7d7013) устарел.
+# SWEEP-02 / N6-v1 — явными аргументами model_path + model_family.
+DEFAULT_MODEL = f"{RL_LAB_ROOT}/export/activemapping_v1_v2/model.zip"
 DEFAULT_ROSBAG_DIR = f"{DRONE_MEDIA_ROOT}/sim/bags/model-to-sim"
 
 
@@ -42,9 +43,9 @@ def generate_launch_description() -> LaunchDescription:
     args = [
         DeclareLaunchArgument(
             "model_path", default_value=DEFAULT_MODEL,
-            description="Путь к SB3 model.zip. Default = ActiveMapping-v1 "
-                        "(MaskablePPO, md5 7bd62e23). Для SWEEP-02 передай "
-                        "путь + model_family:=sweep02 ЯВНО.",
+            description="Путь к SB3 model.zip. Default = ActiveMapping-v1-v2 "
+                        "(MaskablePPO, md5 40673767). Для SWEEP-02 / N6-v1 "
+                        "передай путь + model_family ЯВНО.",
         ),
         DeclareLaunchArgument(
             "model_family", default_value="activemapping",
@@ -164,12 +165,13 @@ def generate_launch_description() -> LaunchDescription:
             ),
             description="JointState topic от ros_gz_bridge для servo_angle obs.",
         ),
-        # v2-stub (Aleks 2026-06-08): occupancy free_run action7-маска/travel.
-        # default off = текущее raw-поведение. При v2-экспорте: v2_sensor_mask:=true.
+        # v2 promote (Aleks 2026-06-08): occupancy free_run action7-маска/travel
+        # ВКЛЮЧЕНА по умолчанию — Alignment primary-гейт (no-travel 0%) взят.
+        # Для N6-v1/raw поведения: v2_sensor_mask:=false.
         DeclareLaunchArgument(
-            "v2_sensor_mask", default_value="false",
+            "v2_sensor_mask", default_value="true",
             description="action7 gate/travel по occupancy free_run (§3.2 v2) "
-                        "вместо raw front. false = текущее. Включать при v2-export.",
+                        "вместо raw front. true = v2-prod. false = legacy raw.",
         ),
         DeclareLaunchArgument(
             "wall_stop_cells", default_value="6",
@@ -177,9 +179,9 @@ def generate_launch_description() -> LaunchDescription:
                         "free_cells(ch0) > N. = train wall_stop_cells.",
         ),
         DeclareLaunchArgument(
-            "min_frontier_cluster_cells", default_value="1",
-            description="Frontier MIN-фильтр (obs). 1=parity v1/N6-v1; 3=aligned "
-                        "v2 (env+bridge). При v2-экспорте: :=3.",
+            "min_frontier_cluster_cells", default_value="3",
+            description="Frontier MIN-фильтр (obs). 3=aligned v2-prod (env+bridge); "
+                        "1=legacy parity v1/N6-v1. v2 promote Aleks 2026-06-08.",
         ),
     ]
 
