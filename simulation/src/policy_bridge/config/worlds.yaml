@@ -46,3 +46,21 @@ worlds:
     room_size: [16.0, 10.0]
     grid_resolution: 0.1
     doorway_width: 3.0         # дверь-проём ≥1.4 ✓ (измерено по SDF)
+
+  # ═══ Стенд-спринт (Aleks 2026-06-08): 4 новых тестовых мира ═══
+  # bbox центрирован в (0,0); gen_stand_worlds.py + gen_world_free_mask.py.
+  # ⚠ Все НЕ 6.4×6.4 → model_canon=False (OOD): модель обучена на 64×64@0.1,
+  #   bridge логирует OOD-warn. Это осознанный тест деградации (см. dev-log 30).
+  rl_room_L_corridor:
+    room_size: [8.0, 8.0]      # L: 2 рукава 3×8 @90°; bbox 8×8 (вырез не flyable)
+    grid_resolution: 0.1       # spawn (-2.5,-2.5) локоть; corner-nav стресс
+  rl_room_multi_pillar:
+    room_size: [6.0, 6.0]      # 3 столба 0.5×0.5; spawn центр (0,0)
+    grid_resolution: 0.1
+  rl_room_large:
+    room_size: [10.0, 10.0]    # OOD: пустая 10×10 (>6.4); spawn центр (0,0)
+    grid_resolution: 0.1
+  rl_room_apartment:
+    room_size: [9.0, 9.0]      # 3 комнаты 5×5+4×4+4×4; bbox 9×9 центр (0,0)
+    grid_resolution: 0.1       # spawn комната A центр (-2,-2); multi-room
+    doorway_width: 1.4         # A|B и A|C проёмы 1.4 м

@@ -5,7 +5,8 @@
 (indoor_room, ...) — этот скрипт растеризует wall-боксы SDF.
 
 Правила:
-    - учитываются <model name='*wall*'> с box-геометрией (pose + size);
+    - учитываются ВСЕ статические <model> с box-геометрией (стены + столбы/
+      мебель), КРОМЕ floor/ceiling (по имени);
     - клетка = wall (255), если footprint бокса пересекает клетку;
     - остальное = free (0); origin SW (iy=0 юг) — конвенция visited_grid;
     - размеры грида берутся из worlds.yaml (single source of truth).
@@ -38,7 +39,11 @@ def parse_wall_boxes(sdf_path: Path) -> list[tuple[float, float, float, float]]:
     for name, body in re.findall(
         r"<model name=['\"]([^'\"]+)['\"]>(.*?)</model>", txt, re.S
     ):
-        if "wall" not in name.lower():
+        # Растеризуем все статические box-препятствия (стены И столбы/мебель),
+        # КРОМЕ пола/потолка (их первый <pose> — внутри collision, дал бы
+        # «стену во всю комнату»). Конвенция имён: floor/ceiling исключены.
+        nl = name.lower()
+        if "floor" in nl or "ceiling" in nl:
             continue
         pose_m = re.search(r"<pose>([^<]+)</pose>", body)
         size_m = re.search(r"<size>([^<]+)</size>", body)
