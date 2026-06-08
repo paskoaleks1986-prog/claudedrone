@@ -421,6 +421,7 @@ class PolicyBridgeNode(Node):
         self._ps_target_set_monotonic: float | None = None
         self._ps_arrival_skip_count = 0
         self._ps_last_was_rotation: bool = False
+        self._ps_trans_timeout_s: float = 8.0   # ∝ длине ноги, set при emit
         self._ps_logged_start = False
         self._ps_logged_done = False
 
@@ -862,8 +863,11 @@ class PolicyBridgeNode(Node):
         PS_MIN_EMIT_INTERVAL_S = 1.0
         ARRIVAL_TOL_POS_M = 0.25
         ARRIVAL_TOL_YAW_RAD = math.radians(5.0)
-        ARRIVAL_TIMEOUT_TRANS_S = 8.0
-        ARRIVAL_TIMEOUT_YAW_S = 12.0
+        # Периметровые ноги — во всю комнату (до ~14м в large), НЕ короткие
+        # wall-follow шаги. Таймаут трансляции пропорционален дистанции (иначе
+        # 8с обрезает ногу → ротация в неверной точке → рваный прямоугольник).
+        # ~0.25 м/с эффективная скорость position-setpoint + 6с запас.
+        ARRIVAL_TIMEOUT_YAW_S = 14.0
         now_mono = time.monotonic()
 
         # --- throttle: maintenance timer держит прошлый target пока ждём ---
@@ -882,7 +886,7 @@ class PolicyBridgeNode(Node):
             arrived = pos_err < ARRIVAL_TOL_POS_M and yaw_err < ARRIVAL_TOL_YAW_RAD
             timeout_s = (
                 ARRIVAL_TIMEOUT_YAW_S if self._ps_last_was_rotation
-                else ARRIVAL_TIMEOUT_TRANS_S
+                else self._ps_trans_timeout_s
             )
             elapsed = now_mono - (self._ps_target_set_monotonic or now_mono)
             if not arrived and elapsed < timeout_s:
@@ -910,8 +914,12 @@ class PolicyBridgeNode(Node):
         is_rotation = wp.kind == "rotate"
         if is_rotation:
             tx, ty = pose.x_m, pose.y_m   # hold pos, меняем только yaw
+            self._ps_trans_timeout_s = ARRIVAL_TIMEOUT_YAW_S
         else:
             tx, ty = wp.x, wp.y
+            # таймаут ∝ длине ноги (0.25 м/с + 6с запас), мин 8с
+            dist = math.hypot(tx - pose.x_m, ty - pose.y_m)
+            self._ps_trans_timeout_s = max(8.0, dist / 0.25 + 6.0)
         self.executor_act.initialize_target(tx, ty, z=None, yaw=wp.yaw)
         self._ps_last_target_x = tx
         self._ps_last_target_y = ty
