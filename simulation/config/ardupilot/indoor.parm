@@ -73,3 +73,15 @@ GUID_OPTIONS 0
 ATC_RATE_Y_MAX 90
 # 4.8 rename: ATC_ACCEL_Y_MAX 36000 cdeg/s/s -> ATC_ACC_Y_MAX 360 deg/s/s.
 ATC_ACC_Y_MAX 360
+
+# Стенд З4 (Aleks 2026-06-08): DS->AP — AP принимает DISTANCE_SENSOR по
+# MAVLink (sender-сторона уже есть, см. dev-log 29 DS->AP smoke; gap был
+# PRX/RNGFND в parm). PRX1_TYPE 2 = MAVLink proximity; PRX1_ORIENT 0 =
+# forward; RNGFND1_TYPE 10 = MAVLink rangefinder.
+# 4.8-dev: имена multi-instance (PRX1_*/RNGFND1_*). VERIFY перед close:
+#   ros2 param list /mavros/param | grep -E 'PRX1|RNGFND1'  (не молча игнор)
+#   + mavlink inspector: AP получает DISTANCE_SENSOR.
+# eeprom.bin override .parm: wipe /data/ardupilot/eeprom.bin до запуска.
+PRX1_TYPE 2
+PRX1_ORIENT 0
+RNGFND1_TYPE 10
