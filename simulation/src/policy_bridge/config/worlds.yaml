@@ -33,13 +33,12 @@ worlds:
   rl_room_two_chambers:
     room_size: [6.4, 6.4]      # wall_height 4.0 ✓
     grid_resolution: 0.1
-    # doorway ИЗМЕРЕН по SDF (audit 2026-06-08): wall_middle_{south,north} pose
-    # y=±1.8, size_y=2.6 → сегменты [-3.1,-0.5] и [0.5,3.1] → зазор [-0.5,0.5] =
-    # 1.0 м (НЕ 1.2 как в прежнем комменте — расхождение doc↔SDF). ⚠ BACKLOG:
-    # 1.0 < N=6 standoff×2 (1.2 м) → центр дрона не пролезает без нарушения
-    # margin → multiroom OOD/eval-просадка. Расширить до ≥1.4 м след. спринт
-    # (изменит train-env → синхронно с rl-lab). СЕЙЧАС SDF НЕ менять.
-    doorway_width: 1.0
+    # doorway РАСШИРЕН 1.0→1.4 м (Aleks 2026-06-08): wall_middle_{south,north}
+    # pose y=±1.9, size_y=2.4 → сегменты [-3.1,-0.7] и [0.7,3.1] → зазор
+    # [-0.7,0.7] = 1.4 м. standoff 0.6 → 0.1 зазор/сторона, проходимо.
+    # free_mask регенерён из SDF (gen_world_free_mask.py). RL не ретренит
+    # (спринт без ретрейна) — train-env разойдётся, sim-bench only.
+    doorway_width: 1.4
   indoor_room:
     # измерено по SDF: bbox x ±8.0, y ±5.0 (стены 0.15). wall_height 3.0→4.0
     # поднято (Alignment Блок 1). multi-room: spawn (-6.5,-3.5) камера 1,

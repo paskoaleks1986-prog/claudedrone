@@ -150,13 +150,15 @@
 
     <model name="wall_middle_south">
       <static>true</static>
-      <pose>0.0 -1.8 2.0 0 0 0</pose>
+      <!-- doorway 1.0→1.4м (Aleks 2026-06-08): сегмент [-3.1,-0.7], center -1.9,
+           size_y 2.4. gap [-0.7,0.7]=1.4м → standoff 0.6 даёт 0.1 зазор/сторона. -->
+      <pose>0.0 -1.9 2.0 0 0 0</pose>
       <link name="link">
         <collision name="c">
-          <geometry><box><size>0.4 2.6 4.0</size></box></geometry>
+          <geometry><box><size>0.4 2.4 4.0</size></box></geometry>
         </collision>
         <visual name="v">
-          <geometry><box><size>0.4 2.6 4.0</size></box></geometry>
+          <geometry><box><size>0.4 2.4 4.0</size></box></geometry>
           <material>
             <ambient>0.7 0.7 0.7 1</ambient>
             <diffuse>0.7 0.7 0.7 1</diffuse>
@@ -167,13 +169,14 @@
 
     <model name="wall_middle_north">
       <static>true</static>
-      <pose>0.0 1.8 2.0 0 0 0</pose>
+      <!-- doorway 1.0→1.4м (Aleks 2026-06-08): сегмент [0.7,3.1], center 1.9, size_y 2.4. -->
+      <pose>0.0 1.9 2.0 0 0 0</pose>
       <link name="link">
         <collision name="c">
-          <geometry><box><size>0.4 2.6 4.0</size></box></geometry>
+          <geometry><box><size>0.4 2.4 4.0</size></box></geometry>
         </collision>
         <visual name="v">
-          <geometry><box><size>0.4 2.6 4.0</size></box></geometry>
+          <geometry><box><size>0.4 2.4 4.0</size></box></geometry>
           <material>
             <ambient>0.7 0.7 0.7 1</ambient>
             <diffuse>0.7 0.7 0.7 1</diffuse>
