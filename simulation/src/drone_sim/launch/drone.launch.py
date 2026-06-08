@@ -48,11 +48,27 @@ def generate_launch_description():
     )
     autoscan = LaunchConfiguration('autoscan')
 
+    # SITL-RL fine-tune (Aleks 2026-06-09): safety_guard:=false для train.
+    # safety_guard — deployment-слой, которого НЕТ в train-env (drone_map_env):
+    # он аборт­ит ротации (в train mask[4,5] всегда True) → livelock, и паузит
+    # setpoint-стрим → дрон проседает/заваливается на reposition (ран TASK-RL-
+    # SITL-FT-1 умер: tilt 61.8°, re-arm fail). Защита от стен в fine-tune уже
+    # parity-консистентна: action_mask (env) + gate_blocks (sitl_comm). Деплой =
+    # true (untrusted policy). RL train передаёт false (launch.sh --no-safety-guard).
+    safety_guard_arg = DeclareLaunchArgument(
+        'safety_guard',
+        default_value='true',
+        description='Sensor-level аварийный стоп. false для RL fine-tune (паритет '
+                    'с train-env; защита = action_mask+gate_blocks). Деплой = true.',
+    )
+    safety_guard_cfg = LaunchConfiguration('safety_guard')
+
     return LaunchDescription([
 
         sweep_storage_arg,
         launch_gz_arg,
         autoscan_arg,
+        safety_guard_arg,
 
         # Запускаем Gazebo (только если launch_gz:=true — backward compat для standalone)
         ExecuteProcess(
@@ -154,6 +170,7 @@ def generate_launch_description():
                 'stop_threshold_floor': 0.40,
                 'check_rate_hz': 50.0,
             }],
+            condition=IfCondition(safety_guard_cfg),
         ),
         Node(
             package='ros_gz_bridge',

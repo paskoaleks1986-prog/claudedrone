@@ -29,6 +29,7 @@ MANUAL=0
 MONITOR=0
 MAVROS=0
 NO_AUTOSCAN=0   # v2: autoscan:=false для RL-ранов (серва — у policy action 6)
+NO_SAFETY_GUARD=0   # SITL-RL: safety_guard:=false для fine-tune (паритет с train-env)
 AUTO_NODE=""
 
 usage() {
@@ -56,6 +57,7 @@ Modifiers:
   --monitor       extra pane: watch ros2 topic list
   --mavros        extra pane: ros2 launch mavros apm.launch (SITL → /mavros/*)
   --no-autoscan   drone.launch.py autoscan:=false (RL-раны: серва — у action 6)
+  --no-safety-guard  drone.launch.py safety_guard:=false (RL fine-tune: паритет с train-env)
   --auto NAME     extra pane: ros2 run drone_sim NAME
 
 Presets:
@@ -93,6 +95,7 @@ while [[ $# -gt 0 ]]; do
         --monitor)   MONITOR=1; shift ;;
         --mavros)    MAVROS=1; shift ;;
         --no-autoscan) NO_AUTOSCAN=1; shift ;;
+        --no-safety-guard) NO_SAFETY_GUARD=1; shift ;;
         --auto)      AUTO_NODE="${2:?--auto needs a node name}"; shift 2 ;;
         --layout)    WANT_GZ=1; shift ;;
         --sim)       WANT_GZ=1; GZ_RUN=1; WANT_SITL=1; WANT_BRIDGE=1; shift ;;
@@ -260,7 +263,8 @@ cmd_ros() {
     # И DEFAULT_WORLD проброс — чтобы drone.launch.py читал world из env.
     local launch_gz_val extra_args=""
     if (( WANT_GZ )); then launch_gz_val=false; else launch_gz_val=true; fi
-    if (( NO_AUTOSCAN )); then extra_args=" autoscan:=false"; fi
+    if (( NO_AUTOSCAN )); then extra_args+=" autoscan:=false"; fi
+    if (( NO_SAFETY_GUARD )); then extra_args+=" safety_guard:=false"; fi
     cat <<EOF
 cd '$WS_DIR'
 source '$ROS_SETUP'

@@ -133,6 +133,7 @@ class MavrosSITLComm:
         odom_topic: str = "/mavros/local_position/odom",
         ekf_settle_s: float = EKF_SETTLE_S,
         hover_stabilize_s: float = HOVER_STABILIZE_S,
+        max_start_attempts: int = 3,
         verbose: bool = True,
     ) -> None:
         self.room_x = float(room_x_m)
@@ -148,6 +149,7 @@ class MavrosSITLComm:
         self.relaunch_cmd = relaunch_cmd
         self.ekf_settle_s = float(ekf_settle_s)
         self.hover_stabilize_s = float(hover_stabilize_s)
+        self.max_start_attempts = int(max_start_attempts)
         self.verbose = verbose
 
         # ── rclpy context (инициализируем только если ещё не поднят) ──
@@ -315,29 +317,48 @@ class MavrosSITLComm:
         """
         if rng is not None:
             self._rng = rng
-        self._wait_odom()
+        # crash-proof (Aleks 2026-06-09): провал re-arm/takeoff (напр. re-arm после
+        # crash-disarm — NAV_TAKEOFF/arm-after-LAND ненадёжны) НЕ должен пробивать
+        # исключением в train-loop (ран TASK-RL-SITL-FT-1 умер на RuntimeError).
+        # На сбой → hard_reset (relaunch свежего стека = единственный надёжный
+        # re-takeoff + очистка EKF) → retry. Только после max_start_attempts — raise.
+        last_err: Exception | None = None
+        for attempt in range(1, self.max_start_attempts + 1):
+            try:
+                self._wait_odom()
+                healthy_airborne = (
+                    self._airborne and self._state.armed
+                    and self.obs_builder.pose.z_m > CRASH_Z_FRACTION * self.target_altitude
+                )
+                if healthy_airborne:
+                    # soft-reset: уже висим — стабилизируемся на текущей высоте, без land
+                    pose = self.obs_builder.pose
+                    z_hold = pose.z_m
+                    self.executor_act.initialize_target(
+                        pose.x_m, pose.y_m, z=z_hold, yaw=pose.heading_rad
+                    )
+                    self._hover_stabilize(z_hold)
+                else:
+                    # полный взлёт с земли (свежий стек / после hard_reset)
+                    z_hold = self._full_takeoff()
 
-        healthy_airborne = (
-            self._airborne and self._state.armed
-            and self.obs_builder.pose.z_m > CRASH_Z_FRACTION * self.target_altitude
+                # reposition к random free-XY (в воздухе; НЕ EKF-teleport)
+                if randomize_spawn:
+                    self._reposition(z_hold)
+
+                return self.read_state()
+            except RuntimeError as e:
+                last_err = e
+                self._log.warn(
+                    f"start_episode попытка {attempt}/{self.max_start_attempts} "
+                    f"сорвалась ({e}) → hard_reset (relaunch стека) и retry"
+                )
+                self._airborne = False
+                self.hard_reset()
+        raise RuntimeError(
+            f"start_episode не удался за {self.max_start_attempts} попыток "
+            f"(последняя: {last_err}). Стек не поднимается — нужен ручной разбор."
         )
-        if healthy_airborne:
-            # soft-reset: уже висим — стабилизируемся на текущей высоте, без land
-            z_hold = self.obs_builder.pose.z_m
-            pose = self.obs_builder.pose
-            self.executor_act.initialize_target(
-                pose.x_m, pose.y_m, z=z_hold, yaw=pose.heading_rad
-            )
-            self._hover_stabilize(z_hold)
-        else:
-            # полный взлёт с земли (свежий стек / crashed → нужен hard_reset для re-takeoff)
-            z_hold = self._full_takeoff()
-
-        # reposition к random free-XY (в воздухе; НЕ EKF-teleport)
-        if randomize_spawn:
-            self._reposition(z_hold)
-
-        return self.read_state()
 
     def _full_takeoff(self) -> float:
         """Взлёт С ЗЕМЛИ: GUIDED→EKF-settle→arm→NAV_TAKEOFF→climb→hover. → z_hold."""
