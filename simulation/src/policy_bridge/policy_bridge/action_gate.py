@@ -87,3 +87,25 @@ def action7_free_run_blocks(free_cells: int, n_cells: int) -> bool:
     v2 parity-фикстур при получении export — иначе разъедется (урок TF-Luna).
     """
     return free_cells <= n_cells
+
+
+def sensor_action_mask(free_runs: list[int], n_cells: int) -> list[bool]:
+    """§3.2 v2 полная маска (8) из free_run по 6 VL-каналам — зеркало
+    drone_map_env.action_masks(sensor_mask=True), verified 0/44 на v2-траектории.
+
+    free_runs = [free_run ch0..ch5] (целые клетки по каналам, occ=False sensor).
+    Каналы: fwd/action7→ch0, back→ch3, strafe_left→min(ch1,ch2),
+    strafe_right→min(ch4,ch5). Валидно ттк free > N (строгое → travel≥1).
+    Ротации/scan (4,5,6) всегда True (сенсор их не гейтит).
+    """
+    f = free_runs
+    return [
+        f[0] > n_cells,                  # 0 fwd  → ch0
+        f[3] > n_cells,                  # 1 back → ch3
+        min(f[1], f[2]) > n_cells,       # 2 strafe_left  → ch1/ch2
+        min(f[4], f[5]) > n_cells,       # 3 strafe_right → ch4/ch5
+        True,                            # 4 rotate +15
+        True,                            # 5 rotate -15
+        True,                            # 6 scan
+        f[0] > n_cells,                  # 7 action7 = heading (= ch0)
+    ]

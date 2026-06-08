@@ -40,6 +40,7 @@ from policy_bridge.action_gate import (
     action7_sensor_blocks,
     gate_blocks,
     movement_clearance_m,
+    sensor_action_mask,
 )
 from policy_bridge.am_adapter import ActiveMappingAdapter, VL_MOUNT_RADIUS_M
 from policy_bridge.display_map import build_display_map, display_coverage
@@ -872,39 +873,52 @@ class PolicyBridgeNode(Node):
             # по occupancy free_run (§3.2 v2, точное зеркало train, без
             # timing-jitter). Default False = RAW-сенсорный путь ниже (b3a1c6d).
             perim = self.obs_builder.perimeter_distances_m
-            a7_sensor_masked = False
-            a7_margin = 0.0
-            if bool(action_mask[7]):
-                if self.v2_sensor_mask:
-                    # снапшот free_cells на predict → executor берёт ЕГО ЖЕ
-                    # (travel = free_cells − N), без predict↔execute jitter.
-                    free_cells = self._free_run_cells_ch0()
-                    self._a7_free_run = free_cells
-                    a7_sensor_masked = action7_free_run_blocks(
-                        free_cells, self.wall_stop_cells
-                    )
-                elif perim and len(perim) >= 6:
+            if self.v2_sensor_mask and perim and len(perim) >= 6:
+                # v2 §3.2 (verified 0/44 vs env action_masks): ПОЛНАЯ маска из
+                # free_run по 6 VL-каналам (centered raw+mount → клетки, занимает
+                # место F1-маски). free_run[0] снапшотим → executor travel
+                # (тот же → нет jitter). Зеркало drone_map_env sensor_mask=True.
+                free_runs = [
+                    int((perim[i] + VL_MOUNT_RADIUS_M) / self.cell_size)
+                    for i in range(6)
+                ]
+                self._a7_free_run = free_runs[0]
+                action_mask = np.array(
+                    sensor_action_mask(free_runs, self.wall_stop_cells), dtype=bool
+                )
+                for a in self._infeasible_actions:   # stall-livelock поверх
+                    action_mask[a] = False
+                if not bool(action_mask[7]):
+                    self._a7_sensor_mask_count += 1
+                    if self._a7_sensor_mask_count % 10 == 1:
+                        self.get_logger().info(
+                            f"v2 sensor-mask: action7 masked (free_run[0]="
+                            f"{free_runs[0]}≤{self.wall_stop_cells}) "
+                            f"×{self._a7_sensor_mask_count}"
+                        )
+            else:
+                # RAW путь (b3a1c6d, default): только action7-гейт по mode-wt.
+                a7_sensor_masked = False
+                a7_margin = 0.0
+                if perim and len(perim) >= 6 and bool(action_mask[7]):
                     eff_wt = self.adaptive_speed.mode_table[
                         classify_mode(min(perim))
                     ].wall_threshold
                     a7_margin = max(ACTION7_WALL_MARGIN_M, eff_wt)
                     a7_sensor_masked = action7_sensor_blocks(perim[0], a7_margin)
-            if self._infeasible_actions or a7_sensor_masked:
-                action_mask = action_mask.copy()
-                for a in self._infeasible_actions:
-                    action_mask[a] = False
-                # маскируем action7 только если останется ≥1 валидное действие
-                # (rotate 4/5 сенсором не гейтятся → почти всегда True).
-                if a7_sensor_masked and int(action_mask.sum()) > 1:
-                    action_mask[7] = False
-                    self._a7_sensor_mask_count += 1
-                    if self._a7_sensor_mask_count % 10 == 1:
-                        why = ("free_run" if self.v2_sensor_mask
-                               else f"front={perim[0]:.2f}m<{a7_margin:.2f}m")
-                        self.get_logger().info(
-                            f"sensor gate: action7 masked ({why}) "
-                            f"×{self._a7_sensor_mask_count}"
-                        )
+                if self._infeasible_actions or a7_sensor_masked:
+                    action_mask = action_mask.copy()
+                    for a in self._infeasible_actions:
+                        action_mask[a] = False
+                    if a7_sensor_masked and int(action_mask.sum()) > 1:
+                        action_mask[7] = False
+                        self._a7_sensor_mask_count += 1
+                        if self._a7_sensor_mask_count % 10 == 1:
+                            self.get_logger().info(
+                                f"sensor gate: action7 masked "
+                                f"(front={perim[0]:.2f}m<{a7_margin:.2f}m) "
+                                f"×{self._a7_sensor_mask_count}"
+                            )
             deterministic = self.deterministic
             if deterministic and self._cell_stall_count >= STALL_STEPS:
                 deterministic = False  # stall backstop: сэмпл из распределения

@@ -4,7 +4,35 @@ from policy_bridge.action_gate import (
     action7_sensor_blocks,
     gate_blocks,
     movement_clearance_m,
+    sensor_action_mask,
 )
+
+
+class TestSensorActionMask:
+    """§3.2 v2 полная маска — зеркало env action_masks(sensor_mask=True), 0/44."""
+
+    def test_all_open(self):
+        # все каналы far → всё валидно (rotate/scan всегда True).
+        assert sensor_action_mask([20, 20, 20, 20, 20, 20], 6) == [True] * 8
+
+    def test_fwd_blocked_blocks_action7(self):
+        # ch0 free_run = N → fwd(0) и action7(7) masked (строгое >N).
+        m = sensor_action_mask([6, 20, 20, 20, 20, 20], 6)
+        assert m[0] is False and m[7] is False
+        assert m[1] and m[4] and m[5] and m[6]  # back/rot/scan валидны
+
+    def test_strafe_min_pair(self):
+        # strafe_left = min(ch1,ch2): один канал ≤N → masked.
+        m = sensor_action_mask([20, 6, 20, 20, 20, 20], 6)
+        assert m[2] is False          # min(6,20)=6 ≤6
+        m2 = sensor_action_mask([20, 20, 20, 20, 6, 20], 6)
+        assert m2[3] is False         # strafe_right min(ch4,ch5)=6
+
+    def test_rotations_scan_always_true(self):
+        # даже зажатый со всех сторон — крутиться/сканить можно.
+        m = sensor_action_mask([0, 0, 0, 0, 0, 0], 6)
+        assert m[4] and m[5] and m[6]
+        assert m[0] is False and m[7] is False
 
 
 class TestAction7FreeRunGate:

@@ -176,6 +176,11 @@ def generate_launch_description() -> LaunchDescription:
             description="N (клетки) для free_run-маски: action7 валиден если "
                         "free_cells(ch0) > N. = train wall_stop_cells.",
         ),
+        DeclareLaunchArgument(
+            "min_frontier_cluster_cells", default_value="1",
+            description="Frontier MIN-фильтр (obs). 1=parity v1/N6-v1; 3=aligned "
+                        "v2 (env+bridge). При v2-экспорте: :=3.",
+        ),
     ]
 
     # ExecuteProcess вместо Node т.к. требуется dedicated isolated venv python
@@ -216,6 +221,8 @@ def generate_launch_description() -> LaunchDescription:
             "-p", ["joint_state_topic:=", LaunchConfiguration("joint_state_topic")],
             "-p", ["v2_sensor_mask:=", LaunchConfiguration("v2_sensor_mask")],
             "-p", ["wall_stop_cells:=", LaunchConfiguration("wall_stop_cells")],
+            "-p", ["min_frontier_cluster_cells:=",
+                   LaunchConfiguration("min_frontier_cluster_cells")],
         ],
         output="screen",
         emulate_tty=True,
