@@ -33,6 +33,12 @@ DEGRADE = re.compile(r"action 7→(\d)")
 # COMPLETE или 500 шагов). См. action_executor.py "no travel" warn.
 NOTRAVEL = re.compile(r"no travel")
 NOTRAVEL_ACCEPTANCE_PCT = 2.0
+# Стенд З3: детерминированная фаза облёта периметра (post-MISSION COMPLETE).
+PS_START = re.compile(r"PERIMETER START: (\d+) waypoints")
+PS_STEP = re.compile(r"PERIMETER step (\d+) · (\S+) (\S+)")
+PS_DONE = re.compile(r"PERIMETER COMPLETE")
+PS_SKIP = re.compile(r"PERIMETER skip")
+MISSION = re.compile(r"MISSION COMPLETE")
 
 
 def minute_of(line: str, t0: int) -> int | None:
@@ -162,6 +168,34 @@ def main() -> None:
             print("  3. safety_guard: передай sim-ros.log вторым аргументом")
             verdict = c1 and c2
         print(f"  → {'МОДЕЛЬ ЛЕТИТ ✓' if verdict else 'политика ещё не рулит сама ✗'}")
+
+    # ---- Стенд З3: фаза облёта периметра (отдельно от RL EXPLORE) ----
+    mission_done = any(MISSION.search(ln) for ln in lines)
+    ps_started = next((m for ln in lines for m in [PS_START.search(ln)] if m), None)
+    ps_done = any(PS_DONE.search(ln) for ln in lines)
+    ps_skipped = any(PS_SKIP.search(ln) for ln in lines)
+    ps_steps = [(PS_STEP.search(ln).group(2), PS_STEP.search(ln).group(3))
+                for ln in lines if PS_STEP.search(ln)]
+    print("\n=== ФАЗА PERIMETER SWEEP (Стенд З3) ===")
+    if ps_skipped:
+        print("  ⊘ SKIP — комната мала для standoff (inset≤0)")
+    elif ps_started is None:
+        if mission_done:
+            print("  не стартовала (perimeter_sweep off, или ран оборвался "
+                  "сразу после MISSION COMPLETE)")
+        else:
+            print("  не стартовала — MISSION COMPLETE не достигнут "
+                  "(гейт ОК: облёт только после картирования)")
+    else:
+        n_wp = int(ps_started.group(1))
+        n_rot = sum(1 for k, _ in ps_steps if k == "rotate")
+        n_trans = sum(1 for k, _ in ps_steps if k == "translate")
+        n_legs = sum(1 for k, t in ps_steps if k == "translate" and t.startswith("wall"))
+        print(f"  старт: {n_wp} waypoints запланировано")
+        print(f"  выполнено шагов: {len(ps_steps)} "
+              f"(rotate={n_rot}, translate={n_trans}, стен-обойдено={n_legs}/4)")
+        print(f"  полный обход (4 стены + центр): "
+              f"{'✓ ЗАВЕРШЁН' if ps_done else '✗ оборвался (не COMPLETE)'}")
 
 
 if __name__ == "__main__":

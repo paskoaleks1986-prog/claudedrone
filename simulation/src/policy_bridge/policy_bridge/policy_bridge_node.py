@@ -59,6 +59,7 @@ from policy_bridge.stuck_detector import StuckDetector
 from policy_bridge.wall_follower import WallFollower
 from policy_bridge.wall_map_builder import WallMapBuilder
 from policy_bridge.phase_controller import PhaseController, Phase
+from policy_bridge.perimeter_sweep import PerimeterSweep
 
 
 PARAM_DEFAULTS: dict[str, object] = {
@@ -112,6 +113,11 @@ PARAM_DEFAULTS: dict[str, object] = {
     "mode": "hybrid",          # hybrid | wall_follow_only | rl_only
     "wall_distance": 0.6,
     "perimeter_laps": 1,
+    # Стенд З3 (Aleks 2026-06-08): детерминированный облёт периметра ПОСЛЕ
+    # MISSION COMPLETE (parity-нейтрален — post-terminal). standoff до внутр.
+    # грани стены; snap курса к 90°; rect-миры. Default on для стенд-видео.
+    "perimeter_sweep": True,
+    "perimeter_standoff_m": 0.6,
     # v2 Block 3 (2026-06-06): ActionGate — шаг 0-3, который закончится ближе
     # этого к препятствию, отклоняется до исполнения (training parity: env не
     # двигает дрона в стену). Правило: gate_margin = safety floor + cell.
@@ -185,6 +191,13 @@ class PolicyBridgeNode(Node):
         self.mode = str(self.get_parameter("mode").value)
         self.wall_distance = float(self.get_parameter("wall_distance").value)
         self.perimeter_laps = int(self.get_parameter("perimeter_laps").value)
+        # Стенд З3: post-mission облёт периметра
+        self.perimeter_sweep_enabled = bool(
+            self.get_parameter("perimeter_sweep").value
+        )
+        self.perimeter_standoff_m = float(
+            self.get_parameter("perimeter_standoff_m").value
+        )
         # v2 Block 3
         self.gate_margin_m = float(self.get_parameter("gate_margin_m").value)
         self.v2_sensor_mask = bool(self.get_parameter("v2_sensor_mask").value)
@@ -391,6 +404,25 @@ class PolicyBridgeNode(Node):
         self._wf_arrival_skip_count = 0
         self._wf_last_was_rotation: bool = False  # attempt #12 RCA Cause #2:
         # rotation commands waitгают yaw_arrival с longer timeout
+
+        # ----- Стенд З3: perimeter sweep (post-mission) -----
+        # PerimeterSweep строит план облёта прямоугольника по геометрии комнаты.
+        # plan() ленивый — на первом тике с фактической позой. Arrival-логика
+        # зеркалит WF (throttle + tol + timeout), отдельные _ps_* переменные.
+        self.perimeter: PerimeterSweep | None = None
+        if self.perimeter_sweep_enabled:
+            self.perimeter = PerimeterSweep(
+                self.room_x, self.room_y,
+                standoff_m=self.perimeter_standoff_m,
+            )
+        self._ps_last_target_x: float | None = None
+        self._ps_last_target_y: float | None = None
+        self._ps_last_target_yaw: float | None = None
+        self._ps_target_set_monotonic: float | None = None
+        self._ps_arrival_skip_count = 0
+        self._ps_last_was_rotation: bool = False
+        self._ps_logged_start = False
+        self._ps_logged_done = False
 
         # ----- takeoff ready signal (D-refactor 2026-05-20) -----
         # Bridge waits for /takeoff/ready True перед началом predict loop. takeoff_node
@@ -631,6 +663,16 @@ class PolicyBridgeNode(Node):
 
         # v1.5c: миссия завершена (mapped ≥ threshold) — hover, не predict'им.
         if self._mission_complete:
+            # Стенд З3: после mission complete — детерминированный облёт
+            # периметра (parity-нейтрален). Гейт: только при flying-режиме и
+            # пока облёт не завершён. Завершён / выключен → hover.
+            if (
+                self.perimeter is not None
+                and self._takeoff_ready
+                and not self.failure.hovering
+                and not self.perimeter.complete
+            ):
+                self._perimeter_tick()
             return
 
         # D-refactor: wait для takeoff_node release control signal
@@ -786,6 +828,103 @@ class PolicyBridgeNode(Node):
                 f"target=({cmd.target_x:.2f}, {cmd.target_y:.2f}, yaw={math.degrees(cmd.target_yaw):.1f}°) · "
                 f"wall_cells={self.wall_map_builder.wall_cells_total} · coverage {cov:.3f}"
             )
+
+    def _perimeter_tick(self) -> None:
+        """Стенд З3: один тик облёта периметра (post-mission, не RL).
+
+        plan() ленивый — на первом тике с фактической позой (ближайший угол =
+        старт). Arrival-логика зеркалит _wall_follow_tick (throttle 1s + tol +
+        timeout). rotate-waypoint → yaw-only setpoint (hold pos, как WF Cause
+        #2). Лог-строки 'PERIMETER step N' → секция в analyze_policy_run.py."""
+        if not self.obs_builder.has_received_odom:
+            return
+        pose = self.obs_builder.pose
+        ps = self.perimeter
+
+        # --- ленивый план ---
+        if not ps.planned:
+            ps.plan(pose.x_m, pose.y_m)
+            if not ps.feasible:
+                if not self._ps_logged_done:
+                    self.get_logger().warn(
+                        f"🔲 PERIMETER skip: комната {self.room_x}×{self.room_y}м "
+                        f"мала для standoff {self.perimeter_standoff_m}м (inset≤0)"
+                    )
+                    self._ps_logged_done = True
+                return
+            self.get_logger().info(
+                f"🔲 PERIMETER START: {ps.total_waypoints} waypoints · "
+                f"standoff {self.perimeter_standoff_m}м · "
+                f"корнеры ±({ps.ax:.2f},{ps.ay:.2f}) на шаге {self.step_count}"
+            )
+            self._ps_logged_start = True
+
+        PS_MIN_EMIT_INTERVAL_S = 1.0
+        ARRIVAL_TOL_POS_M = 0.25
+        ARRIVAL_TOL_YAW_RAD = math.radians(5.0)
+        ARRIVAL_TIMEOUT_TRANS_S = 8.0
+        ARRIVAL_TIMEOUT_YAW_S = 12.0
+        now_mono = time.monotonic()
+
+        # --- throttle: maintenance timer держит прошлый target пока ждём ---
+        if self._ps_target_set_monotonic is not None:
+            if now_mono - self._ps_target_set_monotonic < PS_MIN_EMIT_INTERVAL_S:
+                return
+
+        # --- arrival прошлого target → advance ---
+        if self._ps_last_target_x is not None:
+            pos_err = math.hypot(
+                pose.x_m - self._ps_last_target_x,
+                pose.y_m - self._ps_last_target_y,
+            )
+            yaw_err = abs(self._angle_diff(
+                pose.heading_rad, self._ps_last_target_yaw))
+            arrived = pos_err < ARRIVAL_TOL_POS_M and yaw_err < ARRIVAL_TOL_YAW_RAD
+            timeout_s = (
+                ARRIVAL_TIMEOUT_YAW_S if self._ps_last_was_rotation
+                else ARRIVAL_TIMEOUT_TRANS_S
+            )
+            elapsed = now_mono - (self._ps_target_set_monotonic or now_mono)
+            if not arrived and elapsed < timeout_s:
+                self._ps_arrival_skip_count += 1
+                return
+            if not arrived:
+                self.get_logger().warn(
+                    f"🔲 PERIMETER arrival TIMEOUT ({elapsed:.1f}s) "
+                    f"pos_err={pos_err:.2f}м yaw_err={math.degrees(yaw_err):.1f}° "
+                    "— forcing next"
+                )
+            ps.advance()
+            self._ps_arrival_skip_count = 0
+
+        wp = ps.current()
+        if wp is None:
+            if not self._ps_logged_done:
+                self.get_logger().info(
+                    f"🔲 PERIMETER COMPLETE на шаге {self.step_count} "
+                    "— hover центра"
+                )
+                self._ps_logged_done = True
+            return
+
+        is_rotation = wp.kind == "rotate"
+        if is_rotation:
+            tx, ty = pose.x_m, pose.y_m   # hold pos, меняем только yaw
+        else:
+            tx, ty = wp.x, wp.y
+        self.executor_act.initialize_target(tx, ty, z=None, yaw=wp.yaw)
+        self._ps_last_target_x = tx
+        self._ps_last_target_y = ty
+        self._ps_last_target_yaw = wp.yaw
+        self._ps_last_was_rotation = is_rotation
+        self._ps_target_set_monotonic = now_mono
+
+        self.step_count += 1
+        self.get_logger().info(
+            f"🔲 PERIMETER step {self.step_count} · {wp.kind} {wp.tag} · "
+            f"target=({tx:.2f},{ty:.2f},yaw={math.degrees(wp.yaw):.0f}°) · "
+            f"wp {ps.index + 1}/{ps.total_waypoints}"
+        )
 
     @staticmethod
     def _angle_diff(a: float, b: float) -> float:
