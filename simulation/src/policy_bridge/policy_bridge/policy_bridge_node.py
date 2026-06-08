@@ -41,7 +41,7 @@ from policy_bridge.action_gate import (
     gate_blocks,
     movement_clearance_m,
 )
-from policy_bridge.am_adapter import ActiveMappingAdapter
+from policy_bridge.am_adapter import ActiveMappingAdapter, VL_MOUNT_RADIUS_M
 from policy_bridge.display_map import build_display_map, display_coverage
 from policy_bridge.obs_builder import ObsBuilder
 from policy_bridge.world_config import WorldGeometry, load_world_geometry
@@ -199,6 +199,7 @@ class PolicyBridgeNode(Node):
         self._cell_stall_count = 0
         self._stall_kick_count = 0
         self._a7_sensor_mask_count = 0   # v2 sensor gate action7 (Aleks 2026-06-08)
+        self._a7_free_run = 999          # v2: снапшот free_cells(ch0) predict→executor
         # v1.5c deploy
         self.model_family = str(self.get_parameter("model_family").value)
         if self.model_family not in ("sweep02", "activemapping"):
@@ -317,7 +318,8 @@ class PolicyBridgeNode(Node):
             # default off (v2_sensor_mask=False) → текущее raw-поведение.
             v2_sensor_mask=self.v2_sensor_mask,
             wall_stop_cells=self.wall_stop_cells,
-            get_free_run_cells=lambda: self.am_adapter.free_run_ch0(),
+            # снапшот free_cells с predict (= тот же, что маска) → нет jitter.
+            get_free_run_cells=lambda: self._a7_free_run,
         )
         # v2 Block 2: servo_angle obs = commanded angle executor'а (training
         # parity: в env servo-динамики нет). Убирает 1 kHz JointState churn.
@@ -795,11 +797,15 @@ class PolicyBridgeNode(Node):
         return d
 
     def _free_run_cells_ch0(self) -> int:
-        """v2-stub (Aleks 2026-06-08): free_run ch0 целых FREE-клеток для
-        action7-маски §3.2 v2 (occupancy, не raw). Зовётся только при
-        v2_sensor_mask=True (default off). ⚠ финализировать геометрию против
-        v2 parity-фикстур при v2-экспорте."""
-        return self.am_adapter.free_run_ch0()
+        """§3.2 v2 (RL contract 02:05): free_cells вперёд (ch0) = floor целых
+        клеток до стены = floor(centered-front-сенсор / cell). ИСТОЧНИК = СВЕЖИЙ
+        сенсор текущего шага (НЕ accumulated occupancy — stateless, как env
+        `_free_run(occ=False)`), центр-референс (+VL_MOUNT_RADIUS, как integrate).
+        Зовётся только при v2_sensor_mask=True (default off).
+        ⚠ VERIFY-POINT против v2 parity-фикстур: (a) centered vs raw, (b) floor
+        боундари / off-by-one. Если parity красный — здесь подгон."""
+        front_centered_m = self.obs_builder.front_distance_m + VL_MOUNT_RADIUS_M
+        return int(front_centered_m / self.cell_size)
 
     def _predict_and_execute_one_step(self) -> None:
         pose = self.obs_builder.pose
@@ -870,7 +876,10 @@ class PolicyBridgeNode(Node):
             a7_margin = 0.0
             if bool(action_mask[7]):
                 if self.v2_sensor_mask:
+                    # снапшот free_cells на predict → executor берёт ЕГО ЖЕ
+                    # (travel = free_cells − N), без predict↔execute jitter.
                     free_cells = self._free_run_cells_ch0()
+                    self._a7_free_run = free_cells
                     a7_sensor_masked = action7_free_run_blocks(
                         free_cells, self.wall_stop_cells
                     )
