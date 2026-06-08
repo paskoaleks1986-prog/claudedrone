@@ -128,28 +128,37 @@ class InferenceCore:
 
     def build_mask(
         self,
-        grid: np.ndarray,
-        pose: Pose,
+        grid: np.ndarray | None = None,
+        pose: Pose | None = None,
         n_cells: int | None = None,
         *,
         mode: str = "sensor",
+        free_runs: list[int] | None = None,
     ) -> np.ndarray:
         """action_mask bool(8,).
 
-        mode="sensor" (v2-prod, default): free_runs по 6 каналам через
-            sensor_free_runs(grid, ...) (env._free_run, occ=False, !=0=стена)
-            → sensor_action_mask. grid = ground-truth/сенсорная карта свободы.
-        mode="occupancy" (F1): action_mask_from_occupancy(grid, ...) по
+        mode="sensor" (v2-prod, default): §3.2 v2 sensor-mask. Источник free_run:
+            - free_runs задан → используем напрямую (нода: из RAW VL-сенсоров,
+              int((perim+mount)/cell)) — sim-runtime путь;
+            - иначе sensor_free_runs(grid, pose) (env._free_run, occ=False,
+              !=0=стена) — env/parity путь. grid = ground-truth карта свободы.
+            → sensor_action_mask(free_runs, N).
+        mode="occupancy" (F1): action_mask_from_occupancy(grid, pose) по
             occupancy агента (FREE=1). grid = occ_map.
         """
         n = self.wall_stop_cells if n_cells is None else int(n_cells)
         if mode == "sensor":
-            runs = sensor_free_runs(
-                grid, pose.x_cells, pose.y_cells, pose.heading_rad,
-                grid_size=grid.shape[0],
-            )
-            return np.array(sensor_action_mask(runs, n), dtype=bool)
+            if free_runs is None:
+                if grid is None or pose is None:
+                    raise ValueError("sensor mode: нужны (grid,pose) либо free_runs")
+                free_runs = sensor_free_runs(
+                    grid, pose.x_cells, pose.y_cells, pose.heading_rad,
+                    grid_size=grid.shape[0],
+                )
+            return np.array(sensor_action_mask(free_runs, n), dtype=bool)
         if mode == "occupancy":
+            if grid is None or pose is None:
+                raise ValueError("occupancy mode: нужны (grid, pose)")
             return action_mask_from_occupancy(
                 grid, pose.x_cells, pose.y_cells, pose.heading_rad
             )
@@ -157,17 +166,22 @@ class InferenceCore:
 
     # ---- predict ------------------------------------------------------------
 
-    def predict(self, obs: np.ndarray, mask: np.ndarray | None = None) -> int:
+    def predict(
+        self, obs: np.ndarray, mask: np.ndarray | None = None,
+        *, deterministic: bool | None = None,
+    ) -> int:
         """action int. AM: predict(obs, action_masks=mask) — маска ОБЯЗАТЕЛЬНА
-        (F1, иначе off-distribution). sweep02: без маски."""
+        (F1, иначе off-distribution). sweep02: без маски. deterministic=None →
+        self.deterministic (нода флипает на False для stall-backstop)."""
         obs = np.asarray(obs, dtype=np.float32)
+        det = self.deterministic if deterministic is None else bool(deterministic)
         if self.family == "activemapping":
             if mask is None:
                 raise ValueError("activemapping requires action_masks (F1)")
             a, _ = self.model.predict(
                 obs, action_masks=np.asarray(mask, dtype=bool),
-                deterministic=self.deterministic,
+                deterministic=det,
             )
         else:
-            a, _ = self.model.predict(obs, deterministic=self.deterministic)
+            a, _ = self.model.predict(obs, deterministic=det)
         return int(np.asarray(a).reshape(-1)[0])

@@ -40,9 +40,9 @@ from policy_bridge.action_gate import (
     action7_sensor_blocks,
     gate_blocks,
     movement_clearance_m,
-    sensor_action_mask,
 )
 from policy_bridge.am_adapter import ActiveMappingAdapter, VL_MOUNT_RADIUS_M
+from policy_bridge.inference_core import InferenceCore, Pose
 from policy_bridge.display_map import build_display_map, display_coverage
 from policy_bridge.obs_builder import ObsBuilder
 from policy_bridge.world_config import WorldGeometry, load_world_geometry
@@ -202,6 +202,9 @@ class PolicyBridgeNode(Node):
         self.gate_margin_m = float(self.get_parameter("gate_margin_m").value)
         self.v2_sensor_mask = bool(self.get_parameter("v2_sensor_mask").value)
         self.wall_stop_cells = int(self.get_parameter("wall_stop_cells").value)
+        self.am_min_frontier = int(
+            self.get_parameter("min_frontier_cluster_cells").value
+        )
         self._gate_block_count = 0
         self._last_mapped = 0.0
         # v1.5c livelock breaker (см. NOOP_MASK_LIMIT)
@@ -301,9 +304,7 @@ class PolicyBridgeNode(Node):
                 get_vl_raw_m=lambda: self.obs_builder.perimeter_distances_m,
                 get_tf_raw_m=lambda: self.obs_builder.sweep_distance_m,
                 get_servo_deg=lambda: self.executor_act.servo_deg,
-                min_frontier_cluster_cells=int(
-                    self.get_parameter("min_frontier_cluster_cells").value
-                ),
+                min_frontier_cluster_cells=self.am_min_frontier,
             )
 
         self.executor_act = ActionExecutor(
@@ -441,7 +442,7 @@ class PolicyBridgeNode(Node):
         )
 
         # ----- model -----
-        self.model = self._load_model()
+        self.core = self._load_model()   # InferenceCore (Phase 1 тонкая обёртка)
 
         # ----- publishers -----
         self.action_pub = self.create_publisher(Int32, "/rl_policy/action", 10)
@@ -507,30 +508,36 @@ class PolicyBridgeNode(Node):
 
     # ---- model loading -----------------------------------------------------
 
-    def _load_model(self):
+    def _load_model(self) -> InferenceCore:
+        """Phase 1: модель + obs/mask/predict живут в InferenceCore (ROS2-free
+        либа). Нода — тонкая обёртка: читает топики, зовёт core.* . Здесь
+        только путь/логи/валидация obs-space (ROS2-сторона)."""
         if not self.model_path:
             raise RuntimeError("model_path param empty — set it via launch arg.")
         path = Path(self.model_path)
         if not path.exists():
             raise FileNotFoundError(f"model.zip not found: {path}")
-        # Late imports чтобы node мог быть импортирован без SB3 (unit тесты).
+        self.get_logger().info(
+            f"loading {self.model_family} model from {path} via InferenceCore "
+            f"(device=cpu, deterministic={self.deterministic}, "
+            f"min_frontier={self.am_min_frontier}, N={self.wall_stop_cells})"
+        )
+        core = InferenceCore(
+            str(path),
+            family=self.model_family,
+            deterministic=self.deterministic,
+            min_frontier_cluster_cells=self.am_min_frontier,
+            wall_stop_cells=self.wall_stop_cells,
+            device="cpu",
+        )
         if self.model_family == "activemapping":
-            from sb3_contrib import MaskablePPO
-            self.get_logger().info(
-                f"loading MaskablePPO (AM-v1) from {path} (device=cpu, "
-                f"deterministic={self.deterministic})"
-            )
-            model = MaskablePPO.load(str(path), device="cpu")
-            obs_shape = tuple(model.observation_space.shape)
+            obs_shape = tuple(core.model.observation_space.shape)
             if obs_shape != (21,):
                 raise ValueError(
                     f"model obs space {obs_shape} ≠ (21,) — это не "
                     "ActiveMapping-v1 модель? Проверь model_path/model_family."
                 )
-            return model
-        from stable_baselines3 import PPO
-        self.get_logger().info(f"loading PPO from {path} (device=cpu)")
-        return PPO.load(str(path), device="cpu")
+        return core
 
     def _on_pose_update(self, x_m: float, y_m: float) -> None:
         """Hook ActionExecutor'а на каждом poll'е arrival-ожидания (20 Hz):
@@ -984,18 +991,33 @@ class PolicyBridgeNode(Node):
         self.visited.update(pose.x_m, pose.y_m)
 
         if self.am_adapter is not None:
-            # v1.5c: §2.5 п.1 — интеграция на step boundary (снапшот obs
-            # ПОСЛЕ завершения предыдущего действия), затем obs+mask одним
-            # BFS-расчётом. predict БЕЗ action_masks запрещён (F1).
+            # v1.5c: §2.5 п.1 — интеграция occupancy на step boundary (снапшот
+            # ПОСЛЕ завершения предыдущего действия). Phase 1: occ-интеграция
+            # (stateful, ROS2-оркестрация) остаётся в am_adapter; obs/mask/
+            # predict — через InferenceCore (ROS2-free либа). predict БЕЗ
+            # action_masks запрещён (F1).
             self.am_adapter.integrate_now()
-            obs, action_mask, mapped = self.am_adapter.snapshot()
+            occ = self.am_adapter.builder.occ
+            free_mask = self.coverage.free_mask
+            pose = self.obs_builder.pose          # свежая поза (как snapshot)
+            xc = (pose.x_m + self.room_x / 2.0) / self.cell_size
+            yc = (pose.y_m + self.room_y / 2.0) / self.cell_size
+            pose_cells = Pose(xc, yc, pose.heading_rad)
+            distances = list(self.obs_builder.perimeter_distances_m) + [
+                self.obs_builder.sweep_distance_m
+            ]
+            obs = self.core.build_obs(
+                pose_cells, distances, self.executor_act.servo_deg,
+                occ, free_mask,
+            )
+            mapped = float(obs[20])               # obs[20] == mapped_ratio (§5)
+            # F1 стартовая маска (occupancy) — может быть перезаписана v2/raw ниже.
+            action_mask = self.core.build_mask(occ, pose_cells, mode="occupancy")
             # Блок 2: mission-done по DISPLAY-карте (дорисованной), не по
             # parity. Display заполнена плотнее (углы достроены, дыры < проёма
             # закрыты) → порог 0.92 ниже parity-0.95; дрон перестаёт гонять
             # за угловыми пикселями. Модель продолжает obs из parity (выше).
-            disp = build_display_map(
-                self.am_adapter.builder.occ, self.cell_size
-            )
+            disp = build_display_map(occ, self.cell_size)
             disp_cov = display_coverage(disp, self.coverage.free_mask)
             self._last_display = disp
             self._last_disp_cov = disp_cov
@@ -1029,8 +1051,10 @@ class PolicyBridgeNode(Node):
                     for i in range(6)
                 ]
                 self._a7_free_run = free_runs[0]
-                action_mask = np.array(
-                    sensor_action_mask(free_runs, self.wall_stop_cells), dtype=bool
+                # core.build_mask(free_runs=...) — RAW-сенсорный free_run путь
+                # (sim-runtime); env/parity путь — через grid (см. InferenceCore).
+                action_mask = self.core.build_mask(
+                    free_runs=free_runs, n_cells=self.wall_stop_cells, mode="sensor"
                 )
                 for a in self._infeasible_actions:   # stall-livelock поверх
                     action_mask[a] = False
@@ -1073,16 +1097,16 @@ class PolicyBridgeNode(Node):
                     f"stall backstop: {self._cell_stall_count} шагов без смены "
                     f"клетки — stochastic predict (kick #{self._stall_kick_count})"
                 )
-            action_arr, _ = self.model.predict(
-                obs, action_masks=action_mask, deterministic=deterministic
+            raw_action = self.core.predict(
+                obs, action_mask, deterministic=deterministic
             )
             self.mapped_ratio_pub.publish(Float32(data=mapped))
             self._last_mapped = mapped
             self._publish_occupancy()
         else:
             obs = self.obs_builder.build_obs(self.visited.grid)
-            action_arr, _ = self.model.predict(obs, deterministic=False)
-        raw_action_from_policy = int(action_arr)
+            raw_action = self.core.predict(obs, deterministic=False)
+        raw_action_from_policy = int(raw_action)
         self.action_raw_pub.publish(Int32(data=raw_action_from_policy))
 
         # TASK-059 attempt #8 escape v2 (rl-lab @03:18): StuckDetector v2 со
