@@ -11,7 +11,9 @@
 # не из Gazebo-камеры, поэтому headless ок.
 #
 # Usage:  run_world_bench.sh <world> [timeout_s]
-set -uo pipefail
+# NB: НЕ set -u — ROS/env setup.bash не -u-clean (unbound AMENT vars → тихий
+# exit при source). pipefail достаточно.
+set -o pipefail
 
 WORLD="${1:?usage: run_world_bench.sh <world> [timeout_s]}"
 TIMEOUT_S="${2:-420}"
