@@ -71,10 +71,19 @@ LAND_Z_M = 0.30              # z ниже = приземлился
 LAND_TIMEOUT_S = 20.0
 DISARM_GRACE_S = 2.0          # пауза после disarm (EKF shutdown)
 
-# crash-детект
+# crash-детект (per-action boundary)
 CRASH_TILT_DEG = 35.0         # roll/pitch круче = переворот (>safety_guard 15° avoidance)
 CRASH_Z_FRACTION = 0.4        # z < frac×target в полёте = просадка/crash
 SAFE_BOX_MARGIN_M = 0.6       # |pose| > room/2 + это = вылет
+# ранний crash-детект (Blocker 2, Aleks 2026-06-09): ловим краш ДО AP crash-disarm
+# (после него re-arm невозможен — known SITL limitation). Порог СТРОЖЕ per-action
+# (45°/0.3м), чтобы фон-latch не ложил эпизод на транзиентном крене (ATC_ANGLE_MAX=15
+# → норм. полёт <15°, значит >45° = реальный переворот).
+IMMINENT_TILT_DEG = 45.0
+IMMINENT_Z_M = 0.3
+# boot-gate после relaunch (Blocker 1): SITL cold-boot ~40s; min EKF-settle от relaunch
+STACK_READY_TIMEOUT_S = 90.0
+STACK_MIN_BOOT_S = 35.0
 
 LINEAR_SPEED_M_S = 0.3        # carrot-скорость движений (= bridge default)
 REPOSITION_TIMEOUT_S = 25.0   # перелёт к random-spawn (через всю комнату)
@@ -164,6 +173,8 @@ class MavrosSITLComm:
         self._state = State()
         self._tilt_rad = 0.0
         self._airborne = False
+        self._relaunch_time: float | None = None   # Blocker 1: старт boot-gate
+        self._crash_latched = False                 # Blocker 2: фон early-crash latch
         self.node.create_subscription(
             State, "/mavros/state", self._state_cb, 10, callback_group=self._cb_group
         )
@@ -238,6 +249,14 @@ class MavrosSITLComm:
     def _spin(self) -> None:
         while not self._spin_stop.is_set() and rclpy.ok():
             self._executor.spin_once(timeout_sec=0.1)
+            # Blocker 2: непрерывный early-crash detect (ловит краш ВНУТРИ длинного
+            # action7 ≤15s, не только на границе execute). Латчим до next start_episode.
+            if self._airborne and not self._crash_latched and self._is_crash_imminent():
+                self._crash_latched = True
+                self._log.warn(
+                    f"early crash detected (фон): tilt={math.degrees(self._tilt_rad):.0f}° "
+                    f"z={self.obs_builder.pose.z_m:.2f}m — терминирую эпизод ДО AP disarm"
+                )
 
     # ── callbacks ─────────────────────────────────────────────────────────────
     def _state_cb(self, msg: State) -> None:
@@ -346,6 +365,7 @@ class MavrosSITLComm:
                 if randomize_spawn:
                     self._reposition(z_hold)
 
+                self._crash_latched = False   # чистый latch на новый эпизод
                 return self.read_state()
             except RuntimeError as e:
                 last_err = e
@@ -491,7 +511,7 @@ class MavrosSITLComm:
 
     def execute(self, action: int) -> dict[str, Any]:
         action = int(action)
-        if self._detect_crash():
+        if self._crash_latched or self._is_crash_imminent() or self._detect_crash():
             return {"travel_cells": 0, "collided": False, "crashed": True}
 
         # translation 0-3 в стену → отказ ДО полёта (защита + parity reward.blocked)
@@ -503,11 +523,24 @@ class MavrosSITLComm:
         self.executor_act.execute(action, override_speed=self.linear_speed)
         p1 = self.obs_builder.pose
         travel = displacement_cells(p1.x_m - p0.x_m, p1.y_m - p0.y_m, self.cell_size)
+        crashed = self._crash_latched or self._is_crash_imminent() or self._detect_crash()
         return {
             "travel_cells": travel,
             "collided": False,
-            "crashed": self._detect_crash(),
+            "crashed": crashed,
         }
+
+    def _is_crash_imminent(self) -> bool:
+        """Blocker 2 (Aleks 2026-06-09): ранний детект краша ДО AP crash-disarm
+        (после disarm re-arm невозможен — known SITL limit). Крен/тангаж >45°
+        (норм. полёт ≤ ATC_ANGLE_MAX 15°, значит >45° = переворот) ИЛИ в полёте
+        z<0.3м. Используется фон-latch'ем (_spin) + execute()."""
+        if self._tilt_rad > math.radians(IMMINENT_TILT_DEG):
+            return True
+        z = self.obs_builder.pose.z_m
+        if self._airborne and not math.isnan(z) and z < IMMINENT_Z_M:
+            return True
+        return False
 
     def _detect_crash(self) -> bool:
         pose = self.obs_builder.pose
@@ -529,17 +562,47 @@ class MavrosSITLComm:
     def hard_reset(self) -> None:
         if self.relaunch_cmd:
             self._log.warn(f"hard_reset: relaunch стека — {self.relaunch_cmd}")
-            subprocess.run(self.relaunch_cmd, shell=True, check=False)
+            # Blocker 1: сброс stale _state — иначе boot-gate увидит connected=true
+            # от УБИТОГО mavros и пройдёт мгновенно (корень смерти TASK-RL-SITL-FT-1:
+            # set_mode/arm по полузагруженному стеку). State() = connected=False, mode="".
+            self._state = State()
             self._airborne = False
-            # дождаться переподключения mavros
-            t0 = time.monotonic()
-            while not self._state.connected and time.monotonic() - t0 < 60.0:
-                time.sleep(0.5)
-            self._wait_odom(timeout_s=60.0)
+            self._crash_latched = False
+            self._relaunch_time = time.monotonic()
+            subprocess.run(self.relaunch_cmd, shell=True, check=False)
+            self._wait_stack_ready(timeout=STACK_READY_TIMEOUT_S)
         else:
             self._log.warn("hard_reset без relaunch_cmd — soft land+disarm")
             if self._state.armed:
                 self._land_and_disarm()
+
+    def _wait_stack_ready(self, timeout: float = STACK_READY_TIMEOUT_S) -> None:
+        """Blocker 1 (Aleks 2026-06-09): 3-уровневый boot-gate РЕАЛЬНОЙ готовности
+        стека после relaunch (вместо простого sleep). SITL cold-boot ~40s; relaunch'и
+        каждые ~20s били по полузагруженному стеку → arm/set_mode timeout → death."""
+        deadline = time.monotonic() + timeout
+        # Уровень 1: MAVROS connected (FCU heartbeat от свежего SITL)
+        while time.monotonic() < deadline and not self._state.connected:
+            time.sleep(1.0)
+        # Уровень 2: режим вышел из INITIALISING (SITL встал)
+        while time.monotonic() < deadline and self._state.mode in ("", "INITIALISING"):
+            time.sleep(1.0)
+        # Уровень 3: EKF/odom — валидный z (не NaN, не дефолт «нет данных»)
+        while time.monotonic() < deadline:
+            z = self.obs_builder.pose.z_m
+            if self.obs_builder.has_received_odom and not math.isnan(z) and z > -5.0:
+                break
+            time.sleep(1.0)
+        # минимум STACK_MIN_BOOT_S от старта relaunch (EKF settle на холодном старте)
+        elapsed = time.monotonic() - (self._relaunch_time or time.monotonic())
+        if elapsed < STACK_MIN_BOOT_S:
+            time.sleep(STACK_MIN_BOOT_S - elapsed)
+        if self.verbose:
+            self._log.info(
+                f"boot-gate: stack ready · connected={self._state.connected} "
+                f"mode={self._state.mode!r} z={self.obs_builder.pose.z_m:.2f}m "
+                f"({time.monotonic() - (self._relaunch_time or time.monotonic()):.0f}s от relaunch)"
+            )
 
     def close(self) -> None:
         self._spin_stop.set()
