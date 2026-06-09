@@ -348,7 +348,9 @@ wrap_pane() {
 # gz и MAVROS остаются живы → нет EGL-цикла → root-cause снят. ardupilot_gazebo
 # plugin (lock_step=1, fdm 9002) держит сокет и переподключается к свежему SITL;
 # позу дрона возвращает gz WorldControl reset {all:true} (Harmonic physics реализует
-# optimized Reset).
+# optimized Reset). ⚠ {model_only:true} пробовали (2026-06-09 вар.d Aleks) — НЕ сбрасывает
+# sim-time → gz proximity-сенсоры глючат (читают 0.07м) → pre-arm FAIL. {all:true} нужен
+# для здоровья сенсоров.
 # ⚠ ПОРЯДОК MAVROS критичен (live-уроки 2026-06-09):
 #   • mavros, стартующий ОДНОВРЕМЕННО с рестартом SITL (до готовности FCU), навсегда
 #     остаётся connected:false.
@@ -422,15 +424,28 @@ if (( RESTART_SITL )); then
             break
         fi
     done
-    if [[ -n "$gz_world" ]]; then
-        echo "[restart-sitl] gz WorldControl reset {all:true} → /world/$gz_world/control"
-        reset_rep=$(gz service -s "/world/$gz_world/control" \
-            --reqtype gz.msgs.WorldControl --reptype gz.msgs.Boolean \
-            --timeout 6000 --req 'reset: {all: true}' 2>/dev/null || true)
-        if grep -q "true" <<<"$reset_rep"; then
-            echo "[restart-sitl] reset OK (модель → initial pose)"
+    if [[ -n "$gz_world" && -z "${SKIP_GZ_RESET:-}" ]]; then
+        # вар.b (Aleks 2026-06-09): set_pose модели вместо WorldControl reset {all:true}.
+        # reset {all:true} ресетит lockstep-состояние плагина ardupilot_gazebo, пока НИ
+        # ОДИН SITL не подключён (старый мёртв, свежий в sleep) → fresh SITL дедлочится
+        # (gz FROZEN, arducopter жив но не heartbeat'ит, ждёт FDM; RCA 2026-06-09: diag A
+        # reset-less reconnect ЧИСТЫЙ, 13/13 RL дедлок с reset). set_pose двигает ТОЛЬКО
+        # модель, НЕ трогая sim-time/lockstep/плагин → дедлока нет, поза консистентна.
+        # spawn-поза из world SDF (include pose), yaw→quaternion (roll/pitch spawn=0).
+        spawn_pose=$(grep -A2 "iris_claudedrone" "$WORLD_PATH" 2>/dev/null | grep -oP '<pose>\K[^<]+' | head -1)
+        [[ -z "$spawn_pose" ]] && spawn_pose="0 0 0.2 0 0 0"
+        read -r sx sy sz _sr _sp syaw _ <<<"$spawn_pose"
+        syaw="${syaw:-0}"
+        sqz=$(awk "BEGIN{print sin($syaw/2)}")
+        sqw=$(awk "BEGIN{print cos($syaw/2)}")
+        echo "[restart-sitl] gz set_pose iris_claudedrone → ($sx,$sy,$sz) yaw=$syaw (вместо reset, lockstep-safe)"
+        sp_rep=$(gz service -s "/world/$gz_world/set_pose" \
+            --reqtype gz.msgs.Pose --reptype gz.msgs.Boolean --timeout 5000 \
+            --req "name: \"iris_claudedrone\", position: {x: $sx, y: $sy, z: $sz}, orientation: {x: 0, y: 0, z: $sqz, w: $sqw}" 2>/dev/null || true)
+        if grep -q "true" <<<"$sp_rep"; then
+            echo "[restart-sitl] set_pose OK (модель → spawn)"
         else
-            echo "[restart-sitl] ⚠ reset не подтверждён (rep='$reset_rep')"
+            echo "[restart-sitl] ⚠ set_pose не подтверждён (rep='$sp_rep')"
         fi
     fi
 
