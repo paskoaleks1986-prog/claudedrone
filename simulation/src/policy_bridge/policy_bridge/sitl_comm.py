@@ -201,6 +201,7 @@ class MavrosSITLComm:
         self._airborne = False
         self._relaunch_time: float | None = None   # Blocker 1: старт boot-gate
         self._crash_latched = False                 # Blocker 2: фон early-crash latch
+        self._tilt_latch_start: float | None = None  # Fix2-фон: старт удержания опасной зоны (_spin)
         # ── per-episode телеметрия (episode_log.jsonl, post-анализ ранов) ──
         self._episode_count = 0
         self._step_count = 0
@@ -305,14 +306,25 @@ class MavrosSITLComm:
                 z = self.obs_builder.pose.z_m
                 if not math.isnan(z) and z < self._min_z_m:
                     self._min_z_m = z
-            # Blocker 2: непрерывный early-crash detect (ловит краш ВНУТРИ длинного
-            # action7 ≤15s, не только на границе execute). Латчим до next start_episode.
-            if self._airborne and not self._crash_latched and self._is_crash_imminent():
-                self._crash_latched = True
-                self._log.warn(
-                    f"early crash detected (фон): tilt={math.degrees(self._tilt_rad):.0f}° "
-                    f"z={self.obs_builder.pose.z_m:.2f}m — терминирую эпизод ДО AP disarm"
-                )
+            # Blocker 2 + Fix2-фон (Aleks 2026-06-09): непрерывный early-crash detect
+            # (ловит краш ВНУТРИ длинного action7 ≤15s, не только на границе execute).
+            # Латчим только при УДЕРЖАНИИ опасной зоны ≥ IMMINENT_TILT_MIN_S — явный
+            # фон-гейт (поверх внутреннего гейта _is_crash_imminent: эффект. tilt-гейт
+            # = 0.6с, z-гейт = 0.3с; оба фильтруют транзиент разгона, ловят реальный
+            # переворот/падение). Латч держится до next start_episode.
+            if self._airborne and not self._crash_latched:
+                if self._is_crash_imminent():
+                    if self._tilt_latch_start is None:
+                        self._tilt_latch_start = time.monotonic()
+                    elif time.monotonic() - self._tilt_latch_start >= IMMINENT_TILT_MIN_S:
+                        self._crash_latched = True
+                        self._log.warn(
+                            f"early crash (фон): sustained tilt/z "
+                            f"(tilt={math.degrees(self._tilt_rad):.0f}° "
+                            f"z={self.obs_builder.pose.z_m:.2f}m) — терминирую эпизод ДО AP disarm"
+                        )
+                else:
+                    self._tilt_latch_start = None  # вышли из опасной зоны — сброс
 
     # ── callbacks ─────────────────────────────────────────────────────────────
     def _state_cb(self, msg: State) -> None:

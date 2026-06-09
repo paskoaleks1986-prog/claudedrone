@@ -43,9 +43,12 @@ BATT_MONITOR 0
 # (GUID_OPTIONS 0 below), so WP_SPD/WP_ACC stay at defaults on purpose.
 # Do NOT re-add a WP_SPD cap: carrot enforces mode linear_speed.
 
-# Attempt #19 RCA (2026-05-20): 45 deg ANGLE_MAX lost 0.28 m altitude
-# per 1 m XY move. Keep 15 deg.
-ATC_ANGLE_MAX 15
+# Attempt #19 RCA (2026-05-20): 45 deg ANGLE_MAX lost 0.28 m altitude per 1 m XY.
+# Aleks 2026-06-09: поднять до 25° для RL — ограничить динамику GUIDED (физически
+# не достичь 60°/переворота), политика учит без ложных крашей. ⚠ 4.8-dev: имя =
+# ATC_ANGLE_MAX (префикс ATC_, голый ANGLE_MAX игнор), @Units: deg @Range 10–80 —
+# значение в ГРАДУСАХ (НЕ сантиградусах, как старое 4500=45°). 25 = 25°.
+ATC_ANGLE_MAX 25
 
 # Pilot vertical accel: old PILOT_ACCEL_Z 100 cm/s/s -> 1.0 m/s/s (4.8 name).
 PILOT_ACC_Z 1.0
