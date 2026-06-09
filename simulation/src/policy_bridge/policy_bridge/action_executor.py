@@ -78,6 +78,13 @@ RAW_TYPE_MASK_POS_YAW = (
     | PositionTarget.IGNORE_AFX | PositionTarget.IGNORE_AFY | PositionTarget.IGNORE_AFZ
     | PositionTarget.IGNORE_YAW_RATE
 )  # = 2552: position + yaw активны
+
+# Position-ONLY маска (Aleks 2026-06-09, фикс odom-vs-AP gap): ВО ВРЕМЯ action7
+# (translation) yaw НЕ командуем (IGNORE_YAW) — AP летит к позиции без
+# yaw-constraint, не пытаясь скорректировать накопленную ~40° odom-vs-AHRS
+# yaw-ошибку В ДВИЖЕНИИ (что давало coupling roll/pitch → tumble). Yaw
+# выправляем отдельным stationary шагом ПОСЛЕ прибытия (_snap_to_yaw).
+RAW_TYPE_MASK_POS_ONLY = RAW_TYPE_MASK_POS_YAW | PositionTarget.IGNORE_YAW
 DEFAULT_SCAN_HOVER_S = 0.5
 SERVO_STEP_DEG = 30.0
 SERVO_MAX_DEG = 180.0
@@ -183,15 +190,19 @@ def _make_pose(x: float, y: float, z: float, yaw: float, frame: str = "map") -> 
     return ps
 
 
-def _make_raw_target(x: float, y: float, z: float, yaw: float) -> PositionTarget:
+def _make_raw_target(
+    x: float, y: float, z: float, yaw: float,
+    type_mask: int = RAW_TYPE_MASK_POS_YAW,
+) -> PositionTarget:
     """SET_POSITION_TARGET_LOCAL_NED с ЯВНЫМ yaw (Aleks 2026-06-09, фикс 2-й
     моды tumble). mavros setpoint_raw трансформирует ENU→NED для position и yaw
-    (как setpoint_position) — передаём те же ENU x,y,z,yaw. type_mask держит
-    позицию+yaw активными (RAW_TYPE_MASK_POS_YAW) → AP не free-run'ит yaw."""
+    (как setpoint_position) — передаём те же ENU x,y,z,yaw. type_mask:
+    POS_YAW (yaw активен) на hover/ротациях, POS_ONLY (IGNORE_YAW) во время
+    action7-трансляции (yaw не трогаем, выправляем после прибытия)."""
     pt = PositionTarget()
     pt.header.frame_id = "map"
     pt.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
-    pt.type_mask = RAW_TYPE_MASK_POS_YAW
+    pt.type_mask = type_mask
     pt.position.x = float(x)
     pt.position.y = float(y)
     pt.position.z = float(z)
@@ -273,6 +284,9 @@ class ActionExecutor:
         # v2 run F: raw setpoint для yaw_rate ротаций (mask 1479)
         self.raw_pub = node.create_publisher(PositionTarget, CMD_RAW_TOPIC, 10)
         self._rotating = False
+        # True во время action7-трансляции → maintenance шлёт POS_ONLY (IGNORE_YAW),
+        # AP не корректит yaw в движении (Aleks 2026-06-09 фикс odom-vs-AP gap).
+        self._translating = False
         self._yaw_calib_sum = 0.0
         self._yaw_calib_n = 0
         self._drift_err_sum = 0.0
@@ -374,7 +388,10 @@ class ActionExecutor:
                 self._carrot_seg = None  # carrot дошёл — дальше финальный
             else:
                 x, y = pt[0], pt[1]
-        target = _make_raw_target(x, y, z, self._target_yaw)
+        # action7-трансляция → POS_ONLY (yaw не командуем, AP не корректит в
+        # движении); иначе POS_YAW (hover/ротация — yaw держим явно).
+        mask = RAW_TYPE_MASK_POS_ONLY if self._translating else RAW_TYPE_MASK_POS_YAW
+        target = _make_raw_target(x, y, z, self._target_yaw, mask)
         target.header.stamp = self.node.get_clock().now().to_msg()
         self.raw_pub.publish(target)
 
@@ -599,9 +616,19 @@ class ActionExecutor:
             )
             return {"kind": 3.0, "travel": 0.0, "arrived": 1.0}
 
-        arrived = self._wait_arrival_position(
-            target_x, target_y, ARRIVAL_TOL_ACTION7_M, ARRIVAL_TIMEOUT_ACTION7_S
-        )
+        # Aleks 2026-06-09 (фикс odom-vs-AP gap): во время полёта yaw НЕ
+        # командуем (POS_ONLY) — AP летит к позиции, не корректит накопленную
+        # ~40° odom-vs-AHRS yaw-ошибку В ДВИЖЕНИИ (что давало coupling → tumble).
+        self._translating = True
+        try:
+            arrived = self._wait_arrival_position(
+                target_x, target_y, ARRIVAL_TOL_ACTION7_M, ARRIVAL_TIMEOUT_ACTION7_S
+            )
+        finally:
+            self._translating = False
+        # После прибытия — stationary yaw-коррекция: heading назад к cur_yaw БЕЗ
+        # coupling (дрон стоит на месте, yaw правится отдельно от трансляции).
+        self._snap_to_yaw(target_x, target_y, cur_yaw)
         end_yaw = self._get_pose().heading_rad
         self.node.get_logger().info(
             f"a7H: end={math.degrees(end_yaw):+.1f} "
@@ -611,6 +638,23 @@ class ActionExecutor:
             f"arrived={int(arrived)}"
         )
         return {"kind": 3.0, "travel": travel, "arrived": float(arrived)}
+
+    def _snap_to_yaw(self, x: float, y: float, target_yaw: float) -> bool:
+        """Stationary yaw-коррекция после action7 (Aleks 2026-06-09): держим
+        позицию (x,y), командуем target_yaw явно (POS_YAW, _translating=False),
+        ждём сходимости. Отделено от трансляции → AP корректит yaw БЕЗ coupling
+        с forward motion (корень tumble: ~40° yaw-коррекция В ДВИЖЕНИИ). Heading
+        зафиксирован к моменту следующего observation (parity-safe)."""
+        self._set_target(x, y, target_yaw)  # speed=None → прямой hold, без carrot
+        arrived = self._wait_arrival_yaw(
+            target_yaw, ROTATION_YAW_TOL_RAD, ROTATION_TIMEOUT_S
+        )
+        self.node.get_logger().info(
+            f"yaw-snap post-a7: target={math.degrees(target_yaw):+.1f}° "
+            f"achieved={math.degrees(self._get_pose().heading_rad):+.1f}° "
+            f"arrived={int(arrived)}"
+        )
+        return arrived
 
     def _wait_arrival_position(
         self, target_x: float, target_y: float, tolerance: float, timeout_s: float
@@ -681,12 +725,20 @@ class ActionExecutor:
                 time.sleep(self.settle_hover_s)
             return
         t0 = time.monotonic()
+        heading_err = 0.0
         while time.monotonic() - t0 < timeout_s:
             tilt_ok = math.degrees(self._get_tilt_rad()) < tilt_tol_deg
-            cur_heading = self._get_pose().heading_rad
-            heading_err = abs(math.degrees(_angle_diff(cur_heading, self._target_yaw)))
-            if tilt_ok and heading_err < heading_tol_deg:
-                return
+            # Во время action7-трансляции yaw намеренно НЕ командуется (POS_ONLY),
+            # heading свободен — heading-gate не применяем (yaw выправит _snap_to_yaw
+            # после прибытия). Гейтим только tilt.
+            if self._translating:
+                if tilt_ok:
+                    return
+            else:
+                cur_heading = self._get_pose().heading_rad
+                heading_err = abs(math.degrees(_angle_diff(cur_heading, self._target_yaw)))
+                if tilt_ok and heading_err < heading_tol_deg:
+                    return
             time.sleep(0.05)
         # timeout — не фатально, продолжаем (лог для диагностики)
         self.node.get_logger().warn(
