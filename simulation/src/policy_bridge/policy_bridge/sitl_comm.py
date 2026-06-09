@@ -382,8 +382,17 @@ class MavrosSITLComm:
         не взлетает (climb timeout, armed но z≈0.21). Поэтому soft-reset НЕ садится:
         пока дрон здорово висит — только репозиция в воздухе (fly-to-spawn). Полный
         взлёт с земли — лишь на свежем стеке (первый эпизод / после hard_reset
-        relaunch = чистый re-takeoff = очистка EKF-bias). Это совпадает с замыслом
-        hard_reset_every: периодический ребут стека = единственный чистый re-takeoff.
+        relaunch).
+
+        СТРАТЕГИЯ RESET (Aleks 2026-06-09, после smoke-gate FAIL gz-alive reset):
+        scheduled hard_reset ОТКЛЮЧЁН (env: hard_reset_every=0). Между эпизодами —
+        ТОЛЬКО soft-reset (репозиция в воздухе): дрон не садится, re-takeoff не
+        нужен → lockstep-баг повторного gz-alive set_pose restart'а не возникает
+        (gz-alive reset давал чистый re-takeoff ровно 1 раз, со 2-го — climb timeout
+        z=0.21). hard_reset вызывается ТОЛЬКО на реальный крэш (armed=False в полёте
+        → следующий start_episode видит not-healthy_airborne → _full_takeoff →
+        при провале → hard_reset/retry). EKF в SITL с GPS (GPS1_TYPE=1) не
+        деградирует значимо без рестарта — GPS постоянно корректирует позицию.
         """
         if rng is not None:
             self._rng = rng
