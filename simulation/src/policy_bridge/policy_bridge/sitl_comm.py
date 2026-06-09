@@ -39,6 +39,7 @@ import json
 import math
 import os
 import subprocess
+import sys
 import threading
 import time
 from typing import Any
@@ -459,10 +460,18 @@ class MavrosSITLComm:
                 # re-takeoff («relaunch → чистый SITL», директива Aleks 2026-06-09).
                 # Крэши редки (sensor_mask) → EGL-цикл от редкого relaunch приемлем.
                 self.hard_reset(sitl_only=False)
-        raise RuntimeError(
-            f"start_episode не удался за {self.max_start_attempts} попыток "
-            f"(последняя: {last_err}). Стек не поднимается — нужен ручной разбор."
+        # Recovery-стратегия (Aleks 2026-06-09): авто-relaunch после краша всё равно
+        # НЕ климбит (FDM→gz после быстрого kill+respawn gz, z=0.21 — post-reboot
+        # smoke подтвердил, что это не GPU-long-session, а сам relaunch-путь). С Fix2
+        # (tilt duration-гейт) настоящих крашей в 50k практически не будет; если всё
+        # же случится — это исключительное событие, требующее ручного вмешательства,
+        # а не авто-рестарта, который не работает. → exit(2) = «нужен ребут D2», не
+        # баг кода. SITLDroneEnv ловит SystemExit(2) и пишет UNRECOVERABLE_CRASH.
+        self._log.error(
+            f"crash recovery failed after {self.max_start_attempts} attempts "
+            f"(последняя: {last_err}) — exiting with code 2 (нужен ребут D2)"
         )
+        sys.exit(2)
 
     def _full_takeoff(self) -> float:
         """Взлёт С ЗЕМЛИ: GUIDED→EKF-settle→arm→NAV_TAKEOFF→climb→hover. → z_hold."""
