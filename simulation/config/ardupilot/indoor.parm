@@ -77,6 +77,15 @@ ATC_RATE_Y_MAX 90
 # 4.8 rename: ATC_ACCEL_Y_MAX 36000 cdeg/s/s -> ATC_ACC_Y_MAX 360 deg/s/s.
 ATC_ACC_Y_MAX 360
 
+# RCA tumble ep1 (50k 2026-06-09 runs 20:12+21:21): дрон кувыркался (tilt 57-81,
+# roll/pitch осцилляции) с предшествующей yaw-аномалией (cmd-17.8 / ach+86).
+# Корень: WP_YAW_BEHAVIOR default = 2 в 4.8-dev (FaceNextWaypointExceptRTL,
+# подтв. dataflash 00000153.BIN @20:11 + live FCU = 2) -> AP авто-доворачивает
+# yaw к цели во время GUIDED action7-навигации -> конфликт с нашим явным
+# yaw-control (bridge/RL) -> борьба yaw -> потеря attitude-контроля. 0 = Never
+# (никогда не менять yaw авто) -> yaw полностью у нашего контроля.
+WP_YAW_BEHAVIOR 0
+
 # Стенд DS->AP (Aleks 2026-06-08): AP принимает DISTANCE_SENSOR по MAVLink.
 # ВКЛЮЧЕНО в паре с sender-нодой drone_sim/distance_sensor_forwarder (читает
 # /drone/vl53l0x/ch0..5 + /drone/tf_luna_down LaserScan → mavros distance_sensor
