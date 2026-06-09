@@ -35,7 +35,9 @@ MavrosSITLComm на живой MAVROS.
 """
 from __future__ import annotations
 
+import json
 import math
+import os
 import subprocess
 import threading
 import time
@@ -137,6 +139,10 @@ class MavrosSITLComm:
         sitl_instance: int = 1,
         node_name: str = "sitl_comm",
         relaunch_cmd: str | None = None,
+        sitl_restart_cmd: str | None = None,
+        gz_log_path: str | None = None,
+        egl_degradation_threshold: int = 6,
+        episode_log_path: str | None = None,
         perimeter_topic: str = "/drone/perimeter",
         sweep_topic: str = "/scan/sweep",
         odom_topic: str = "/mavros/local_position/odom",
@@ -156,6 +162,13 @@ class MavrosSITLComm:
         self.linear_speed = float(linear_speed_m_s)
         self.sitl_instance = int(sitl_instance)
         self.relaunch_cmd = relaunch_cmd
+        # gz-alive hard_reset (TASK-RL-SITL-FT-1): рестарт ТОЛЬКО sitl+mavros без
+        # перезапуска Gazebo → нет EGL-цикла. Предпочитается полному relaunch_cmd.
+        # Полный relaunch — fallback при EGL-деградации (egl_cycles>threshold в gz-логе).
+        self.sitl_restart_cmd = sitl_restart_cmd
+        self.gz_log_path = gz_log_path
+        self.egl_degradation_threshold = int(egl_degradation_threshold)
+        self.episode_log_path = episode_log_path
         self.ekf_settle_s = float(ekf_settle_s)
         self.hover_stabilize_s = float(hover_stabilize_s)
         self.max_start_attempts = int(max_start_attempts)
@@ -175,6 +188,16 @@ class MavrosSITLComm:
         self._airborne = False
         self._relaunch_time: float | None = None   # Blocker 1: старт boot-gate
         self._crash_latched = False                 # Blocker 2: фон early-crash latch
+        # ── per-episode телеметрия (episode_log.jsonl, post-анализ ранов) ──
+        self._episode_count = 0
+        self._step_count = 0
+        self._hard_reset_count = 0
+        self._sitl_only_reset_count = 0
+        self._full_relaunch_count = 0
+        self._crash_count = 0
+        self._max_tilt_deg = 0.0
+        self._min_z_m = float("inf")
+        self._episode_active = False
         self.node.create_subscription(
             State, "/mavros/state", self._state_cb, 10, callback_group=self._cb_group
         )
@@ -249,6 +272,14 @@ class MavrosSITLComm:
     def _spin(self) -> None:
         while not self._spin_stop.is_set() and rclpy.ok():
             self._executor.spin_once(timeout_sec=0.1)
+            # per-episode телеметрия (фон, дёшево): пик крена + минимум высоты в полёте
+            if self._airborne:
+                tilt_deg = math.degrees(self._tilt_rad)
+                if tilt_deg > self._max_tilt_deg:
+                    self._max_tilt_deg = tilt_deg
+                z = self.obs_builder.pose.z_m
+                if not math.isnan(z) and z < self._min_z_m:
+                    self._min_z_m = z
             # Blocker 2: непрерывный early-crash detect (ловит краш ВНУТРИ длинного
             # action7 ≤15s, не только на границе execute). Латчим до next start_episode.
             if self._airborne and not self._crash_latched and self._is_crash_imminent():
@@ -336,6 +367,8 @@ class MavrosSITLComm:
         """
         if rng is not None:
             self._rng = rng
+        # episode_log: сбросить предыдущий эпизод в jsonl, открыть новый.
+        self._begin_episode()
         # crash-proof (Aleks 2026-06-09): провал re-arm/takeoff (напр. re-arm после
         # crash-disarm — NAV_TAKEOFF/arm-after-LAND ненадёжны) НЕ должен пробивать
         # исключением в train-loop (ран TASK-RL-SITL-FT-1 умер на RuntimeError).
@@ -511,7 +544,9 @@ class MavrosSITLComm:
 
     def execute(self, action: int) -> dict[str, Any]:
         action = int(action)
+        self._step_count += 1
         if self._crash_latched or self._is_crash_imminent() or self._detect_crash():
+            self._crash_count += 1
             return {"travel_cells": 0, "collided": False, "crashed": True}
 
         # translation 0-3 в стену → отказ ДО полёта (защита + parity reward.blocked)
@@ -559,22 +594,114 @@ class MavrosSITLComm:
             return True
         return False
 
-    def hard_reset(self) -> None:
-        if self.relaunch_cmd:
-            self._log.warn(f"hard_reset: relaunch стека — {self.relaunch_cmd}")
-            # Blocker 1: сброс stale _state — иначе boot-gate увидит connected=true
-            # от УБИТОГО mavros и пройдёт мгновенно (корень смерти TASK-RL-SITL-FT-1:
-            # set_mode/arm по полузагруженному стеку). State() = connected=False, mode="".
-            self._state = State()
-            self._airborne = False
-            self._crash_latched = False
-            self._relaunch_time = time.monotonic()
-            subprocess.run(self.relaunch_cmd, shell=True, check=False)
-            self._wait_stack_ready(timeout=STACK_READY_TIMEOUT_S)
+    def hard_reset(self, *, sitl_only: bool = True) -> None:
+        """Сброс стека после неустранимого сбоя эпизода (crash-disarm → re-arm fail).
+
+        Стратегия (Aleks 2026-06-09, gz-alive hard_reset — снимает root-cause
+        death-loop'а TASK-RL-SITL-FT-1):
+          • ПРЕДПОЧТИТЕЛЬНО sitl_only — рестарт ТОЛЬКО sim_vehicle+mavros, Gazebo
+            живёт → НЕ происходит EGL-цикл (каждый полный relaunch = +1 dri2-fail;
+            после ~6-8 nvidia EGL ломается, физика не шагается). Позу модели
+            возвращает gz WorldControl reset (внутри sitl_restart_cmd).
+          • Полный relaunch (relaunch_cmd) — ТОЛЬКО fallback при УЖЕ наступившей
+            EGL-деградации (gz битый, sitl-only не спасёт) или если sitl_restart_cmd
+            не задан. Полный relaunch перезапускает gz = свежий EGL-контекст.
+        """
+        self._hard_reset_count += 1
+        use_full = (
+            not sitl_only or self.sitl_restart_cmd is None or self._egl_degraded()
+        )
+        if use_full and self.relaunch_cmd:
+            why = "EGL-деградация" if (sitl_only and self.sitl_restart_cmd) else "по запросу"
+            self._log.warn(f"hard_reset (FULL relaunch, {why}): {self.relaunch_cmd}")
+            self._full_relaunch_count += 1
+            cmd = self.relaunch_cmd
+        elif self.sitl_restart_cmd:
+            self._log.warn(f"hard_reset (gz-alive: sitl+mavros): {self.sitl_restart_cmd}")
+            self._sitl_only_reset_count += 1
+            cmd = self.sitl_restart_cmd
         else:
-            self._log.warn("hard_reset без relaunch_cmd — soft land+disarm")
+            self._log.warn("hard_reset без relaunch_cmd/sitl_restart_cmd — soft land+disarm")
             if self._state.armed:
                 self._land_and_disarm()
+            return
+        # Blocker 1: сброс stale _state — иначе boot-gate увидит connected=true от
+        # УБИТОГО mavros и пройдёт мгновенно (корень смерти первого рана: set_mode/
+        # arm по полузагруженному стеку). State() = connected=False, mode="".
+        self._state = State()
+        self._airborne = False
+        self._crash_latched = False
+        self._relaunch_time = time.monotonic()
+        rc = subprocess.run(cmd, shell=True, check=False).returncode
+        # gz-alive restart вернул non-zero (панель sitl закрыта / orphan-kill упал) →
+        # эскалация на полный relaunch (перезапуск gz = свежий стек целиком).
+        if rc != 0 and cmd is self.sitl_restart_cmd and self.relaunch_cmd:
+            self._log.warn(
+                f"gz-alive restart rc={rc} (панель закрыта?) → эскалация на полный relaunch"
+            )
+            self._full_relaunch_count += 1
+            self._relaunch_time = time.monotonic()
+            subprocess.run(self.relaunch_cmd, shell=True, check=False)
+        self._wait_stack_ready(timeout=STACK_READY_TIMEOUT_S)
+
+    def _egl_cycle_count(self) -> int:
+        """Число 'failed to create dri2 screen' в gz-логе (= счётчик EGL-циклов).
+        Нет лога → 0 (считаем healthy)."""
+        if not self.gz_log_path:
+            return 0
+        try:
+            with open(self.gz_log_path, "r", errors="ignore") as f:
+                return sum(1 for ln in f if "failed to create dri2 screen" in ln)
+        except OSError:
+            return 0
+
+    def _egl_degraded(self) -> bool:
+        """gz EGL сломан (dri2-fail ≥ threshold) → gz не рендерит/не шагает физику,
+        sitl-only reset бесполезен, нужен полный relaunch (пересоздаст EGL-контекст)."""
+        n = self._egl_cycle_count()
+        if n >= self.egl_degradation_threshold:
+            self._log.warn(
+                f"EGL degradation: {n} dri2-fail (≥{self.egl_degradation_threshold}) "
+                f"→ gz-alive reset бесполезен, fallback на полный relaunch"
+            )
+            return True
+        return False
+
+    # ── episode_log.jsonl (post-анализ ранов: краши/крен/resets по эпизодам) ─────
+    def _begin_episode(self) -> None:
+        """Сбросить телеметрию предыдущего эпизода в jsonl и открыть новый."""
+        if self._episode_active:
+            self._log_episode()
+        self._episode_count += 1
+        self._step_count = 0
+        self._crash_count = 0
+        self._max_tilt_deg = 0.0
+        self._min_z_m = float("inf")
+        self._episode_active = True
+
+    def _log_episode(self) -> None:
+        if not self.episode_log_path:
+            return
+        rec = {
+            "episode": self._episode_count,
+            "timestamp": round(time.time(), 3),
+            "steps": self._step_count,
+            "crashes": self._crash_count,
+            "hard_resets_cum": self._hard_reset_count,
+            "sitl_only_resets_cum": self._sitl_only_reset_count,
+            "full_relaunches_cum": self._full_relaunch_count,
+            "max_tilt_deg": round(self._max_tilt_deg, 1),
+            "min_z_m": None if math.isinf(self._min_z_m) else round(self._min_z_m, 2),
+            "egl_cycles": self._egl_cycle_count(),
+        }
+        try:
+            d = os.path.dirname(self.episode_log_path)
+            if d:
+                os.makedirs(d, exist_ok=True)
+            with open(self.episode_log_path, "a") as f:
+                f.write(json.dumps(rec) + "\n")
+        except OSError as e:
+            self._log.warn(f"episode_log write failed ({self.episode_log_path}): {e}")
 
     def _wait_stack_ready(self, timeout: float = STACK_READY_TIMEOUT_S) -> None:
         """Blocker 1 (Aleks 2026-06-09): 3-уровневый boot-gate РЕАЛЬНОЙ готовности
@@ -605,6 +732,9 @@ class MavrosSITLComm:
             )
 
     def close(self) -> None:
+        if self._episode_active:
+            self._log_episode()
+            self._episode_active = False
         self._spin_stop.set()
         if self._spin_thread.is_alive():
             self._spin_thread.join(timeout=2.0)

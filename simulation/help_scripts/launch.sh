@@ -31,6 +31,7 @@ MAVROS=0
 NO_AUTOSCAN=0   # v2: autoscan:=false для RL-ранов (серва — у policy action 6)
 NO_SAFETY_GUARD=0   # SITL-RL: safety_guard:=false для fine-tune (паритет с train-env)
 AUTO_NODE=""
+RESTART_SITL=0  # gz-alive hard_reset: рестарт ТОЛЬКО sitl+mavros панелей живой сессии
 
 usage() {
     cat <<'EOF'
@@ -59,6 +60,8 @@ Modifiers:
   --no-autoscan   drone.launch.py autoscan:=false (RL-раны: серва — у action 6)
   --no-safety-guard  drone.launch.py safety_guard:=false (RL fine-tune: паритет с train-env)
   --auto NAME     extra pane: ros2 run drone_sim NAME
+  --restart-sitl  gz-alive hard_reset: рестарт ТОЛЬКО sitl+mavros в живой -s сессии
+                  (gz не трогается → нет EGL-цикла; поза дрона ← gz WorldControl reset)
 
 Presets:
   --layout        = -gz
@@ -97,6 +100,7 @@ while [[ $# -gt 0 ]]; do
         --no-autoscan) NO_AUTOSCAN=1; shift ;;
         --no-safety-guard) NO_SAFETY_GUARD=1; shift ;;
         --auto)      AUTO_NODE="${2:?--auto needs a node name}"; shift 2 ;;
+        --restart-sitl) RESTART_SITL=1; WANT_SITL=1; MAVROS=1; shift ;;
         --layout)    WANT_GZ=1; shift ;;
         --sim)       WANT_GZ=1; GZ_RUN=1; WANT_SITL=1; WANT_BRIDGE=1; shift ;;
         --full)      WANT_GZ=1; GZ_RUN=1; WANT_SITL=1; WANT_BRIDGE=1; WANT_ROS=1; shift ;;
@@ -148,7 +152,8 @@ fi
 command -v tmux >/dev/null || { echo "tmux not installed" >&2; exit 1; }
 
 # Pre-flight: ensure MAVLINK_PORT is free before launching SITL.
-if (( WANT_SITL )); then
+# (restart-sitl: порт занят SITL'ом, который мы как раз перезапускаем → пропускаем)
+if (( WANT_SITL && ! RESTART_SITL )); then
     if ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${MAVLINK_PORT}\$"; then
         echo "ERROR: MAVLINK_PORT $MAVLINK_PORT is already bound." >&2
         echo "  Either bump SITL_INSTANCE in $ENV_FILE (each +1 = +10 on port)," >&2
@@ -335,6 +340,124 @@ wrap_pane() {
         printf 'bash -lc %q' "$body"
     fi
 }
+
+# ── SITL-only restart (gz-alive hard_reset; EGL-cycle-free) ───────────────────
+# TASK-RL-SITL-FT-1 (Aleks 2026-06-09): полный relaunch убивал Gazebo → EGL-цикл →
+# деградация nvidia EGL после ~6-8 циклов → физика не шагается (armed но z=0). Этот
+# режим рестартит ТОЛЬКО SITL-панель живой сессии (sim_vehicle+arducopter+mavproxy),
+# gz и MAVROS остаются живы → нет EGL-цикла → root-cause снят. ardupilot_gazebo
+# plugin (lock_step=1, fdm 9002) держит сокет и переподключается к свежему SITL;
+# позу дрона возвращает gz WorldControl reset {all:true} (Harmonic physics реализует
+# optimized Reset).
+# ⚠ ПОРЯДОК MAVROS критичен (live-уроки 2026-06-09):
+#   • mavros, стартующий ОДНОВРЕМЕННО с рестартом SITL (до готовности FCU), навсегда
+#     остаётся connected:false.
+#   • живой (не перезапущенный) mavros коннектится по heartbeat, НО НЕ перезапрашивает
+#     data-streams у свежего FCU → /mavros/local_position/odom МЁРТВ (ArduPilot 4.8-dev
+#     игнорит legacy REQUEST_DATA_STREAM; нужен per-msg SET_MESSAGE_INTERVAL, который
+#     mavros негоциирует ТОЛЬКО при своём старте против готового FCU).
+#   ⇒ Решение: рестартим SITL, ЖДЁМ его flight-готовности, ПОТОМ рестартим mavros
+#     (свежий mavros против готового FCU → полные стримы → odom 9.7Hz). Проверено live.
+# ⚠ Архитектура: панели — один window 'main', tiled, каждая exec'ает процесс →
+#   'send-keys C-c; UP ENTER' не сработает (после exec панель закрывается). Чистый
+#   примитив = tmux respawn-pane -k (kill+restart команды в той же панели).
+if (( RESTART_SITL )); then
+    if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+        echo "ERROR: session '$SESSION' not found — нечего рестартить" >&2; exit 1
+    fi
+    panes=$(tmux list-panes -t "$SESSION:main" -F '#{pane_index} #{pane_title}' 2>/dev/null)
+    sitl_idx=$(awk '$2=="sitl"{print $1; exit}'   <<<"$panes")
+    mavros_idx=$(awk '$2=="mavros"{print $1; exit}' <<<"$panes")
+    if [[ -z "$sitl_idx" ]]; then
+        echo "ERROR: нет 'sitl' панели в $SESSION:main (titles: $(echo "$panes" | awk '{print $2}' | paste -sd, -))" >&2
+        exit 1
+    fi
+
+    # авто-детект имени world у живого gz (<world name> в SDF ≠ basename в общем
+    # случае; reset адресуется по имени из gz, не по файлу)
+    export GZ_PARTITION
+    gz_world=$(gz topic -l 2>/dev/null | grep -oP '^/world/\K[^/]+' | head -1)
+    [[ -z "$gz_world" ]] && gz_world="$WORLD"
+
+    echo "[restart-sitl] session=$SESSION sitl=pane$sitl_idx mavros=pane${mavros_idx:-none} world=$gz_world partition=$GZ_PARTITION"
+
+    inst="${SITL_INSTANCE}"
+    mp_port=$((5760 + 10 * inst))     # arducopter master TCP / mavproxy --master
+    # маркер flight-готовности SITL ("EKF3 IMUx is using GPS" — после EKF+GPS). Детект
+    # через capture-pane (respawn-pane чистит панель → видим ТОЛЬКО свежий boot, без
+    # зависимости от -log). Готовность FCU определяем БЕЗ mavros.
+    ready_marker="is using GPS"
+
+    # 1. respawn SITL-панели. respawn-pane -k держит СЛОТ панели (exec'нутый процесс
+    #    иначе закрыл бы её) и стартует свежую команду. 'sleep 6' guard — окно, в
+    #    котором свежий sim_vehicle ещё спит (его cmdline = bash/sleep, НЕ матчит pkill
+    #    ниже), пока мы реапим осиротевших детей старого SITL и ждём порты + reset.
+    sitl_body="sleep 6; $(cmd_sitl)"
+    tmux respawn-pane -k -t "$SESSION:main.$sitl_idx" "$(wrap_pane sitl "$sitl_body")"
+    # чистим scrollback панели — иначе capture-pane (шаг 4) увидит СТАРЫЙ маркер
+    # "is using GPS" от прошлого boot'а и решит, что SITL готов мгновенно (live-баг
+    # 2026-06-09: mavros респавнился до готовности FCU → connected:false навсегда).
+    tmux clear-history -t "$SESSION:main.$sitl_idx" 2>/dev/null || true
+
+    # 2. orphan-kill: respawn-pane -k реапит только foreground панели (sim_vehicle.py),
+    #    но её дети — arducopter + mavproxy — остаются orphan'ами и держат порты
+    #    5760/5501 → fresh arducopter не забиндится (<defunct>, наблюдалось live
+    #    2026-06-09). Бьём их по cmdline (instance-scoped).
+    #  ⚠ КАПКАН (live 2026-06-09): wrap_pane встраивает ВСЮ команду в `bash -lc <body>`,
+    #    поэтому cmdline СПЯЩЕГО (sleep 6) wrapper'а содержит литерал "sim_vehicle.py
+    #    -I 0" → наивный pkill по нему убил бы СВЕЖИЙ wrapper. Матчим ТОЛЬКО по реальным
+    #    бинарям, чьих имён НЕТ в тексте wrapper'а: arducopter / mavproxy.py спавнятся
+    #    sim_vehicle'ем в рантайме (в cmd_sitl их нет — там "ArduCopter" с большой ≠
+    #    "arducopter"). sim_vehicle.py сам НЕ киллим (respawn-pane -k уже убил pane-fg).
+    pkill -KILL -f "arducopter.*-I${inst}$"    2>/dev/null || true
+    pkill -KILL -f "mavproxy\.py.*:${mp_port} " 2>/dev/null || true
+
+    # 3. дождаться освобождения master-порта SITL (listen-socket на SIGKILL свободен
+    #    сразу, без TIME_WAIT), затем reset позы модели в ЖИВОМ gz. Старый SITL мёртв
+    #    + свежий ещё спит → gz lockstep свободен → reset ляжет (plugin timeout'ит FDM).
+    for _i in 1 2 3 4 5 6 7 8 9 10; do
+        if ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${mp_port}\$"; then
+            sleep 0.5
+        else
+            break
+        fi
+    done
+    if [[ -n "$gz_world" ]]; then
+        echo "[restart-sitl] gz WorldControl reset {all:true} → /world/$gz_world/control"
+        reset_rep=$(gz service -s "/world/$gz_world/control" \
+            --reqtype gz.msgs.WorldControl --reptype gz.msgs.Boolean \
+            --timeout 6000 --req 'reset: {all: true}' 2>/dev/null || true)
+        if grep -q "true" <<<"$reset_rep"; then
+            echo "[restart-sitl] reset OK (модель → initial pose)"
+        else
+            echo "[restart-sitl] ⚠ reset не подтверждён (rep='$reset_rep')"
+        fi
+    fi
+
+    # 4. дождаться flight-готовности свежего SITL (маркер в логе вырос), ПОТОМ рестарт
+    #    mavros. Без -log (нет файла) — fixed fallback ~50s.
+    if [[ -n "$mavros_idx" ]]; then
+        echo "[restart-sitl] жду flight-готовности SITL (маркер '$ready_marker' в панели)…"
+        ready=0
+        for _i in $(seq 1 45); do          # до ~90s fallback (выходит сразу при маркере)
+            if tmux capture-pane -t "$SESSION:main.$sitl_idx" -p -S -250 2>/dev/null | grep -q "$ready_marker"; then
+                ready=1; break
+            fi
+            sleep 2
+        done
+        if (( ready )); then
+            echo "[restart-sitl] SITL flight-ready → respawn MAVROS (свежий → полные стримы/odom)"
+        else
+            echo "[restart-sitl] ⚠ flight-ready не подтверждён за таймаут — всё равно respawn MAVROS"
+        fi
+        # 5. respawn MAVROS против ГОТОВОГО FCU → негоциирует SET_MESSAGE_INTERVAL → odom.
+        tmux respawn-pane -k -t "$SESSION:main.$mavros_idx" "$(wrap_pane mavros "$(cmd_mavros)")"
+    else
+        echo "[restart-sitl] ⚠ нет 'mavros' панели — пропускаю restart mavros (odom не поднимется)"
+    fi
+    echo "[restart-sitl] готово (gz жив, EGL-цикла нет) — boot-gate ждёт connected+odom"
+    exit 0
+fi
 
 # ── tmux session ─────────────────────────────────────────────────────────────
 if tmux has-session -t "$SESSION" 2>/dev/null; then
