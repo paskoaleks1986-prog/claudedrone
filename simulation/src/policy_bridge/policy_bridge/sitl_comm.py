@@ -198,6 +198,12 @@ class MavrosSITLComm:
         self._max_tilt_deg = 0.0
         self._min_z_m = float("inf")
         self._episode_active = False
+        # EGL baseline: dri2-fail на момент старта ЗДОРОВОГО gz (стартовый шум ~10
+        # на этой системе). Деградацию считаем ОТНОСИТЕЛЬНО baseline (delta), иначе
+        # абсолют ≥ threshold всегда true даже на healthy gz → каждый hard_reset уходит
+        # в FULL relaunch = ВОЗВРАТ death-loop (нашёл rl-lab 2026-06-09 11:02). gz уже
+        # поднят к моменту конструирования comm. Ре-baseline после FULL relaunch.
+        self._egl_baseline = self._raw_egl_count()
         self.node.create_subscription(
             State, "/mavros/state", self._state_cb, 10, callback_group=self._cb_group
         )
@@ -633,6 +639,7 @@ class MavrosSITLComm:
         self._crash_latched = False
         self._relaunch_time = time.monotonic()
         rc = subprocess.run(cmd, shell=True, check=False).returncode
+        did_full = cmd is self.relaunch_cmd
         # gz-alive restart вернул non-zero (панель sitl закрыта / orphan-kill упал) →
         # эскалация на полный relaunch (перезапуск gz = свежий стек целиком).
         if rc != 0 and cmd is self.sitl_restart_cmd and self.relaunch_cmd:
@@ -642,11 +649,17 @@ class MavrosSITLComm:
             self._full_relaunch_count += 1
             self._relaunch_time = time.monotonic()
             subprocess.run(self.relaunch_cmd, shell=True, check=False)
+            did_full = True
         self._wait_stack_ready(timeout=STACK_READY_TIMEOUT_S)
+        # FULL relaunch пересоздал gz → новый стартовый шум dri2-fail в логе (append)
+        # → ре-baseline, иначе delta ложно скакнёт. gz-alive reset gz НЕ трогает →
+        # baseline валиден, не пересчитываем.
+        if did_full and self.gz_log_path:
+            self._egl_baseline = self._raw_egl_count()
+            self._log.info(f"EGL baseline ре-захвачен после full relaunch: {self._egl_baseline}")
 
-    def _egl_cycle_count(self) -> int:
-        """Число 'failed to create dri2 screen' в gz-логе (= счётчик EGL-циклов).
-        Нет лога → 0 (считаем healthy)."""
+    def _raw_egl_count(self) -> int:
+        """Абсолютное число 'failed to create dri2 screen' в gz-логе. Нет лога → 0."""
         if not self.gz_log_path:
             return 0
         try:
@@ -655,14 +668,20 @@ class MavrosSITLComm:
         except OSError:
             return 0
 
+    def _egl_cycle_count(self) -> int:
+        """EGL-циклы ОТНОСИТЕЛЬНО baseline (новые dri2-fail сверх стартового шума
+        здорового gz). 0 на healthy gz и после каждого gz-alive reset (gz не трогаем).
+        Растёт только при реальной деградации EGL."""
+        return max(0, self._raw_egl_count() - self._egl_baseline)
+
     def _egl_degraded(self) -> bool:
-        """gz EGL сломан (dri2-fail ≥ threshold) → gz не рендерит/не шагает физику,
-        sitl-only reset бесполезен, нужен полный relaunch (пересоздаст EGL-контекст)."""
+        """gz EGL сломан (НОВЫХ dri2-fail сверх baseline ≥ threshold) → gz не
+        рендерит/не шагает физику, sitl-only reset бесполезен, нужен полный relaunch."""
         n = self._egl_cycle_count()
         if n >= self.egl_degradation_threshold:
             self._log.warn(
-                f"EGL degradation: {n} dri2-fail (≥{self.egl_degradation_threshold}) "
-                f"→ gz-alive reset бесполезен, fallback на полный relaunch"
+                f"EGL degradation: +{n} dri2-fail сверх baseline={self._egl_baseline} "
+                f"(≥{self.egl_degradation_threshold}) → fallback на полный relaunch"
             )
             return True
         return False
