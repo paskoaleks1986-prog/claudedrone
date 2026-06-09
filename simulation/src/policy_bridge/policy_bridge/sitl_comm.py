@@ -69,6 +69,8 @@ HOVER_Z_BAND_M = 0.5
 HOVER_MAX_WAIT_S = 25.0
 CMD_RETRY_S = 1.0             # интервал ретрая mavros-сервисов
 SERVICE_WAIT_S = 20.0         # дождаться появления mavros-сервиса
+SERVICE_RECOVER_S = 45.0      # окно set_mode/arm с recreate-client после рестарта mavros
+                             # (DDS-discovery очищает мёртвый endpoint не мгновенно)
 LAND_Z_M = 0.30              # z ниже = приземлился
 LAND_TIMEOUT_S = 20.0
 DISARM_GRACE_S = 2.0          # пауза после disarm (EKF shutdown)
@@ -326,14 +328,22 @@ class MavrosSITLComm:
         return fut.result()
 
     def _set_mode(self, mode: str) -> None:
+        # ⚠ После рестарта mavros DDS-discovery persistent comm-ноды держит МЁРТВЫЙ
+        # service-endpoint старого mavros → call роутится туда → timeout (пока liveliness
+        # не очистит). Лечим: короткий per-call timeout + recreate client + ретрай в
+        # широком окне (live-урок 2026-06-09, combined smoke). Topics реконнектятся сами.
         self._wait_service(self._mode_cli, "set_mode")
         t0 = time.monotonic()
         while self._state.mode != mode:
-            if time.monotonic() - t0 > 15.0:
+            if time.monotonic() - t0 > SERVICE_RECOVER_S:
                 raise RuntimeError(f"set_mode {mode}: текущий={self._state.mode}")
             req = SetMode.Request()
             req.custom_mode = mode
-            self._call(self._mode_cli, req, f"set_mode({mode})")
+            try:
+                self._call(self._mode_cli, req, f"set_mode({mode})", timeout_s=3.0)
+            except RuntimeError:
+                self._recreate_service_clients()   # мёртвый endpoint → свежий client
+                self._wait_service(self._mode_cli, "set_mode")
             time.sleep(CMD_RETRY_S)
         if self.verbose:
             self._log.info(f"mode → {mode}")
@@ -342,11 +352,15 @@ class MavrosSITLComm:
         self._wait_service(self._arm_cli, "arming")
         t0 = time.monotonic()
         while self._state.armed != value:
-            if time.monotonic() - t0 > 15.0:
+            if time.monotonic() - t0 > SERVICE_RECOVER_S:
                 raise RuntimeError(f"arming={value}: armed={self._state.armed}")
             req = CommandBool.Request()
             req.value = value
-            self._call(self._arm_cli, req, f"arm({value})")
+            try:
+                self._call(self._arm_cli, req, f"arm({value})", timeout_s=3.0)
+            except RuntimeError:
+                self._recreate_service_clients()
+                self._wait_service(self._arm_cli, "arming")
             time.sleep(CMD_RETRY_S)
         if self.verbose:
             self._log.info(f"{'ARM' if value else 'DISARM'} ok")
@@ -657,6 +671,23 @@ class MavrosSITLComm:
         if did_full and self.gz_log_path:
             self._egl_baseline = self._raw_egl_count()
             self._log.info(f"EGL baseline ре-захвачен после full relaunch: {self._egl_baseline}")
+        # mavros рестартнут (новый node) → пересоздать service-клиенты. Старые висят на
+        # МЁРТВОМ сервере → call_async не доходит → timeout (live-урок 2026-06-09:
+        # combined smoke падал на set_mode(GUIDED) timeout 10s после hard_reset, хотя
+        # свежий ros2-вызов работал). Topics реконнектятся discovery'ем сами, сервисы — нет.
+        self._recreate_service_clients()
+
+    def _recreate_service_clients(self) -> None:
+        """Пересоздать mavros service-клиенты после рестарта mavros (старые → мёртвый
+        сервер → call timeout). arming/set_mode/takeoff."""
+        for cli in (self._arm_cli, self._mode_cli, self._takeoff_cli):
+            try:
+                self.node.destroy_client(cli)
+            except Exception:  # noqa: BLE001
+                pass
+        self._arm_cli = self.node.create_client(CommandBool, "/mavros/cmd/arming")
+        self._mode_cli = self.node.create_client(SetMode, "/mavros/set_mode")
+        self._takeoff_cli = self.node.create_client(CommandTOL, "/mavros/cmd/takeoff")
 
     def _raw_egl_count(self) -> int:
         """Абсолютное число 'failed to create dri2 screen' в gz-логе. Нет лога → 0."""
