@@ -84,6 +84,12 @@ SAFE_BOX_MARGIN_M = 0.6       # |pose| > room/2 + это = вылет
 # (45°/0.3м), чтобы фон-latch не ложил эпизод на транзиентном крене (ATC_ANGLE_MAX=15
 # → норм. полёт <15°, значит >45° = реальный переворот).
 IMMINENT_TILT_DEG = 45.0
+# Fix 2 (Aleks 2026-06-09): action7 (forward flight) даёт КРАТКОВРЕМЕННЫЙ крен
+# разгона (train_50k.log: первый «early crash» tilt=52° на ЗДОРОВОЙ z=1.80м →
+# ложное срабатывание фон-latch'а). Гейт по длительности: imminent-tilt латчим
+# только если превышение IMMINENT_TILT_DEG удерживается ≥ этого. Реальный
+# переворот удерживается; транзиент разгона — нет.
+IMMINENT_TILT_MIN_S = 0.3
 IMMINENT_Z_M = 0.3
 # boot-gate после relaunch (Blocker 1): SITL cold-boot ~40s; min EKF-settle от relaunch
 STACK_READY_TIMEOUT_S = 90.0
@@ -187,6 +193,10 @@ class MavrosSITLComm:
         # ── state из mavros + imu ──
         self._state = State()
         self._tilt_rad = 0.0
+        # Fix 2: момент НЕПРЕРЫВНОГО превышения IMMINENT_TILT_DEG (None = не превышен).
+        # Обновляется в _spin, читается _is_crash_imminent (duration-гейт против
+        # транзиентного крена разгона action7).
+        self._tilt_exceed_since: float | None = None
         self._airborne = False
         self._relaunch_time: float | None = None   # Blocker 1: старт boot-gate
         self._crash_latched = False                 # Blocker 2: фон early-crash latch
@@ -280,6 +290,12 @@ class MavrosSITLComm:
     def _spin(self) -> None:
         while not self._spin_stop.is_set() and rclpy.ok():
             self._executor.spin_once(timeout_sec=0.1)
+            # Fix 2: трекинг непрерывного превышения tilt-порога (duration-гейт).
+            if self._tilt_rad > math.radians(IMMINENT_TILT_DEG):
+                if self._tilt_exceed_since is None:
+                    self._tilt_exceed_since = time.monotonic()
+            else:
+                self._tilt_exceed_since = None
             # per-episode телеметрия (фон, дёшево): пик крена + минимум высоты в полёте
             if self._airborne:
                 tilt_deg = math.degrees(self._tilt_rad)
@@ -433,10 +449,16 @@ class MavrosSITLComm:
                 last_err = e
                 self._log.warn(
                     f"start_episode попытка {attempt}/{self.max_start_attempts} "
-                    f"сорвалась ({e}) → hard_reset (relaunch стека) и retry"
+                    f"сорвалась ({e}) → hard_reset (FULL relaunch) и retry"
                 )
                 self._airborne = False
-                self.hard_reset()
+                # FULL relaunch (sitl_only=False), НЕ gz-alive: gz-alive set_pose
+                # restart даёт чистый re-takeoff ровно 1 раз (со 2-го — climb timeout
+                # z=0.21, FDM/lockstep, см. dev-log 32). Crash-recovery должен быть
+                # НАДЁЖНЫМ → полный relaunch = свежий gz/SITL = гарантированный
+                # re-takeoff («relaunch → чистый SITL», директива Aleks 2026-06-09).
+                # Крэши редки (sensor_mask) → EGL-цикл от редкого relaunch приемлем.
+                self.hard_reset(sitl_only=False)
         raise RuntimeError(
             f"start_episode не удался за {self.max_start_attempts} попыток "
             f"(последняя: {last_err}). Стек не поднимается — нужен ручной разбор."
@@ -481,8 +503,15 @@ class MavrosSITLComm:
             if not self._state.armed:
                 raise RuntimeError("disarmed во время climb")
             if time.monotonic() - t0 > CLIMB_TIMEOUT_S:
-                self._log.warn(f"climb timeout z={z:.2f}m < {CLIMB_ARRIVAL_M} — продолжаю в hover")
-                return
+                # Fix 1 (Aleks 2026-06-09): climb timeout = FATAL, НЕ «продолжаю в
+                # hover». Без этого после краша SITL застревает (NAV_TAKEOFF
+                # accepted, но z≈0.21 не климбит — FDM/lockstep) → бесконечный
+                # наземный degenerate-loop. raise → retry-цикл start_episode →
+                # hard_reset → relaunch чистого SITL = единственный надёжный
+                # re-takeoff (train_50k.log 2026-06-09).
+                raise RuntimeError(
+                    f"climb timeout z={z:.2f}m < {CLIMB_ARRIVAL_M} за {CLIMB_TIMEOUT_S:.0f}s"
+                )
             time.sleep(0.1)
 
     def _hover_stabilize(self, target_z: float) -> None:
@@ -598,8 +627,15 @@ class MavrosSITLComm:
         """Blocker 2 (Aleks 2026-06-09): ранний детект краша ДО AP crash-disarm
         (после disarm re-arm невозможен — known SITL limit). Крен/тангаж >45°
         (норм. полёт ≤ ATC_ANGLE_MAX 15°, значит >45° = переворот) ИЛИ в полёте
-        z<0.3м. Используется фон-latch'ем (_spin) + execute()."""
-        if self._tilt_rad > math.radians(IMMINENT_TILT_DEG):
+        z<0.3м. Используется фон-latch'ем (_spin) + execute().
+
+        Fix 2 (Aleks 2026-06-09): tilt-условие — только при УДЕРЖАНИИ превышения
+        ≥ IMMINENT_TILT_MIN_S (фильтр транзиентного крена разгона action7;
+        train_50k.log первый «early crash» tilt=52° на z=1.80м был ложным).
+        z-условие остаётся мгновенным (низкая высота в полёте = реальное падение).
+        """
+        if self._tilt_exceed_since is not None and \
+                time.monotonic() - self._tilt_exceed_since >= IMMINENT_TILT_MIN_S:
             return True
         z = self.obs_builder.pose.z_m
         if self._airborne and not math.isnan(z) and z < IMMINENT_Z_M:

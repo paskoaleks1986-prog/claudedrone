@@ -151,6 +151,20 @@ fi
 
 command -v tmux >/dev/null || { echo "tmux not installed" >&2; exit 1; }
 
+# Repeat-launch (напр. crash-recovery full relaunch, hard_reset sitl_only=False):
+# снести предыдущую ОДНОИМЁННУЮ сессию + её SITL-orphans ДО port-pre-flight, иначе
+# старый arducopter держит MAVLINK_PORT → ложный abort. (restart-sitl сюда не идёт.)
+if (( WANT_SITL && ! RESTART_SITL )) && tmux has-session -t "$SESSION" 2>/dev/null; then
+    echo "[launch] repeat-launch: сношу старую сессию $SESSION + SITL orphans (порт $MAVLINK_PORT)"
+    tmux kill-session -t "$SESSION" 2>/dev/null || true
+    pkill -KILL -f "arducopter.*-I${SITL_INSTANCE}\$"      2>/dev/null || true
+    pkill -KILL -f "mavproxy\.py.*:${MAVLINK_PORT} "        2>/dev/null || true
+    for _i in 1 2 3 4 5; do
+        ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${MAVLINK_PORT}\$" || break
+        sleep 1
+    done
+fi
+
 # Pre-flight: ensure MAVLINK_PORT is free before launching SITL.
 # (restart-sitl: порт занят SITL'ом, который мы как раз перезапускаем → пропускаем)
 if (( WANT_SITL && ! RESTART_SITL )); then
