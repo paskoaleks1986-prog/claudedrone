@@ -28,7 +28,7 @@ from policy_bridge.sitl_comm import MavrosSITLComm, TARGET_ALTITUDE_M, HOVER_Z_B
 SIM = "/data/git/aerosearch/claudedrone-git/simulation"
 WORLD = "rl_room_empty_6x6"
 SESSION = "rltrain"
-N_PAIRS = 6                # ≥6 пар rotation→action7 (спека Aleks)
+N_PAIRS = 6                # 6 пар rotation→action7 (спека Aleks 2026-06-09)
 TILT_GATE_DEG = 2.0        # tilt < 2° перед каждым action7 (спека Aleks)
 SETTLE_S = 1.5
 ROT_PLUS = 4               # rotate_plus +15°

@@ -73,6 +73,9 @@ GUID_OPTIONS 0
 # (15-120 deg) hit 8 s arrival timeouts near walls. In GUIDED yaw runs on
 # the attitude chain (NOT WPNav); ceilings are rate + accel. 90 deg/s +
 # 360 deg/s/s is safe for an indoor small quad SITL.
+# NB (2026-06-09): снижение до 27/110 НЕ лечило 2-ю моду tumble (yaw-error в
+# action7) — корень был в том что yaw вообще не доходил до AP (setpoint_raw
+# фикс). Вернул 90/360 (быстрые ротации) — yaw теперь энфорсится явно.
 ATC_RATE_Y_MAX 90
 # 4.8 rename: ATC_ACCEL_Y_MAX 36000 cdeg/s/s -> ATC_ACC_Y_MAX 360 deg/s/s.
 ATC_ACC_Y_MAX 360

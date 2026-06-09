@@ -64,6 +64,20 @@ RAW_TYPE_MASK_VEL_YAWRATE = (
     | PositionTarget.IGNORE_AFX | PositionTarget.IGNORE_AFY | PositionTarget.IGNORE_AFZ
     | PositionTarget.IGNORE_YAW
 )  # = 1479: velocity + yaw_rate активны
+
+# Position+yaw setpoint via raw (Aleks 2026-06-09, RCA 2-й моды tumble run4):
+# setpoint_position/local (PoseStamped) НЕ доносил yaw до ArduPilot — yaw из
+# кватерниона не попадал в SET_POSITION_TARGET type_mask → AP видел только
+# позицию и крутил yaw вдоль velocity-вектора сам (DesYaw рос вдоль пути) →
+# дрон стартовал action7 с ~45° yaw-ошибкой → runaway → tumble (детерминир.
+# pair 3, dataflash 00000164/165). Фикс: явный PositionTarget на
+# setpoint_raw/local с yaw В type_mask (YAW НЕ ignored) → AP держит наш yaw.
+# Игнорим velocity + accel + yaw_rate; позицию и yaw — НЕ игнорим.
+RAW_TYPE_MASK_POS_YAW = (
+    PositionTarget.IGNORE_VX | PositionTarget.IGNORE_VY | PositionTarget.IGNORE_VZ
+    | PositionTarget.IGNORE_AFX | PositionTarget.IGNORE_AFY | PositionTarget.IGNORE_AFZ
+    | PositionTarget.IGNORE_YAW_RATE
+)  # = 2552: position + yaw активны
 DEFAULT_SCAN_HOVER_S = 0.5
 SERVO_STEP_DEG = 30.0
 SERVO_MAX_DEG = 180.0
@@ -167,6 +181,22 @@ def _make_pose(x: float, y: float, z: float, yaw: float, frame: str = "map") -> 
     ps.pose.orientation.z = math.sin(half)
     ps.pose.orientation.w = math.cos(half)
     return ps
+
+
+def _make_raw_target(x: float, y: float, z: float, yaw: float) -> PositionTarget:
+    """SET_POSITION_TARGET_LOCAL_NED с ЯВНЫМ yaw (Aleks 2026-06-09, фикс 2-й
+    моды tumble). mavros setpoint_raw трансформирует ENU→NED для position и yaw
+    (как setpoint_position) — передаём те же ENU x,y,z,yaw. type_mask держит
+    позицию+yaw активными (RAW_TYPE_MASK_POS_YAW) → AP не free-run'ит yaw."""
+    pt = PositionTarget()
+    pt.header.frame_id = "map"
+    pt.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
+    pt.type_mask = RAW_TYPE_MASK_POS_YAW
+    pt.position.x = float(x)
+    pt.position.y = float(y)
+    pt.position.z = float(z)
+    pt.yaw = float(yaw)
+    return pt
 
 
 class InvalidActionError(ValueError):
@@ -319,28 +349,34 @@ class ActionExecutor:
         return self._safety_hold
 
     def _publish_maintenance(self) -> None:
-        """10 Hz publish target pose (mandatory ArduPilot GUIDED).
+        """10 Hz publish target (mandatory ArduPilot GUIDED).
+
+        Aleks 2026-06-09 (RCA 2-й моды tumble): публикуем через
+        /mavros/setpoint_raw/local (PositionTarget, ЯВНЫЙ yaw в type_mask), НЕ
+        через setpoint_position/local (PoseStamped) — там yaw из кватерниона не
+        доходил до AP → AP крутил yaw вдоль velocity → tumble. _target_pose
+        остаётся PoseStamped-хранилищем позиции; yaw берём из _target_yaw.
 
         run F план (а): при активном carrot-сегменте публикуем промежуточную
-        точку, движущуюся к финальному target со скоростью режима. Иначе —
-        финальный target как раньше.
+        точку, движущуюся к финальному target со скоростью режима.
         """
         final = self._target_pose
         if final is None or self._safety_hold or self._rotating:
             return
+        x = final.pose.position.x
+        y = final.pose.position.y
+        z = final.pose.position.z
         seg = self._carrot_seg
-        pub = final
         if seg is not None:
             pose = self._get_pose()
             pt = carrot_point(seg, pose.x_m, pose.y_m, time.monotonic())
             if pt is None:
                 self._carrot_seg = None  # carrot дошёл — дальше финальный
             else:
-                pub = _make_pose(
-                    pt[0], pt[1], final.pose.position.z, self._target_yaw
-                )
-        pub.header.stamp = self.node.get_clock().now().to_msg()
-        self.pose_pub.publish(pub)
+                x, y = pt[0], pt[1]
+        target = _make_raw_target(x, y, z, self._target_yaw)
+        target.header.stamp = self.node.get_clock().now().to_msg()
+        self.raw_pub.publish(target)
 
     def _set_target(
         self, x: float, y: float, yaw: float, speed_m_s: float | None = None
@@ -615,7 +651,8 @@ class ActionExecutor:
         )
         return False
 
-    def _settle(self, tilt_tol_deg: float = 5.0, timeout_s: float = 2.0) -> None:
+    def _settle(self, tilt_tol_deg: float = 5.0, heading_tol_deg: float = 8.0,
+                timeout_s: float = 3.0) -> None:
         """Пауза после arrival перед возвратом управления (и снятием obs).
 
         ArduPilot position hold даёт overshoot/колебания после прихода в точку;
@@ -627,6 +664,14 @@ class ActionExecutor:
         Rotation в GUIDED (position-hold + смена yaw) индуцирует roll/pitch
         transient; без attitude-settle следующий action7 стекает forward-lean с
         остаточным transient'ом → tilt 52° → crash (run4 action7#2 после 2 rot).
+
+        Heading-gate (Aleks 2026-06-09, 2-я мода run4): rot_settle_smoke выявил
+        что после rotation arrived odom heading мог расходиться с target_yaw
+        (~40°, dataflash 00000164.BIN). action7, стартуя с такой ошибкой, давал
+        ArduPilot агрессивно (RATE_Y_MAX) корректировать yaw В ДВИЖЕНИИ → Yaw
+        runaway 55→124 → coupling → tumble. Поэтому settle ЖДЁТ что heading
+        реально сошёлся с target_yaw (< heading_tol) — action7 не стартует пока
+        yaw не сведён. В паре с ATC_RATE_Y_MAX 27 (мягкая коррекция).
         Parity-safe: _settle не влияет на obs/mask/reward — только физическая
         пауза между действиями; DroneMapEnv _settle вообще не имеет.
         """
@@ -637,13 +682,17 @@ class ActionExecutor:
             return
         t0 = time.monotonic()
         while time.monotonic() - t0 < timeout_s:
-            if math.degrees(self._get_tilt_rad()) < tilt_tol_deg:
+            tilt_ok = math.degrees(self._get_tilt_rad()) < tilt_tol_deg
+            cur_heading = self._get_pose().heading_rad
+            heading_err = abs(math.degrees(_angle_diff(cur_heading, self._target_yaw)))
+            if tilt_ok and heading_err < heading_tol_deg:
                 return
             time.sleep(0.05)
         # timeout — не фатально, продолжаем (лог для диагностики)
         self.node.get_logger().warn(
             f"_settle timeout {timeout_s:.1f}s: tilt="
-            f"{math.degrees(self._get_tilt_rad()):.1f}° ещё > {tilt_tol_deg:.1f}°"
+            f"{math.degrees(self._get_tilt_rad()):.1f}° (tol {tilt_tol_deg:.0f}) "
+            f"heading_err={heading_err:.1f}° (tol {heading_tol_deg:.0f})"
         )
 
     def _wait_arrival_yaw(
