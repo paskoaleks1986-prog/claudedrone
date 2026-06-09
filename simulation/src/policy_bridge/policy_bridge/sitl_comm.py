@@ -248,6 +248,7 @@ class MavrosSITLComm:
             grid_size=int(round(max(self.room_x, self.room_y) / self.cell_size)),
             linear_speed=self.linear_speed,
             get_speed_m_s=lambda: self.obs_builder.speed_m_s,
+            get_tilt_rad=lambda: self._tilt_rad,
             v2_sensor_mask=True,
             wall_stop_cells=self.wall_stop_cells,
             get_free_run_cells=self._front_free_run,

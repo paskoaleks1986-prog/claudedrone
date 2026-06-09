@@ -204,6 +204,9 @@ class ActionExecutor:
         settle_hover_s: float = 0.1,
         visited_update_fn: Callable[[float, float], None] | None = None,
         get_speed_m_s: Callable[[], float] | None = None,
+        # attitude-aware settle (Aleks 2026-06-09, RCA остаточного tumble run4):
+        # tilt-accessor (None → backward-compat фикс. sleep settle_hover_s).
+        get_tilt_rad: Callable[[], float] | None = None,
         # v2-stub (Aleks 2026-06-08): action7 travel по occupancy free_run
         # (travel = free_cells − N) вместо raw (front − margin). default off.
         v2_sensor_mask: bool = False,
@@ -233,6 +236,8 @@ class ActionExecutor:
         self._get_free_run_cells = get_free_run_cells
         # v2 run F: |v| для velocity-gated arrival (None → гейт отключён)
         self._get_speed_m_s = get_speed_m_s
+        # attitude-aware settle: tilt (рад) live-accessor (None → фикс. sleep)
+        self._get_tilt_rad = get_tilt_rad
 
         self.pose_pub = node.create_publisher(PoseStamped, cmd_pose_topic, 10)
         # v2 run F: raw setpoint для yaw_rate ротаций (mask 1479)
@@ -610,15 +615,36 @@ class ActionExecutor:
         )
         return False
 
-    def _settle(self) -> None:
+    def _settle(self, tilt_tol_deg: float = 5.0, timeout_s: float = 2.0) -> None:
         """Пауза после arrival перед возвратом управления (и снятием obs).
 
         ArduPilot position hold даёт overshoot/колебания после прихода в точку;
         без паузы policy получает obs середины колебания. Markov parity с
         тренировкой (там состояние после step мгновенно стационарно).
+
+        Attitude-aware (Aleks 2026-06-09, RCA остаточного tumble run4 50k):
+        ждём пока крен/тангаж устаканится (tilt < tol), а НЕ фикс. sleep.
+        Rotation в GUIDED (position-hold + смена yaw) индуцирует roll/pitch
+        transient; без attitude-settle следующий action7 стекает forward-lean с
+        остаточным transient'ом → tilt 52° → crash (run4 action7#2 после 2 rot).
+        Parity-safe: _settle не влияет на obs/mask/reward — только физическая
+        пауза между действиями; DroneMapEnv _settle вообще не имеет.
         """
-        if self.settle_hover_s > 0.0:
-            time.sleep(self.settle_hover_s)
+        if self._get_tilt_rad is None:
+            # backward-compat: нет tilt-accessor → старый фикс. settle
+            if self.settle_hover_s > 0.0:
+                time.sleep(self.settle_hover_s)
+            return
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < timeout_s:
+            if math.degrees(self._get_tilt_rad()) < tilt_tol_deg:
+                return
+            time.sleep(0.05)
+        # timeout — не фатально, продолжаем (лог для диагностики)
+        self.node.get_logger().warn(
+            f"_settle timeout {timeout_s:.1f}s: tilt="
+            f"{math.degrees(self._get_tilt_rad()):.1f}° ещё > {tilt_tol_deg:.1f}°"
+        )
 
     def _wait_arrival_yaw(
         self, target_yaw: float, tolerance_rad: float, timeout_s: float
