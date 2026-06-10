@@ -128,6 +128,11 @@ RETREAT_CARROT_SPEED_M_S = 0.25  # carrot-retreat (ВАРИАНТ A): скоро
 RETREAT_BACKOFF_M = 0.70     # дистанция точки отлёта в открытом направлении (carrot target)
 RETREAT_TIMEOUT_S = 5.0
 DEFAULT_SCAN_HOVER_S = 0.5
+# RL discrete-action поворот (actions 4/5). Вынесено из захардкоженного math.radians(15)
+# в execute (Aleks 2026-06-10). ⚠ Менять = ломать parity обученной политики (Discrete(8)
+# на 15°-решётке). Для ПРОИЗВОЛЬНОГО поворота (Interface/manual) — rotate_by_deg / snap_to_yaw,
+# они НЕ ограничены этим шагом.
+ROTATION_STEP_DEG = 15.0
 SERVO_STEP_DEG = 30.0
 SERVO_MAX_DEG = 180.0
 GRID_SIZE_DEFAULT = 64
@@ -540,9 +545,9 @@ class ActionExecutor:
         if action == 3:
             return self._translation(cur_x, cur_y, cur_yaw, 0.0, -1.0, override_speed)
         if action == 4:
-            return self._rotation(cur_x, cur_y, cur_yaw, +math.radians(15.0))
+            return self._rotation(cur_x, cur_y, cur_yaw, +math.radians(ROTATION_STEP_DEG))
         if action == 5:
-            return self._rotation(cur_x, cur_y, cur_yaw, -math.radians(15.0))
+            return self._rotation(cur_x, cur_y, cur_yaw, -math.radians(ROTATION_STEP_DEG))
         if action == 6:
             return self._scan()
         if action == 7:
@@ -573,6 +578,14 @@ class ActionExecutor:
             f"(arrived={int(arrived)})"
         )
         return arrived
+
+    def rotate_by_deg(self, delta_deg: float, timeout_s: float = 6.0) -> bool:
+        """ПРОИЗВОЛЬНЫЙ относительный поворот (Interface/manual, Aleks 2026-06-10).
+        В отличие от RL-действий 4/5 (`_rotation` → снэп на 15°-решётку `GRID_STEP_RAD`),
+        идёт на ТОЧНЫЙ угол cur_yaw+delta через `snap_to_yaw` (closed-loop, position-hold) —
+        БЕЗ привязки к решётке. Любой угол (1°, 5°, 37°…). Не трогает RL-parity."""
+        cur = self._get_pose().heading_rad
+        return self.snap_to_yaw(cur + math.radians(delta_deg), timeout_s)
 
     # ---- internals ----
 
