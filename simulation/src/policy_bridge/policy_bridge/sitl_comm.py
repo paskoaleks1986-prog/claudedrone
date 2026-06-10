@@ -42,7 +42,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import rclpy
@@ -159,7 +159,13 @@ class MavrosSITLComm:
         hover_stabilize_s: float = HOVER_STABILIZE_S,
         max_start_attempts: int = 3,
         verbose: bool = True,
+        # action7-stop по occupancy free_run (Aleks 2026-06-10, фикс corner-clip):
+        # RL прокидывает all-direction OccupancyMapBuilder callback (зеркало
+        # DroneMapEnv) → action7 стопает по полной сетке, ловит углы. None →
+        # дефолт self._front_free_run (ch0-передний, для standalone smoke).
+        get_free_run_cells: Callable[[], int] | None = None,
     ) -> None:
+        self._free_run_override = get_free_run_cells
         self.room_x = float(room_x_m)
         self.room_y = float(room_y_m)
         self.cell_size = float(cell_size_m)
@@ -251,7 +257,8 @@ class MavrosSITLComm:
             get_tilt_rad=lambda: self._tilt_rad,
             v2_sensor_mask=True,
             wall_stop_cells=self.wall_stop_cells,
-            get_free_run_cells=self._front_free_run,
+            # all-direction occupancy (RL env) если прокинут, иначе ch0-передний
+            get_free_run_cells=self._free_run_override or self._front_free_run,
         )
         # servo obs = commanded angle executor'а (training parity, как нода)
         self.obs_builder.set_servo_angle_source(lambda: self.executor_act.servo_deg)
