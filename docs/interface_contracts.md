@@ -1,8 +1,12 @@
 # Interface ↔ Simulation — контракт ROS2-топиков (continuous-velocity архитектура)
 
-> 🖊 **ВЛАДЕЛЕЦ контракта/спеки — rl-lab** (директива Aleks 2026-06-10). Этот файл —
-> **sim-side ДРАФТ** под velocity-архитектуру (что я реализую на стороне sim/bridge/executor).
-> rl-lab пишет authoritative версию и **правит свободно**. Я выравниваюсь под их spec.
+> 🖊 **ВЛАДЕЛЕЦ контракта/спеки — rl-lab** (директива Aleks 2026-06-10, мандат «слушать
+> rl-lab как Aleks»). **Authoritative источник:** `rl-lab/docs/new_env_spec.md` (v2,
+> obs/action/reward) + `rl-lab/docs/training_principles_and_sim_contract.md` (Часть B = sim).
+> Этот файл — **sim-side companion** (топик-имена/QoS/частоты, что я реализую). Числа RL —
+> из их спеки: action **Box(3)** vx/vy ×0.5 м/с (body) + yaw_rate ×1.0 рад/с, 10 Гц; VL53
+> obs-clip **1.2 м**; TF-Luna 12×15° (0–180°), sentinel UNKNOWN **2.0**. Parity-формула
+> (сенсор→сектор, decay freshness) — пишет rl-lab (B8), подставлю под неё.
 
 **Назначение:** топики, которые **bridge** публикует (для RL-политики И Interface) и
 **executor** принимает (от политики И Interface). Архитектура «направление + полёт»:

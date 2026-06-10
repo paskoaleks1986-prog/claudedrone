@@ -118,6 +118,15 @@ SIN_60 = 0.8660254
 LATERAL_STOP_M = 0.45        # боковой projected зазор → стоп (Aleks 2026-06-10: 0.35→0.45,
                             #   TOUCH на 0.25-0.26м → стоп раньше, запас до касания)
 LATERAL_FULL_M = 0.95        # ≥ → полная скорость (lateral_factor=1)
+# FlightRL-v1 непрерывный velocity-режим (rl-lab Часть B B2/B4, Aleks 2026-06-10).
+V_MAX_MS = 0.5              # макс линейная скорость (new_env_spec §3, vx/vy ×0.5)
+W_MAX_RAD_S = 1.0          # макс yaw-rate (new_env_spec §3, yaw_rate ×1.0)
+MANUAL_VEL_TIMEOUT_S = 0.5  # нет cmd дольше → тормозим в hover (failsafe потери связи)
+# Safety-CBF клэмп (B4): компонента скорости В СТОРОНУ стены гасится ∝ дистанции,
+# отворот/перпендикуляр свободен (не блок, уменьшение).
+CLAMP_STOP_M = 0.50        # ToF в направлении движения ≤ → компонента к стене = 0
+CLAMP_FULL_M = 1.00        # ≥ → без клэмпа (полная скорость)
+MANUAL_Z_KP = 0.8          # P-коэф удержания высоты в velocity-режиме (vz = Kp·Δz)
 # Pre-maneuver safety (Aleks 2026-06-10): манёвр (ЛЮБОЕ действие, вкл rotation) у
 # препятствия → НЕ выполнять, а ОТВЕСТИ дрон к самому открытому (max ToF) до клиренса.
 # Спин/манёвр у стены дрейфит → краш (наблюдалось 2.4м дрейф). Min-perimeter < gate → retreat.
@@ -363,6 +372,11 @@ class ActionExecutor:
         self._target_yaw = 0.0
         # v2: true пока safety_guard владеет дроном (см. set_safety_hold)
         self._safety_hold = False
+        # FlightRL-v1 (rl-lab Часть B / Aleks 2026-06-10): непрерывный velocity-режим.
+        # _manual_vel = (vx, vy, yaw_rate) body-frame от политики/Interface; None → off
+        # (старый position/carrot путь). _manual_vel_t = monotonic метка свежести.
+        self._manual_vel: tuple[float, float, float] | None = None
+        self._manual_vel_t = 0.0
         # 10 Hz maintenance timer (необходим для ArduPilot GUIDED setpoint stream)
         self._maint_timer = node.create_timer(
             1.0 / MAINTAIN_RATE_HZ, self._publish_maintenance
@@ -443,6 +457,12 @@ class ActionExecutor:
         run F план (а): при активном carrot-сегменте публикуем промежуточную
         точку, движущуюся к финальному target со скоростью режима.
         """
+        # FlightRL-v1 непрерывный velocity-режим (rl-lab B2/B4): приоритетный путь.
+        # Body-velocity (safety-клэмп B4) → velocity+yaw_rate setpoint каждый тик.
+        # Единый путь движения новой арх (нет execute/carrot/settle). safety_hold глушит.
+        if self._manual_vel is not None and not self._safety_hold:
+            self._publish_manual_velocity()
+            return
         final = self._target_pose
         if final is None or self._safety_hold or self._rotating or self._suppress_maintenance:
             return
@@ -484,6 +504,30 @@ class ActionExecutor:
         target = _make_raw_target(x, y, z, self._target_yaw, mask)
         target.header.stamp = self.node.get_clock().now().to_msg()
         self.raw_pub.publish(target)
+
+    def _publish_manual_velocity(self) -> None:
+        """FlightRL-v1 (rl-lab B2/B4): body-velocity → velocity+yaw_rate setpoint.
+        Свежесть < MANUAL_VEL_TIMEOUT иначе тормоз в 0 (failsafe). safety-клэмп B4
+        гасит компоненту в стену. body→world ENU (как action7-ветка, FRAME_LOCAL_NED +
+        mavros ENU→NED). z держим P-регулятором (vz=Kp·Δalt)."""
+        fresh = (time.monotonic() - self._manual_vel_t) < MANUAL_VEL_TIMEOUT_S
+        vx, vy, yaw_rate = self._manual_vel if fresh else (0.0, 0.0, 0.0)
+        vx, vy = self._clamp_velocity_body(vx, vy)
+        pose = self._get_pose()
+        yaw = pose.heading_rad
+        wx = vx * math.cos(yaw) - vy * math.sin(yaw)
+        wy = vx * math.sin(yaw) + vy * math.cos(yaw)
+        vz = max(-0.5, min(0.5, MANUAL_Z_KP * (self.target_altitude - pose.z_m)))
+        vmsg = PositionTarget()
+        vmsg.header.frame_id = "map"
+        vmsg.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
+        vmsg.type_mask = RAW_TYPE_MASK_VEL_YAWRATE
+        vmsg.velocity.x = wx
+        vmsg.velocity.y = wy
+        vmsg.velocity.z = vz
+        vmsg.yaw_rate = float(yaw_rate if fresh else 0.0)
+        vmsg.header.stamp = self.node.get_clock().now().to_msg()
+        self.raw_pub.publish(vmsg)
 
     def _set_target(
         self, x: float, y: float, yaw: float, speed_m_s: float | None = None
@@ -586,6 +630,50 @@ class ActionExecutor:
         БЕЗ привязки к решётке. Любой угол (1°, 5°, 37°…). Не трогает RL-parity."""
         cur = self._get_pose().heading_rad
         return self.snap_to_yaw(cur + math.radians(delta_deg), timeout_s)
+
+    # ---- FlightRL-v1 непрерывный velocity-вход (rl-lab Часть B, Aleks 2026-06-10) ----
+
+    def set_manual_velocity(self, vx: float, vy: float, yaw_rate: float) -> None:
+        """Непрерывная velocity-команда body-frame (rl-lab B2): vx вперёд+, vy влево+
+        (м/с), yaw_rate CCW+ (рад/с). Клампится в ±V_MAX/±W_MAX. Maintenance-таймер
+        стримит её как velocity-setpoint каждый тик с safety-клэмпом (B4). Источник —
+        политика ИЛИ Interface (топик `/drone/cmd_vel_body`). Это ЕДИНЫЙ путь движения
+        в новой арх — без execute(0-7)/snap/settle."""
+        self._manual_vel = (
+            max(-V_MAX_MS, min(V_MAX_MS, float(vx))),
+            max(-V_MAX_MS, min(V_MAX_MS, float(vy))),
+            max(-W_MAX_RAD_S, min(W_MAX_RAD_S, float(yaw_rate))),
+        )
+        self._manual_vel_t = time.monotonic()
+
+    def clear_manual_velocity(self) -> None:
+        """Выход из velocity-режима → hover-hold на текущей позе."""
+        if self._manual_vel is not None:
+            pose = self._get_pose()
+            self._set_target(pose.x_m, pose.y_m, pose.heading_rad)
+        self._manual_vel = None
+
+    def _clamp_velocity_body(self, vx: float, vy: float) -> tuple[float, float]:
+        """Safety-CBF (rl-lab B4): гасит компоненту скорости В СТОРОНУ близкой стены ∝
+        дистанции; отворот/перпендикуляр свободен. НЕ блок — плавное уменьшение.
+        ToF в направлении движения = min по forward-arc ±60° к вектору (ловит боковой
+        клип, как lateral-слой). Переиспользует proximity-наработку."""
+        speed = math.hypot(vx, vy)
+        if speed < 1e-3 or self._get_perimeter is None:
+            return vx, vy
+        p = self._get_perimeter()
+        if p is None or len(p) < 6:
+            return vx, vy
+        theta = math.atan2(vy, vx)  # body-направление движения (0=ch0 вперёд, +60=ch1…)
+        d_dir = float("inf")
+        for i in range(6):
+            diff = abs((math.radians(i * 60.0) - theta + math.pi) % (2 * math.pi) - math.pi)
+            if diff <= math.radians(60.0):
+                d_dir = min(d_dir, float(p[i]))
+        if math.isinf(d_dir):
+            return vx, vy
+        scale = max(0.0, min(1.0, (d_dir - CLAMP_STOP_M) / (CLAMP_FULL_M - CLAMP_STOP_M)))
+        return vx * scale, vy * scale
 
     # ---- internals ----
 

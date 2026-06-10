@@ -21,6 +21,18 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
 )
 
+# FlightRL-v1 непрерывный velocity-облёт (rl-lab Часть B / Aleks 2026-06-10)
+install(PROGRAMS
+  policy_bridge/manual_fly_node.py
+  RENAME manual_fly_node
+  DESTINATION lib/${PROJECT_NAME}
+)
+install(PROGRAMS
+  policy_bridge/teleop_keyboard.py
+  RENAME teleop_keyboard
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 install(DIRECTORY
   launch
   DESTINATION share/${PROJECT_NAME}
