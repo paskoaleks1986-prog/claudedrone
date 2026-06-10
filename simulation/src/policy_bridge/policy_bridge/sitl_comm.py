@@ -249,6 +249,7 @@ class MavrosSITLComm:
             cell_size_m=self.cell_size,
             wall_threshold=self.gate_margin_m,
             get_front_distance_m=lambda: self.obs_builder.front_distance_m,
+            get_perimeter_distances=lambda: self.obs_builder.perimeter_distances_m,
             get_pose=lambda: self.obs_builder.pose,
             target_altitude_m=self.target_altitude,
             grid_size=int(round(max(self.room_x, self.room_y) / self.cell_size)),
@@ -568,21 +569,27 @@ class MavrosSITLComm:
     def _reposition(self, z_hold: float) -> None:
         tx, ty = self._random_spawn_xy()
         yaw = float(self._rng.uniform(0.0, 2.0 * math.pi))
+        p = self.obs_builder.pose
+        move_yaw = math.atan2(ty - p.y_m, tx - p.x_m)  # направление движения к точке
         if self.verbose:
-            self._log.info(f"reposition → ({tx:.2f}, {ty:.2f}), yaw={math.degrees(yaw):.0f}°")
-        # Баг 1 fix (Aleks 2026-06-10, данные RL): reposition lunge — прямой
-        # initialize_target = step position target → tilt 16° с осцилляцией. Carrot
-        # (speed_m_s=0.3) = плавный подход от текущей позы (как action7), нет lunge.
-        # z держится из _target_pose (= z_hold, выставлен takeoff/soft до reposition).
-        self.executor_act._set_target(tx, ty, yaw, speed_m_s=0.3)
-        # ждём прибытия (через всю комнату) — поллим позу
+            self._log.info(
+                f"reposition → ({tx:.2f}, {ty:.2f}), yaw={math.degrees(yaw):.0f}° "
+                f"(лицом по курсу {math.degrees(move_yaw):.0f}°, без краба)"
+            )
+        # Баг 1 fix (carrot, не lunge) + ФИКС КРАБА (Aleks 2026-06-10, визуал «криво летит»):
+        # держать ФИНАЛЬНЫЙ yaw всю трансляцию = тело развёрнуто к движению на ~74° (краб,
+        # боковой полёт). Теперь: yaw → НАПРАВЛЕНИЕ ДВИЖЕНИЯ (лицом по курсу) → carrot
+        # прямо к точке → в конце snap к спавн-yaw. Прямой полёт, без бокового сноса.
+        self.executor_act.snap_to_yaw(move_yaw)
+        self.executor_act._set_target(tx, ty, move_yaw, speed_m_s=0.3)
+        # ждём прибытия (через всю комнату) — поллим позу (только позиция; yaw=move_yaw)
         t0 = time.monotonic()
         while time.monotonic() - t0 < REPOSITION_TIMEOUT_S:
             p = self.obs_builder.pose
-            if math.hypot(p.x_m - tx, p.y_m - ty) < 0.15 and \
-                    abs((p.heading_rad - yaw + math.pi) % (2 * math.pi) - math.pi) < math.radians(5):
+            if math.hypot(p.x_m - tx, p.y_m - ty) < 0.15:
                 break
             time.sleep(0.05)
+        self.executor_act.snap_to_yaw(yaw)  # финальный спавн-yaw (на месте, без сноса)
         self._hover_stabilize(z_hold)
 
     def _random_spawn_xy(self) -> tuple[float, float]:

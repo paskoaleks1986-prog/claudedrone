@@ -101,6 +101,32 @@ RAW_TYPE_MASK_VEL_YAW = (
 # tilt-транзиент старта/стопа (был ~8° на step-velocity → цель ≤5°).
 VELOCITY_RAMP_S = 0.4        # время линейного разгона 0→speed
 VELOCITY_RAMP_DOWN_M = 0.3   # дистанция торможения перед arrival
+# Safety layer action7 (Aleks 2026-06-10): скорость ∝ front ToF (ch0).
+# v_safe = min(base, (front−STOP)/BAND·base); front<BRAKE → тормозной импульс назад.
+# ⚠ ПЕРЕСМОТР (Aleks 2026-06-10 «не успевает, на грани»): тормозим РАНЬШЕ и ДАЛЬШЕ —
+# velocity-контроллер AP лагает (~0.4м overshoot), поэтому стоп-скорость с 0.60м,
+# активный тормоз с 0.80м → дрон гасит инерцию ЗАРАНЕЕ → стоп 0.5-0.8м от стены.
+# консервативно (Aleks 2026-06-10): overshoot ~0.4м → margins больше.
+SAFE_STOP_M = 0.65           # front ToF → v_safe=0
+SAFE_BAND_M = 1.00           # full speed при front=STOP+BAND=1.65м
+SAFE_BRAKE_M = 0.85          # front < → активный тормозной импульс назад
+# Lateral safety layer (Aleks 2026-06-10): боковые VL53 ch1(+60°)/ch5(−60°) под углом →
+# перпендикулярный зазор до боковой стены d_perp = tof × sin(60°) (projected clearance).
+# Масштаб скорости ∝ d_perp: ловит side-clip корридора, к которому ch0 (луч 0°) слеп
+# (run8 36/36 крэшей = диагональный side-clip на 0.23м). Фоновый — всегда во время action7.
+SIN_60 = 0.8660254
+LATERAL_STOP_M = 0.45        # боковой projected зазор → стоп (Aleks 2026-06-10: 0.35→0.45,
+                            #   TOUCH на 0.25-0.26м → стоп раньше, запас до касания)
+LATERAL_FULL_M = 0.95        # ≥ → полная скорость (lateral_factor=1)
+# Pre-maneuver safety (Aleks 2026-06-10): манёвр (ЛЮБОЕ действие, вкл rotation) у
+# препятствия → НЕ выполнять, а ОТВЕСТИ дрон к самому открытому (max ToF) до клиренса.
+# Спин/манёвр у стены дрейфит → краш (наблюдалось 2.4м дрейф). Min-perimeter < gate → retreat.
+SAFE_MANEUVER_M = 0.80       # min дистанция ЛЮБОГО VL53 для разрешения манёвра
+RETREAT_CLEAR_M = 1.00       # отводим пока min-perimeter не достигнет этого (хватает на манёвр)
+RETREAT_SPEED_M_S = 0.12     # медленно и плавно (legacy raw-velocity, не используется в carrot-retreat)
+RETREAT_CARROT_SPEED_M_S = 0.25  # carrot-retreat (ВАРИАНТ A): скорость отлёта, мягко (tilt≈2°)
+RETREAT_BACKOFF_M = 0.70     # дистанция точки отлёта в открытом направлении (carrot target)
+RETREAT_TIMEOUT_S = 5.0
 DEFAULT_SCAN_HOVER_S = 0.5
 SERVO_STEP_DEG = 30.0
 SERVO_MAX_DEG = 180.0
@@ -261,6 +287,9 @@ class ActionExecutor:
         settle_hover_s: float = 0.1,
         visited_update_fn: Callable[[float, float], None] | None = None,
         get_speed_m_s: Callable[[], float] | None = None,
+        # 6 raw VL53 (м): [0]=0°front..[3]=180°rear..[5]=300°. Pre-maneuver safety
+        # (min-perimeter gate + retreat к max-ToF, Aleks 2026-06-10).
+        get_perimeter_distances: Callable[[], list] | None = None,
         # attitude-aware settle (Aleks 2026-06-09, RCA остаточного tumble run4):
         # tilt-accessor (None → backward-compat фикс. sleep settle_hover_s).
         get_tilt_rad: Callable[[], float] | None = None,
@@ -288,6 +317,7 @@ class ActionExecutor:
         # + coverage undercount. Вызывается на каждом poll'е arrival-ожидания.
         self._visited_update_fn = visited_update_fn
         self._get_front_m = get_front_distance_m
+        self._get_perimeter = get_perimeter_distances
         self._get_pose = get_pose
         self.v2_sensor_mask = v2_sensor_mask
         self.wall_stop_cells = wall_stop_cells
@@ -306,6 +336,8 @@ class ActionExecutor:
         self._translating = False
         # forward velocity (m/s) во время action7 velocity-трансляции (Aleks 2026-06-10)
         self._translation_speed_ms = 0.0
+        # True во время тормозного импульса → maintenance-таймер молчит (импульс сам шлёт)
+        self._suppress_maintenance = False
         self._yaw_calib_sum = 0.0
         self._yaw_calib_n = 0
         self._drift_err_sum = 0.0
@@ -407,7 +439,7 @@ class ActionExecutor:
         точку, движущуюся к финальному target со скоростью режима.
         """
         final = self._target_pose
-        if final is None or self._safety_hold or self._rotating:
+        if final is None or self._safety_hold or self._rotating or self._suppress_maintenance:
             return
         if self._translating:
             # action7: VELOCITY setpoint в BODY frame (forward) вместо position
@@ -492,6 +524,12 @@ class ActionExecutor:
         cur_x = pose.x_m
         cur_y = pose.y_m
         cur_yaw = pose.heading_rad
+
+        # PRE-MANEUVER safety-gate (Aleks 2026-06-10): ЛЮБОЕ движение/манёвр (вкл
+        # rotation) у препятствия → НЕ выполнять, а ОТВЕСТИ на безопасную дистанцию
+        # (спин/манёвр у стены дрейфит → краш, наблюдалось). scan(6) стационарен — без гейта.
+        if action in (0, 1, 2, 3, 4, 5, 7) and self._min_perimeter_m() < SAFE_MANEUVER_M:
+            return self._retreat_from_obstacle(cur_yaw)
 
         if action == 0:
             return self._translation(cur_x, cur_y, cur_yaw, 1.0, 0.0, override_speed)
@@ -629,6 +667,87 @@ class ActionExecutor:
         time.sleep(self.scan_hover_s)
         return {"kind": 2.0, "duration_s": self.scan_hover_s, "servo_deg": self._servo_deg}
 
+    def _min_perimeter_m(self) -> float:
+        """Min дистанция среди 6 VL53 (ближайшее препятствие в ЛЮБОМ направлении).
+        Fallback → ch0 front если периметра нет."""
+        if self._get_perimeter is not None:
+            p = self._get_perimeter()
+            if p is not None and len(p) >= 6:
+                return min(float(p[i]) for i in range(6))
+        return self._get_front_m()
+
+    def _side_proj_m(self) -> float:
+        """Проективный боковой зазор корридора (Aleks 2026-06-10): боковые VL53
+        ch1(+60°)/ch5(−60°) под углом → перпендикуляр до боковой стены
+        d_perp = tof × sin(60°) (projected clearance / effective corridor width).
+        Ловит side-clip при диагональном/корридорном заходе, к которому ch0 (одиночный
+        луч 0°, SDF samples=1) слеп: run8 36/36 крэшей = side-clip на dwall=0.23м.
+        Fallback → 9.9 (нет периметра = нет бок-ограничения)."""
+        if self._get_perimeter is not None:
+            p = self._get_perimeter()
+            if p is not None and len(p) >= 6:
+                return min(float(p[1]), float(p[5])) * SIN_60
+        return 9.9
+
+    def _retreat_from_obstacle(self, cur_yaw: float) -> dict[str, float]:
+        """Pre-maneuver safety (Aleks 2026-06-10, ВАРИАНТ A carrot): дрон у препятствия →
+        НЕ манёвр, а ОТВЕСТИ ПРОЧЬ от ближайшей стены до RETREAT_CLEAR_M.
+
+        ⚠ ПЕРЕПИСАНО (smoke 20:46/21:06 FAIL): прежний raw velocity-setpoint +
+        _suppress_maintenance НЕ держал z (vz=0 без position-hold) → дрон проседал
+        (z 1.8→0.44м) + tumble 72° впритык к стене. Теперь — carrot position-target с
+        altitude-hold (механика reposition, tilt 2°): maintenance-таймер сам везёт дрон
+        к точке отлёта, держа высоту и yaw. НЕ глушим maintenance."""
+        perim = self._get_perimeter() if self._get_perimeter else None
+        open_heading = cur_yaw + math.pi  # fallback назад
+        if perim is not None and len(perim) >= 6:
+            # отлёт ПРОЧЬ от ближайшей стены (min-ToF), НЕ к max-ToF (одиночный луч мог
+            # указать в невидимую боковую стену). danger+180° = от стены.
+            danger = min(range(6), key=lambda i: float(perim[i]))
+            open_heading = cur_yaw + math.radians(danger * 60.0) + math.pi
+        pose = self._get_pose()
+        tx = pose.x_m + RETREAT_BACKOFF_M * math.cos(open_heading)
+        ty = pose.y_m + RETREAT_BACKOFF_M * math.sin(open_heading)
+        self.node.get_logger().info(
+            f"PRE-MANEUVER retreat (carrot): min_perim={self._min_perimeter_m():.2f}m < "
+            f"{SAFE_MANEUVER_M} → отлёт heading={math.degrees(open_heading):+.0f}° "
+            f"backoff={RETREAT_BACKOFF_M}m до clear {RETREAT_CLEAR_M}m"
+        )
+        # carrot + altitude-hold: maintenance-таймер (POS_YAW, z из _target_pose) везёт.
+        self._set_target(tx, ty, cur_yaw, speed_m_s=RETREAT_CARROT_SPEED_M_S)
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < RETREAT_TIMEOUT_S:
+            if self._safety_hold:
+                break
+            if self._min_perimeter_m() >= RETREAT_CLEAR_M:
+                break
+            time.sleep(0.05)
+        pose = self._get_pose()
+        self._set_target(pose.x_m, pose.y_m, cur_yaw)  # hold на безопасной позе (altitude held)
+        self._settle()
+        return {"kind": 9.0, "retreated": 1.0, "travel": 0.0, "arrived": 0.0,
+                "min_perim": float(self._min_perimeter_m())}
+
+    def _brake_impulse(self, yaw: float) -> None:
+        """Тормозной импульс назад (Aleks 2026-06-10): гасит инерцию перед стеной
+        (action7 front<SAFE_BRAKE) → стоп без касания. Подавляет maintenance на время."""
+        self._suppress_maintenance = True
+        try:
+            for _ in range(8):  # ~0.4с реверс
+                vmsg = PositionTarget()
+                vmsg.header.frame_id = "map"
+                vmsg.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
+                vmsg.type_mask = RAW_TYPE_MASK_VEL_YAW
+                vmsg.velocity.x = -RETREAT_SPEED_M_S * math.cos(yaw)
+                vmsg.velocity.y = -RETREAT_SPEED_M_S * math.sin(yaw)
+                vmsg.velocity.z = 0.0
+                vmsg.yaw = float(yaw)
+                vmsg.header.stamp = self.node.get_clock().now().to_msg()
+                self.raw_pub.publish(vmsg)
+                time.sleep(0.05)
+        finally:
+            self._suppress_maintenance = False
+
     def _forward_until_collision(
         self, cur_x: float, cur_y: float, cur_yaw: float, wall_margin: float,
         speed_m_s: float | None = None,
@@ -694,18 +813,36 @@ class ActionExecutor:
                 if remaining <= ARRIVAL_TOL_ACTION7_M:
                     arrived = True
                     break
-                # accel-ramp (Aleks 2026-06-10): плавный разгон 0→speed за RAMP_S +
-                # торможение на последних RAMP_DOWN_M → tilt-транзиент ≤5° (был ~8°).
+                # ── SAFETY LAYER (Aleks 2026-06-10):
+                #   FRONT (ch0): v ∝ (front−STOP)/BAND; front<BRAKE → тормозной импульс назад.
+                #   LATERAL (фон, ch1/ch5 projected): d_perp = tof×sin60 → масштаб скорости —
+                #     ловит боковую стену корридора, к которой ch0 слеп (run8 side-clip фикс).
+                front = self._get_front_m()  # = _perimeter_raw_m[0], ch0 прямо вперёд
+                if front < SAFE_BRAKE_M:
+                    self._brake_impulse(cur_yaw)  # 0.3с реверс 0.1м/с → гасит инерцию
+                    arrived = True
+                    break
+                lateral_clear = self._side_proj_m()  # min(ch1,ch5)·sin60 = перпендикуляр до бок-стены
+                if lateral_clear < LATERAL_STOP_M:   # боковая стена впритык → чистый стоп
+                    arrived = True
+                    break
+                lateral_factor = max(0.0, min(1.0,
+                    (lateral_clear - LATERAL_STOP_M) / (LATERAL_FULL_M - LATERAL_STOP_M)))
+                v_from_front = min(base_speed, max(0.0, (front - SAFE_STOP_M) / SAFE_BAND_M * base_speed))
+                v_safe = min(v_from_front, base_speed * lateral_factor)
+                # accel-ramp (плавный старт/тормоз → tilt-транзиент); итог = min(v_safe, ramp)
                 elapsed = time.monotonic() - t_start
-                ramp_up = min(1.0, elapsed / VELOCITY_RAMP_S)
-                ramp_down = min(1.0, remaining / VELOCITY_RAMP_DOWN_M)
-                self._translation_speed_ms = base_speed * ramp_up * ramp_down
+                ramp = min(1.0, elapsed / VELOCITY_RAMP_S) * min(1.0, remaining / VELOCITY_RAMP_DOWN_M)
+                self._translation_speed_ms = min(v_safe, base_speed * ramp)
                 time.sleep(ARRIVAL_POLL_S)
         finally:
             self._translating = False
             self._translation_speed_ms = 0.0
         # стоп velocity → position-hold на ФАКТИЧЕСКОЙ позе, дать погаситься
         pose = self._get_pose()
+        # parity (rl-lab 2026-06-10): env reward (new_cells/no_travel) должен видеть
+        # ФАКТИЧЕСКИ пройденный путь — safety мог обрезать запрошенный travel.
+        actual_travel = math.hypot(pose.x_m - start_x, pose.y_m - start_y)
         stop = _make_raw_target(
             pose.x_m, pose.y_m, self._target_pose.pose.position.z, cur_yaw
         )
@@ -723,7 +860,7 @@ class ActionExecutor:
             f"Δyaw_in_a7={math.degrees(_angle_diff(end_yaw, cur_yaw)):+.2f} "
             f"arrived={int(arrived)}"
         )
-        return {"kind": 3.0, "travel": travel, "arrived": float(arrived)}
+        return {"kind": 3.0, "travel": actual_travel, "arrived": float(arrived)}
 
     def _snap_to_yaw(self, x: float, y: float, target_yaw: float) -> bool:
         """Stationary yaw-коррекция после action7 (Aleks 2026-06-09): держим
