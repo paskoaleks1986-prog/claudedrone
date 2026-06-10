@@ -333,6 +333,19 @@ class ActionExecutor:
             f"yaw={math.degrees(yaw):.1f}°), servo → {self._servo_deg:.0f}°"
         )
 
+    def clear_target(self) -> None:
+        """Глушит maintenance-стрим на время взлёта (Problem B fix, dev-log 34).
+
+        10 Hz setpoint-стрим (_publish_maintenance) ПЕРЕБИВАЕТ NAV_TAKEOFF: если
+        _target_pose жив с прошлого эпизода (re-takeoff после relaunch), стрим шлёт
+        stale-setpoint → дрон держит spawn z≈0.2, не климбит (z=0.21 блокер → exit2).
+        На 1-м взлёте target и так None → стрим молчит → климб OK; clear_target
+        повторяет это условие для re-takeoff. После climb bridge зовёт
+        initialize_target → стрим восстанавливается. Parity-safe (только окно взлёта).
+        """
+        self._target_pose = None
+        self._carrot_seg = None
+
     def set_safety_hold(self, active: bool) -> None:
         """v2 night watch: safety_guard забрал дрона (/safety/active).
 

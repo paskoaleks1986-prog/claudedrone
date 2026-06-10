@@ -504,7 +504,11 @@ class MavrosSITLComm:
             self._log.info(f"EKF-settle: ждём {self.ekf_settle_s:.0f}s до arm")
         time.sleep(self.ekf_settle_s)
         self._arm(True)
-        # NAV_TAKEOFF + climb (БЕЗ setpoint-стрима — он перебивает NAV_TAKEOFF)
+        # NAV_TAKEOFF + climb (БЕЗ setpoint-стрима — он перебивает NAV_TAKEOFF).
+        # Problem B fix (dev-log 34): глушим maintenance-стрим — на re-takeoff после
+        # relaunch _target_pose жив с прошлого эпизода → стрим бил бы по NAV_TAKEOFF
+        # → z=0.21 не климбит. initialize_target ниже восстановит target после climb.
+        self.executor_act.clear_target()
         self._takeoff_climb()
         self._airborne = True
         pose = self.obs_builder.pose
