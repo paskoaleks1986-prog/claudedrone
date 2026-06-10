@@ -570,7 +570,11 @@ class MavrosSITLComm:
         yaw = float(self._rng.uniform(0.0, 2.0 * math.pi))
         if self.verbose:
             self._log.info(f"reposition → ({tx:.2f}, {ty:.2f}), yaw={math.degrees(yaw):.0f}°")
-        self.executor_act.initialize_target(tx, ty, z=z_hold, yaw=yaw)
+        # Баг 1 fix (Aleks 2026-06-10, данные RL): reposition lunge — прямой
+        # initialize_target = step position target → tilt 16° с осцилляцией. Carrot
+        # (speed_m_s=0.3) = плавный подход от текущей позы (как action7), нет lunge.
+        # z держится из _target_pose (= z_hold, выставлен takeoff/soft до reposition).
+        self.executor_act._set_target(tx, ty, yaw, speed_m_s=0.3)
         # ждём прибытия (через всю комнату) — поллим позу
         t0 = time.monotonic()
         while time.monotonic() - t0 < REPOSITION_TIMEOUT_S:

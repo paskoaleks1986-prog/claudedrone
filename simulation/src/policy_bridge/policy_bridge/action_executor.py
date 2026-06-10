@@ -85,6 +85,22 @@ RAW_TYPE_MASK_POS_YAW = (
 # yaw-ошибку В ДВИЖЕНИИ (что давало coupling roll/pitch → tumble). Yaw
 # выправляем отдельным stationary шагом ПОСЛЕ прибытия (_snap_to_yaw).
 RAW_TYPE_MASK_POS_ONLY = RAW_TYPE_MASK_POS_YAW | PositionTarget.IGNORE_YAW
+
+# Velocity+yaw маска (Aleks 2026-06-10, фикс position-controller saturation на
+# медленном indoor action7): вместо position carrot — velocity setpoint в BODY
+# frame (forward), yaw держим явно (= heading на старте action7, удержание не
+# slew). Position-карта насыщала контроллер (tilt 60° за 7.6с на 0.5м движении,
+# ATC_ANGLE_MAX=25° + узкая комната); velocity командует мягкую постоянную
+# скорость БЕЗ WPNAV S-curve рестарта.
+RAW_TYPE_MASK_VEL_YAW = (
+    PositionTarget.IGNORE_PX | PositionTarget.IGNORE_PY | PositionTarget.IGNORE_PZ
+    | PositionTarget.IGNORE_AFX | PositionTarget.IGNORE_AFY | PositionTarget.IGNORE_AFZ
+    | PositionTarget.IGNORE_YAW_RATE
+)  # Active: VX, VY, VZ, YAW
+# accel-ramp velocity-action7 (Aleks 2026-06-10): плавный разгон/торможение убирает
+# tilt-транзиент старта/стопа (был ~8° на step-velocity → цель ≤5°).
+VELOCITY_RAMP_S = 0.4        # время линейного разгона 0→speed
+VELOCITY_RAMP_DOWN_M = 0.3   # дистанция торможения перед arrival
 DEFAULT_SCAN_HOVER_S = 0.5
 SERVO_STEP_DEG = 30.0
 SERVO_MAX_DEG = 180.0
@@ -257,6 +273,7 @@ class ActionExecutor:
         self.node = node
         self.cell_size_m = cell_size_m
         self.wall_threshold = wall_threshold
+        self.linear_speed = float(linear_speed)  # fallback скорость velocity-action7
         self.target_altitude = target_altitude_m
         self.grid_size = grid_size
         self.scan_hover_s = scan_hover_s
@@ -287,6 +304,8 @@ class ActionExecutor:
         # True во время action7-трансляции → maintenance шлёт POS_ONLY (IGNORE_YAW),
         # AP не корректит yaw в движении (Aleks 2026-06-09 фикс odom-vs-AP gap).
         self._translating = False
+        # forward velocity (m/s) во время action7 velocity-трансляции (Aleks 2026-06-10)
+        self._translation_speed_ms = 0.0
         self._yaw_calib_sum = 0.0
         self._yaw_calib_n = 0
         self._drift_err_sum = 0.0
@@ -389,6 +408,27 @@ class ActionExecutor:
         """
         final = self._target_pose
         if final is None or self._safety_hold or self._rotating:
+            return
+        if self._translating:
+            # action7: VELOCITY setpoint в BODY frame (forward) вместо position
+            # carrot — антинасыщение position-контроллера (Aleks 2026-06-10).
+            # yaw держим явно (= heading старта action7); body-forward идёт вдоль
+            # этого yaw → дрон летит прямо по курсу мягкой постоянной скоростью.
+            vmsg = PositionTarget()
+            vmsg.header.frame_id = "map"
+            # world-frame velocity вдоль heading (НЕ BODY_OFFSET — там yaw=offset,
+            # off-axis msg.yaw абсолютный ломал трансляцию). ENU-компоненты, mavros
+            # конвертит ENU→NED как для position; yaw абсолютный. Нет position-target
+            # в мировой системе → нет cross-coupling (суть фикса сохранена).
+            vmsg.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
+            vmsg.type_mask = RAW_TYPE_MASK_VEL_YAW
+            sp = float(self._translation_speed_ms)
+            vmsg.velocity.x = sp * math.cos(self._target_yaw)
+            vmsg.velocity.y = sp * math.sin(self._target_yaw)
+            vmsg.velocity.z = 0.0
+            vmsg.yaw = float(self._target_yaw)
+            vmsg.header.stamp = self.node.get_clock().now().to_msg()
+            self.raw_pub.publish(vmsg)
             return
         x = final.pose.position.x
         y = final.pose.position.y
@@ -613,7 +653,9 @@ class ActionExecutor:
         s = math.sin(cur_yaw)
         target_x = cur_x + c * travel
         target_y = cur_y + s * travel
-        self._set_target(target_x, target_y, cur_yaw, speed_m_s=speed_m_s)
+        # velocity-режим (Aleks 2026-06-10): _target_pose = ФИНАЛЬНЫЙ hold-таргет
+        # (для guard/z/obs), БЕЗ carrot; движение — velocity-стрим, см. ниже.
+        self._set_target(target_x, target_y, cur_yaw)
         # heading-drift диагностика (план Aleks Шаг 1): heading на старте
         # каждого action7 + отклонение от 90°-осей и 15°-решётки.
         self.node.get_logger().info(
@@ -629,19 +671,50 @@ class ActionExecutor:
             )
             return {"kind": 3.0, "travel": 0.0, "arrived": 1.0}
 
-        # Aleks 2026-06-09 (фикс odom-vs-AP gap): во время полёта yaw НЕ
-        # командуем (POS_ONLY) — AP летит к позиции, не корректит накопленную
-        # ~40° odom-vs-AHRS yaw-ошибку В ДВИЖЕНИИ (что давало coupling → tumble).
+        # Aleks 2026-06-10: action7-трансляция через VELOCITY setpoint (body-forward),
+        # НЕ position carrot — position-карта насыщала контроллер на медленном indoor
+        # (tilt 60° за 7.6с на 0.5м). _publish_maintenance во время _translating шлёт
+        # velocity (см. velocity-ветку). Прибытие — по пройденной дистанции из odom.
+        base_speed = float(speed_m_s) if speed_m_s else self.linear_speed
+        self._translation_speed_ms = 0.0  # accel-ramp стартует с 0
+        start_x, start_y = cur_x, cur_y
+        t_start = time.monotonic()
+        arrived = False
         self._translating = True
         try:
-            arrived = self._wait_arrival_position(
-                target_x, target_y, ARRIVAL_TOL_ACTION7_M, ARRIVAL_TIMEOUT_ACTION7_S
-            )
+            while time.monotonic() - t_start < ARRIVAL_TIMEOUT_ACTION7_S:
+                if self._safety_hold:  # abort (как _wait_arrival_position)
+                    break
+                pose = self._get_pose()
+                if self._visited_update_fn is not None:
+                    self._visited_update_fn(pose.x_m, pose.y_m)  # parity: visited по пути
+                dist = math.hypot(pose.x_m - start_x, pose.y_m - start_y)
+                remaining = travel - dist
+                # tolerance: ramp_down→0 у цели = асимптотич. недолёт → arrival в допуске
+                if remaining <= ARRIVAL_TOL_ACTION7_M:
+                    arrived = True
+                    break
+                # accel-ramp (Aleks 2026-06-10): плавный разгон 0→speed за RAMP_S +
+                # торможение на последних RAMP_DOWN_M → tilt-транзиент ≤5° (был ~8°).
+                elapsed = time.monotonic() - t_start
+                ramp_up = min(1.0, elapsed / VELOCITY_RAMP_S)
+                ramp_down = min(1.0, remaining / VELOCITY_RAMP_DOWN_M)
+                self._translation_speed_ms = base_speed * ramp_up * ramp_down
+                time.sleep(ARRIVAL_POLL_S)
         finally:
             self._translating = False
-        # После прибытия — stationary yaw-коррекция: heading назад к cur_yaw БЕЗ
-        # coupling (дрон стоит на месте, yaw правится отдельно от трансляции).
-        self._snap_to_yaw(target_x, target_y, cur_yaw)
+            self._translation_speed_ms = 0.0
+        # стоп velocity → position-hold на ФАКТИЧЕСКОЙ позе, дать погаситься
+        pose = self._get_pose()
+        stop = _make_raw_target(
+            pose.x_m, pose.y_m, self._target_pose.pose.position.z, cur_yaw
+        )
+        self.raw_pub.publish(stop)
+        time.sleep(0.3)  # дать velocity погаситься перед hold
+        self._set_target(pose.x_m, pose.y_m, cur_yaw)  # hold-таргет на факт. позе
+        self._settle()  # Markov parity: стационар перед obs (как _wait_arrival_position)
+        # stationary yaw-коррекция: heading к cur_yaw БЕЗ coupling (дрон стоит).
+        self._snap_to_yaw(pose.x_m, pose.y_m, cur_yaw)
         end_yaw = self._get_pose().heading_rad
         self.node.get_logger().info(
             f"a7H: end={math.degrees(end_yaw):+.1f} "
