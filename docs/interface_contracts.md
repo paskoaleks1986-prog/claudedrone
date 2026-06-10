@@ -1,113 +1,112 @@
-# Interface ↔ Simulation — контракт ROS2-топиков
+# Interface ↔ Simulation — контракт ROS2-топиков (continuous-velocity архитектура)
 
-**Назначение:** топики, которые агент **Interface** читает (телеметрия/сенсоры/статус) и
-пишет (команды движения/режим), с типами, QoS и частотами. Сверено live по запущенному
-стеку (`ros2 topic info -v`) + SDF `update_rate` + код. ROS2 **Jazzy**, ArduPilot SITL
-Copter 4.8-dev, `ROS_DOMAIN_ID=0` (для изолированного instance — свой, см. §4).
+> 🖊 **ВЛАДЕЛЕЦ контракта/спеки — rl-lab** (директива Aleks 2026-06-10). Этот файл —
+> **sim-side ДРАФТ** под velocity-архитектуру (что я реализую на стороне sim/bridge/executor).
+> rl-lab пишет authoritative версию и **правит свободно**. Я выравниваюсь под их spec.
 
-> ⚠ **QoS — критично.** BEST_EFFORT-паблишеры НЕ дойдут до RELIABLE-подписчика (0 сообщений
-> молча). Подписывайся на sensor/MAVROS-стримы через `rclpy.qos.qos_profile_sensor_data`
-> (BEST_EFFORT) там, где указано BEST_EFFORT. См. [[feedback_mavros_qos_best_effort]].
+**Назначение:** топики, которые **bridge** публикует (для RL-политики И Interface) и
+**executor** принимает (от политики И Interface). Архитектура «направление + полёт»:
+ПОЛИТИКА И ИНТЕРФЕЙС говорят с дроном через **один непрерывный velocity-эндпоинт**, а не
+через дискретные действия. Safety-слой **клэмпит** скорость (уменьшает), не блокирует.
+
+> ROS2 **Jazzy**, ArduPilot SITL Copter 4.8-dev. Для изолированного instance — свой
+> `ROS_DOMAIN_ID` (см. §4). **QoS критично:** BEST_EFFORT-паблишер НЕ дойдёт до RELIABLE-
+> подписчика (0 сообщений молча) — см. [[feedback_mavros_qos_best_effort]].
+>
+> ⚠ **Статус:** контракт описывает ЦЕЛЕВУЮ архитектуру (RL-spec). Помечено `[ЕСТЬ]` —
+> уже публикуется; `[НОВОЕ]` — bridge должен реализовать (rename/новый стрим/эндпоинт).
 
 ---
 
-## 1. READ — телеметрия и статус (Interface подписывается)
+## 1. BRIDGE ПУБЛИКУЕТ → политика + Interface
 
-| Топик | Тип | QoS (Reliability / Durability) | Частота | Назначение |
-|---|---|---|---|---|
-| `/mavros/local_position/odom` | `nav_msgs/msg/Odometry` | **BEST_EFFORT** / VOLATILE | ~10–30 Hz (MAVROS LOCAL_POSITION_NED) | Позиция+ориентация дрона (EKF), скорости |
-| `/mavros/local_position/pose` | `geometry_msgs/msg/PoseStamped` | **BEST_EFFORT** / VOLATILE | ~10–30 Hz | Альт. поза (только pose) |
-| `/mavros/state` | `mavros_msgs/msg/State` | RELIABLE / **TRANSIENT_LOCAL** | ~1 Hz (heartbeat) | `connected`, `armed`, `mode` (GUIDED/BRAKE/LAND…) |
-| `/drone/vl53l0x/ch0` … `ch5` | `sensor_msgs/msg/LaserScan` | RELIABLE / VOLATILE | 10 Hz | 6× сырой ToF (см. §1.1) |
-| `/drone/perimeter` | `sensor_msgs/msg/LaserScan` | RELIABLE / VOLATILE | 10 Hz | Агрегированный perimeter (6 каналов) |
-| `/drone/tf_luna_down` | `sensor_msgs/msg/LaserScan` | RELIABLE / VOLATILE | 10 Hz | Высотомер вниз (TF-Luna) |
-| `/scan/sweep` | `sensor_msgs/msg/LaserScan` | RELIABLE / VOLATILE | 10 Hz (во время sweep) | TF-Luna на servo (sweep, ch6) |
-| `/drone/sweep/result` | `sensor_msgs/msg/LaserScan` | RELIABLE / VOLATILE | по завершении sweep | Итог скана направления |
+| Топик | Тип | QoS | Частота | Статус | Назначение |
+|---|---|---|---|---|---|
+| `/mavros/vl53_ch0` … `vl53_ch5` | `std_msgs/msg/Float32` | RELIABLE / VOLATILE | 10 Hz | `[НОВОЕ]` rename | 6 сырых ToF, **метры** (см. §1.1) |
+| `/drone/tfluna_sectors` | `drone_sim/msg/TFLunaSectors` | RELIABLE / VOLATILE | 10 Hz | `[НОВОЕ]` | TF-Luna угловое кольцо 12 секторов (см. §1.2) |
+| `/mavros/local_position/odom` | `nav_msgs/msg/Odometry` | **BEST_EFFORT** / VOLATILE | ~10–30 Hz | `[ЕСТЬ]` | velocity (twist) + heading (pose orientation) |
 
-### 1.1 VL53L0X ToF — семантика
-- **Тип `LaserScan`**, дистанция = `ranges[0]` (одиночный луч, `samples=1`). Метры.
+### 1.1 VL53 ToF (`/mavros/vl53_ch0..ch5`)
+- **6 отдельных топиков**, каждый — одно расстояние в **метрах** (`std_msgs/Float32`,
+  `data` = дистанция).
 - **Канал = heading-ОТНОСИТЕЛЬНЫЙ угол:** `ch0` +0° (вперёд по курсу), `ch1` +60°, `ch2`
-  +120°, `ch3` +180° (зад), `ch4` +240°, `ch5` +300°. При yaw дрона [0] всегда вдоль курса.
-- **`inf` = нет препятствия** (свободно), НЕ ошибка. Кап на `range_max` (~2.0м), не дропать
-  callback. См. [[feedback_sensor_monitor_inf_handling]].
-- **Mount-радиус:** сенсор на `VL_MOUNT_RADIUS_M=0.1м` от центра → дистанция до стены ОТ
-  ЦЕНТРА = `ranges[0] + 0.1`.
-- `range_max ≈ 2.0м` (за пределом → `inf`, дрон «слеп» дальше 2м — для UI рисуй как «открыто»).
+  +120°, `ch3` +180° (зад), `ch4` +240°, `ch5` +300°. [0] всегда вдоль текущего курса.
+- **`inf` (или `range_max`) = свободно**, НЕ ошибка. `range_max ≈ 2.0м` (дальше дрон «слеп»).
+- **Mount-радиус:** сенсор на **0.1м** от центра → дистанция до стены ОТ ЦЕНТРА = `data + 0.1`.
+- ⚠ Rename из текущего `/drone/vl53l0x/chN` (`sensor_msgs/LaserScan`) → bridge перепубликует
+  `ranges[0]` как `Float32` под `/mavros/vl53_chN`.
 
-### 1.2 Карта / occupancy (если нужен display карты)
-| Топик | Тип | Источник |
-|---|---|---|
-| `/rl_policy/occupancy_grid` | `nav_msgs/msg/OccupancyGrid` | policy_bridge_node (INFERENCE, не train) |
-| `/rl_policy/visited_grid` | `nav_msgs/msg/OccupancyGrid` | policy_bridge_node |
-| `/rl_policy/mapped_ratio` | `std_msgs/msg/Float32` | 0..1, прогресс покрытия |
+### 1.2 TF-Luna угловое кольцо (`/drone/tfluna_sectors`)
+- TF-Luna на servo **сканирует 0–180°** → агрегируется в **12 секторов** (по 15°).
+- Каждый сектор: `dist_m` (последнее измерение, метры) + `freshness_steps` (сколько шагов
+  назад сектор последний раз измерен — счётчик устаревания; sweep обновляет по одному сектору).
+- Публикуется **всё кольцо 10 Hz** (last-known + возраст по каждому сектору).
+- Предлагаемый msg `drone_sim/msg/TFLunaSectors`:
+  ```
+  std_msgs/Header header
+  float32[12] dist_m            # дистанция по сектору, метры (inf=свободно)
+  int32[12]   freshness_steps   # 0=измерен в этот шаг, растёт пока servo не вернётся
+  ```
+  Fallback без нового msg: `std_msgs/Float32MultiArray` (24 значения: 12 dist + 12 freshness).
 
-⚠ `/rl_policy/*` публикует **INFERENCE-нода**, НЕ train. occupancy `rl_room_*`: resolution
-0.1, dims `64×64`, origin SW `(−room/2, −room/2)`, LUT UNKNOWN −1 / FREE 0 / OCCUPIED 100.
-
----
-
-## 2. WRITE — команды (Interface публикует)
-
-| Топик / сервис | Тип | QoS | Назначение |
-|---|---|---|---|
-| `/drone/sg90/cmd` | `std_msgs/msg/Float64` | RELIABLE / VOLATILE | Угол servo (рад, после bridge), on-demand |
-| `/drone/sweep/start` | `std_msgs/msg/Empty` | RELIABLE | Запуск sweep-скана |
-| `/mavros/setpoint_raw/local` | `mavros_msgs/msg/PositionTarget` | **BEST_EFFORT** / VOLATILE | Низкоуровневая команда движения (см. §2.1) |
-| `/mavros/set_mode` (srv) | `mavros_msgs/srv/SetMode` | — | Режим: GUIDED / BRAKE / LAND |
-| `/mavros/cmd/arming` (srv) | `mavros_msgs/srv/CommandBool` | — | ARM / DISARM |
-
-### 2.1 `/mavros/setpoint_raw/local` — PositionTarget
-- `coordinate_frame`: `FRAME_LOCAL_NED` (1).
-- **`type_mask` ОБЯЗАТЕЛЕН с явным yaw** — иначе ArduPilot крутит yaw вдоль velocity → tumble.
-  - position+yaw: маска позволяет `position` + `yaw` (как `RAW_TYPE_MASK_POS_YAW`).
-  - velocity+yaw: `velocity` + `yaw` (как `RAW_TYPE_MASK_VEL_YAW`).
-- ⚠ **Конфликт с maintenance-стримом.** Симуляция гонит свой setpoint-стрим 10 Hz
-  (`action_executor._publish_maintenance`). Если Interface шлёт сюда напрямую — стримы дерутся.
-  **Рекомендация:** Interface НЕ пишет `setpoint_raw/local` напрямую, а вызывает примитивы
-  executor через тонкую `manual_control_node` (bridge). См. §3.
+### 1.3 odom
+- `twist.twist.linear` (vx,vy,vz world ENU) + `twist.twist.angular.z` (yaw_rate);
+  `pose.pose.orientation` → heading. EKF-источник. **BEST_EFFORT** (подписка через
+  `qos_profile_sensor_data`).
 
 ---
 
-## 3. Рекомендуемый путь команд — через executor (не сырой setpoint)
+## 2. EXECUTOR ПРИНИМАЕТ ← политика + Interface
 
-Вместо прямого `setpoint_raw` — `manual_control_node` (bridge Interface) поверх публичного
-API `ActionExecutor` (`policy_bridge/action_executor.py`):
+**ОДИН эндпоинт. Никаких дискретных действий / snap / settle.**
 
-| Команда Interface | Метод executor | Примечание |
-|---|---|---|
-| Поворот на **любой** угол | `rotate_by_deg(delta_deg)` / `snap_to_yaw(yaw_rad)` | БЕЗ 15°-решётки (произвольный угол) |
-| Лететь до стены | `execute(7)` | forward_until_collision + safety-слой |
-| Полный стоп / hover | `set_safety_hold(True)` → hover-hold | держит позу |
-| Старт движения | `execute(7)` / goto | translating gate |
+| Топик | Тип | QoS | Частота | Статус |
+|---|---|---|---|---|
+| `/drone/cmd_vel_body` | `geometry_msgs/msg/Twist` | RELIABLE / VOLATILE | 10 Hz | `[НОВОЕ]` |
 
-⚠ RL-действия `execute(0..5)` — **сетка** (шаги 0.1м, повороты 15°), для RL-parity. Для
-ручного «направление+полёт» используем `snap_to_yaw`/`rotate_by_deg` + `execute(7)`, НЕ 0..5.
+- **Continuous velocity в BODY frame:**
+  - `linear.x` = vx (вперёд+, м/с)
+  - `linear.y` = vy (влево+, м/с)
+  - `angular.z` = yaw_rate (CCW+, рад/с)
+  - (`linear.z` = vz опционально; по умолчанию 0 — высоту держит executor)
+- **10 Hz** поток (как maintenance-стрим GUIDED; пропуск > N тиков → executor тормозит в 0).
+- Один и тот же эндпоинт для политики и для Interface (ручное управление = тот же Twist).
 
-### 3.1 `/goto_waypoint` (спек, гейт снимается по согласованию)
-- **service** `/goto_waypoint`, srv: req `float64 x, float64 y` (map ENU), опц. `float64 yaw`
-  (NaN=держать), опц. `float64 z` (NaN=держать alt); resp `bool success, string msg`.
-- **Валидация — bridge** (in-map + не-в-препятствии по `free_mask`/occupancy), НЕ Interface.
-- Преемптит maintenance штатно (новый target через `_set_target`, не emergency).
+### 2.1 Safety-слой — КЛЭМП, не блок
+- Перед выдачей в `/mavros/setpoint_raw/local` safety проверяет proximity (ToF + tfluna):
+  - если вектор скорости ведёт в препятствие (proximity-constraint нарушен) →
+    **уменьшает** компоненту/масштаб вектора (вплоть до 0 по опасной оси), НЕ отбрасывает
+    команду и НЕ переключает режим.
+  - чем ближе стена — тем сильнее клэмп (плавно, не порог). Перпендикулярный/отворачивающий
+    компонент скорости НЕ режется (можно уходить от стены).
+- Результат: дрон **не может влететь в стену**, но всегда отзывчив на команду (летит вдоль
+  стены, тормозит к ней, свободно уходит). Политика/Interface видят реальную (склэмпленную)
+  скорость в odom — parity по факту движения.
 
 ---
 
-## 4. Изолированный instance (параллельно с sim-стеком на D2)
+## 3. Frame / единицы
+- BODY frame: x вперёд, y влево, z вверх (REP-103). vx/vy м/с, yaw_rate рад/с.
+- ToF/tfluna дистанции — метры, от сенсора (+0.1м mount до центра).
+- odom — world ENU (mavros); executor конвертит cmd body→world для setpoint.
 
-Чтобы стек Interface не дрался с RL/safety-стеком на одной RTX 5070
-([[project_d2_multi_instance_isolation]]):
+## 4. Изолированный instance (параллельно на D2)
+[[project_d2_multi_instance_isolation]] — стек Interface не дерётся с RL-стеком на RTX 5070:
 ```
 SITL_INSTANCE=2  GZ_PARTITION=ifc  ROS_DOMAIN_ID=2  MAVLINK_PORT=5780
 ```
-(`MAVLINK_PORT = 5760 + 10·SITL_INSTANCE`). Live-bringup (НЕ train):
-```
-help_scripts/launch.sh --full --mavros --no-autoscan --gui -w <world> -s ifc -log
-```
-(без `--no-safety-guard` → поднимается `/safety/active` Bool latched — страховка при ручном).
+(`MAVLINK_PORT = 5760 + 10·SITL_INSTANCE`). Live-bringup:
+`help_scripts/launch.sh --full --mavros --no-autoscan --gui -w <world> -s ifc -log`.
 
----
+## 5. Параметры стека (контекст)
+`WP_YAW_BEHAVIOR=0`, `ATC_ANGLE_MAX=25°`, `GPS1_TYPE=1` (fake-GPS SITL), `GUID_OPTIONS=0`,
+высота-цель 3.0м.
 
-## 5. Ключевые параметры стека (контекст)
-`WP_YAW_BEHAVIOR=0` (AP не дерётся auto-yaw с нашим явным), `ATC_ANGLE_MAX=25°` (макс крен),
-`GPS1_TYPE=1` (fake-GPS SITL — BRAKE/LAND работают), `GUID_OPTIONS=0`. Высота цель 3.0м.
+## 6. НЕ в этом контракте (старая архитектура)
+Дискретный `execute(0..7)`, 15°-снапы поворота, `snap_to_yaw`, `_settle`, cell-step
+трансляции, action-mask — **исключены**. Новая архитектура = только continuous velocity (§2).
+RL-env Discrete(8) при необходимости остаётся отдельно для legacy-parity, но Interface на
+него НЕ завязан.
 
-_Сверено: 2026-06-10, ветка feature/pre-train-preparation. При изменении стека — обновить._
+_Сверено/спроектировано: 2026-06-10, ветка feature/pre-train-preparation. `[ЕСТЬ]` — live;
+`[НОВОЕ]` — bridge реализует под новую архитектуру._
