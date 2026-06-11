@@ -621,28 +621,24 @@ class ActionExecutor:
             and (time.monotonic() - self._manual_vel_t) < MANUAL_VEL_TIMEOUT_S
         )
         if fresh:
-            # ЖИВОЙ ЗАМЕР (Aleks+DIRDIAG 2026-06-11 17:2x) — РЕШАЮЩИЙ: setpoint применялся
-            # в МИРОВОЙ системе, НЕ body. Одна команда vx давала противоположный курс при
-            # разном heading (head=+175°→назад, head=−14°→вперёд). θ_world=achieved+head
-            # железно: vx>0→world+X(0°), vy>0→world+Y(90°), НЕЗАВИСИМО от носа ⇒
-            # FRAME_BODY_OFFSET_NED здесь НЕ крутится с носом (применён как LOCAL_NED).
-            # Замер: velocity.(x,y) → world(x,y) ИДЕНТИЧНО (без свопа/негации).
-            # ФИКС: САМИ вращаем body→world по heading (как proven _publish_manual_velocity/
-            # action7) и шлём мировую скорость → «вперёд» = вдоль носа при ЛЮБОМ курсе.
-            # ⚠ НЕ перепроверено живьём (Aleks ушёл в ребут после этого замера).
+            # «КАК НА ПУЛЬТЕ» (Aleks 2026-06-11, живой облёт) — чистый BODY-frame:
+            # «вперёд» = нос при ЛЮБОМ курсе, поворот body→world делает САМ AP по своей
+            # оценке курса (как стик пульта). RCA прошлого бага (538b16d, «потеря ориентира
+            # после A/D»): мы вращали body→world РУКАМИ (wx,wy по heading) И слали
+            # FRAME_BODY_OFFSET_NED, который AP вращает ЕЩЁ раз ⇒ ДВОЙНОЕ вращение. При
+            # heading≈0 cos=1/sin=0 → ручная ротация = ноль, AP-ротация = ноль → W/S/Q/E
+            # держались идеально; после A/D (yaw на θ) эффективный угол 2·θ → «вперёд» уезжал
+            # вбок. ФИКС: НЕ вращаем сами — AP делает единственный поворот по своему heading.
             vx, vy, yaw_rate = self._manual_vel
             vz = max(-MANUAL_VZ_MAX_M_S, min(MANUAL_VZ_MAX_M_S,
                                              MANUAL_Z_KP * (self.target_altitude - pose.z_m)))
-            yaw = pose.heading_rad
-            wx = vx * math.cos(yaw) - vy * math.sin(yaw)   # body→world (vy=влево+)
-            wy = vx * math.sin(yaw) + vy * math.cos(yaw)
             vmsg = PositionTarget()
             vmsg.header.frame_id = "map"
             vmsg.coordinate_frame = PositionTarget.FRAME_BODY_OFFSET_NED
             vmsg.type_mask = RAW_TYPE_MASK_VEL_YAWRATE
-            vmsg.velocity.x = wx       # world-X (нос спроецирован по heading)
-            vmsg.velocity.y = wy       # world-Y
-            vmsg.velocity.z = vz       # вверх+ (высота подтверждена живьём)
+            vmsg.velocity.x = float(vx)   # body forward (нос) — AP сам спроецирует по курсу
+            vmsg.velocity.y = float(vy)   # body left (mavros FLU); знак подтвердить DIRDIAG
+            vmsg.velocity.z = vz          # вверх+ (высота подтверждена живьём)
             vmsg.yaw_rate = float(yaw_rate)
             vmsg.header.stamp = self.node.get_clock().now().to_msg()
             self.raw_pub.publish(vmsg)

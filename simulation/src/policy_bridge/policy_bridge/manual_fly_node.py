@@ -74,6 +74,7 @@ def main() -> int:
         room_x_m=args.room, room_y_m=args.room, cell_size_m=0.1,
         target_altitude_m=takeoff_alt, sitl_instance=args.instance,
         sitl_restart_cmd=None, relaunch_cmd=None, gz_log_path=None,
+        manual_mode=True,   # ручной облёт: глушим RL crash-latch (tilt-термин) — Aleks пилот
     )
     ex = comm.executor_act
 
