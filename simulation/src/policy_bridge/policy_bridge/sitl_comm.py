@@ -636,6 +636,16 @@ class MavrosSITLComm:
             pass  # AP сам disarm'ит после land
         time.sleep(DISARM_GRACE_S)
 
+    def land(self) -> None:
+        """Ручная посадка (Aleks 2026-06-11): LAND mode → плавный спуск → disarm.
+        ⚠ Зови executor_act.exit_manual_flight() ПЕРЕД этим — иначе 10Гц
+        maintenance-стрим перебивает LAND (держит дрон в воздухе position-setpoint'ом).
+        ⚠ SITL: повторный взлёт после LAND ненадёжен (memory
+        project_sitl_navtakeoff_after_land_fails) — для нового взлёта перезапусти стек."""
+        self._log.info("LAND — посадка по команде")
+        self._land_and_disarm()
+        self._log.info("✅ приземлился и disarmed")
+
     # ── Protocol API ────────────────────────────────────────────────────────────
     def read_state(self) -> dict[str, Any]:
         pose = self.obs_builder.pose

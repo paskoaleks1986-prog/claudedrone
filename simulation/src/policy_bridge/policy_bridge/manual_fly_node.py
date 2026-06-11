@@ -10,10 +10,15 @@ vx/vy/yaw_rate) и кормит `executor.set_manual_velocity` — ЕДИНЫЙ 
 Поток: взлёт на заданную высоту + hover → слушает Twist (linear.x=vx вперёд+,
 linear.y=vy влево+, angular.z=yaw_rate CCW+). Нет команды > 0.5с → тормоз в hover (failsafe).
 
-Высота (Aleks 2026-06-11): ползунок interface шлёт `/drone/set_altitude` (std_msgs/Float64,
-м, [0.5-2.2]) — дискретная команда «выйди на высоту H и держи»: система лочит горизонт-контроль
-на время вертикального выхода, по достижении отдаёт контроль. Статус: `/drone/altitude_locked`
-(Bool, True пока выходим) + `/drone/altitude_target` (Float64, clamped target) @5Гц.
+Высота вверх/вниз (Aleks 2026-06-11): ползунок interface шлёт `/drone/set_altitude`
+(std_msgs/Float64, м, [0.5-2.2]) — «выйди на высоту H и держи». ЕДИНЫЙ ручной контроллер
+(`executor._publish_manual_flight`) ведёт дрон на target И в hover (AP-position-setpoint),
+И в горизонт-полёте (vz=Kp·Δalt). Работает без горизонт-команды (прошлый баг: z-control жил
+только в velocity-пути). Статус: `/drone/altitude_locked` (Bool, True пока выходим) +
+`/drone/altitude_target` (Float64, clamped target) @5Гц.
+
+Посадка (Aleks 2026-06-11): `/drone/land` (std_msgs/Bool, любой триггер) → LAND mode →
+плавный спуск → disarm. ⚠ Повторный взлёт после LAND в SITL ненадёжен — перезапусти стек.
 
 Взлёт «с указанием высоты» (Aleks 2026-06-11): нода по умолчанию НЕ взлетает сама, а ждёт
 триггер `/drone/takeoff` (std_msgs/Float64 = высота [0.5-2.2], ≤0=дефолт --alt) — Space у
@@ -42,6 +47,7 @@ ALT_CMD_TOPIC = "/drone/set_altitude"          # interface ползунок → 
 ALT_LOCKED_TOPIC = "/drone/altitude_locked"    # статус: True пока выходим на высоту
 ALT_TARGET_TOPIC = "/drone/altitude_target"    # echo clamped target (м)
 TAKEOFF_TOPIC = "/drone/takeoff"               # interface Space → взлёт (Float64 высота, ≤0=дефолт)
+LAND_TOPIC = "/drone/land"                     # interface → посадка (std_msgs/Bool, любой триггер)
 
 
 def main() -> int:
@@ -97,7 +103,7 @@ def main() -> int:
     # --auto-takeoff = сразу на --alt (standalone smoke). start_episode блокирующий →
     # запускаем из ГЛАВНОГО потока (не из callback, чтобы не вешать executor-спин).
     tk_lock = threading.Lock()
-    tk = {"req": args.auto_takeoff, "alt": takeoff_alt, "done": False}
+    tk = {"req": args.auto_takeoff, "alt": takeoff_alt, "done": False, "land": False}
 
     def on_takeoff(msg: Float64) -> None:
         a = max(ALT_MIN_M, min(ALT_MAX_M, msg.data if msg.data > 0 else takeoff_alt))
@@ -109,7 +115,17 @@ def main() -> int:
             tk["req"] = True
         comm.node.get_logger().info(f"takeoff-триггер принят → взлёт на {a:.2f} м")
 
+    def on_land(msg: Bool) -> None:
+        # Посадка: глушим maintenance-стрим и садимся (блокирующе → из главного потока).
+        with tk_lock:
+            if not tk["done"]:
+                comm.node.get_logger().warn("land-триггер проигнорирован — ещё на земле")
+                return
+            tk["land"] = True
+        comm.node.get_logger().info("land-триггер принят → посадка")
+
     comm.node.create_subscription(Float64, TAKEOFF_TOPIC, on_takeoff, 10)
+    comm.node.create_subscription(Bool, LAND_TOPIC, on_land, 10)
 
     if args.auto_takeoff:
         comm.node.get_logger().info(f"manual_fly: auto-takeoff на {takeoff_alt:.2f} м…")
@@ -130,11 +146,26 @@ def main() -> int:
                 ex.target_altitude = do_tk        # post-takeoff z-hold setpoint
                 comm.node.get_logger().info(f"взлёт на {do_tk:.2f} м…")
                 comm.start_episode(randomize_spawn=False)  # takeoff, БЕЗ reposition
+                ex.enter_manual_flight()          # ЕДИНЫЙ ручной контроллер (hover+высота+полёт)
                 with tk_lock:
                     tk["done"] = True
                 comm.node.get_logger().info(
                     f"✅ MANUAL FLY READY → vel: Twist в {CMD_TOPIC} (x=vx,y=vy,z=yaw_rate); "
-                    f"высота: Float64 в {ALT_CMD_TOPIC} ([{ALT_MIN_M}-{ALT_MAX_M}]м). Ctrl-C = стоп+close."
+                    f"высота: Float64 в {ALT_CMD_TOPIC} ([{ALT_MIN_M}-{ALT_MAX_M}]м); "
+                    f"посадка: Bool в {LAND_TOPIC}. Ctrl-C = стоп+close."
+                )
+            do_land = False
+            with tk_lock:
+                if tk["land"]:
+                    tk["land"] = False
+                    do_land = True
+            if do_land:
+                comm.node.get_logger().info("посадка…")
+                ex.exit_manual_flight()           # стоп стрима (иначе перебивает LAND)
+                comm.land()                       # LAND mode → спуск → disarm
+                comm.node.get_logger().info(
+                    "✅ приземлился. Повторный взлёт после LAND в SITL ненадёжен — "
+                    "для нового полёта перезапусти стек."
                 )
             time.sleep(0.2)
     except KeyboardInterrupt:

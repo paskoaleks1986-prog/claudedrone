@@ -127,6 +127,7 @@ MANUAL_VEL_TIMEOUT_S = 0.5  # нет cmd дольше → тормозим в ho
 CLAMP_STOP_M = 0.50        # ToF в направлении движения ≤ → компонента к стене = 0
 CLAMP_FULL_M = 1.00        # ≥ → без клэмпа (полная скорость)
 MANUAL_Z_KP = 0.8          # P-коэф удержания высоты в velocity-режиме (vz = Kp·Δz)
+MANUAL_VZ_MAX_M_S = 0.5    # клэмп vertical velocity ползунка-высоты (плавный выход)
 # Ползунок-высота (Aleks 2026-06-11): дискретная команда «выйди на высоту H и держи».
 # Не live-follow — interface шлёт на commit. Система ЛОЧИТ горизонт-контроль на
 # время вертикального выхода, по достижении ОТДАЁТ контроль.
@@ -384,10 +385,17 @@ class ActionExecutor:
         # (старый position/carrot путь). _manual_vel_t = monotonic метка свежести.
         self._manual_vel: tuple[float, float, float] | None = None
         self._manual_vel_t = 0.0
-        # Ползунок-высота (Aleks 2026-06-11): True пока дрон выходит на заданную
-        # высоту — горизонт-cmd заморожен (чистый вертикальный манёвр), по достижении
-        # → False (возврат контроля). target_altitude = текущий setpoint z-hold.
+        # Ползунок-высота: _alt_locking = индикатор «идёт вертикальный выход на target»
+        # (для статуса interface), выводится из |z−target| в контроллере.
         self._alt_locking = False
+        # Ручной режим (Aleks 2026-06-11): ЕДИНЫЙ контроллер высоты+позиции для manual_fly.
+        # Hover (нет cmd_vel) → POSITION setpoint (hold_xy, target_alt): держит x,y, ведёт z.
+        # Полёт (cmd_vel) → VELOCITY (vx,vy + vz=Kp·Δalt). set_altitude меняет target_alt
+        # → высота вверх/вниз в ОБОИХ режимах. Активируется enter_manual_flight() после взлёта.
+        self._manual_flight = False
+        self._hold_x = 0.0
+        self._hold_y = 0.0
+        self._hold_yaw = 0.0
         # 10 Hz maintenance timer (необходим для ArduPilot GUIDED setpoint stream)
         self._maint_timer = node.create_timer(
             1.0 / MAINTAIN_RATE_HZ, self._publish_maintenance
@@ -468,6 +476,11 @@ class ActionExecutor:
         run F план (а): при активном carrot-сегменте публикуем промежуточную
         точку, движущуюся к финальному target со скоростью режима.
         """
+        # Ручной режим (Aleks 2026-06-11): ЕДИНЫЙ контроллер — приоритетнее всего.
+        # Чинит баг «ползунок не работает в hover»: высота управляется и без cmd_vel.
+        if self._manual_flight and not self._safety_hold:
+            self._publish_manual_flight()
+            return
         # FlightRL-v1 непрерывный velocity-режим (rl-lab B2/B4): приоритетный путь.
         # Body-velocity (safety-клэмп B4) → velocity+yaw_rate setpoint каждый тик.
         # Единый путь движения новой арх (нет execute/carrot/settle). safety_hold глушит.
@@ -545,6 +558,77 @@ class ActionExecutor:
         vmsg.yaw_rate = float(yaw_rate)
         vmsg.header.stamp = self.node.get_clock().now().to_msg()
         self.raw_pub.publish(vmsg)
+
+    # ---- ручной режим (Aleks 2026-06-11): взлёт/посадка/высота вверх-вниз ----
+
+    def enter_manual_flight(self) -> None:
+        """Активирует ручной режим после взлёта: hover держит текущую позицию,
+        set_altitude ведёт высоту вверх/вниз, cmd_vel летит горизонтально.
+        target_altitude остаётся = высоте взлёта (держим её до команды ползунка)."""
+        pose = self._get_pose()
+        self._hold_x = pose.x_m
+        self._hold_y = pose.y_m
+        self._hold_yaw = pose.heading_rad
+        self._manual_vel = None
+        self._manual_flight = True
+        self.node.get_logger().info(
+            f"manual-flight ON: hold=({self._hold_x:.2f},{self._hold_y:.2f}) "
+            f"alt={self.target_altitude:.2f}м"
+        )
+
+    def exit_manual_flight(self) -> None:
+        """Стоп ручного режима — глушит maintenance-стрим, чтобы он НЕ перебивал
+        LAND mode (иначе position-setpoint держит дрон в воздухе). Зовётся перед land()."""
+        self._manual_flight = False
+        self._manual_vel = None
+        self._target_pose = None
+        self._carrot_seg = None
+        self._alt_locking = False
+
+    def _publish_manual_flight(self) -> None:
+        """ЕДИНЫЙ ручной контроллер (Aleks 2026-06-11) — чинит «ползунок не работает».
+        - Свежий cmd_vel (≤ MANUAL_VEL_TIMEOUT) → VELOCITY setpoint: горизонт (vx,vy
+          body→world + safety-клэмп B4), вертикаль vz=Kp·(target_alt−z), yaw_rate.
+          hold_xy ← текущая поза (по отпусканию hover ловит здесь, без отскока).
+        - Нет cmd_vel (hover) → POSITION setpoint (hold_x, hold_y, target_alt, hold_yaw):
+          AP-position-контроллер держит x,y и САМ плавно ведёт z к target_alt — поэтому
+          ползунок высоты работает И в чистом hover (корень прошлого бага: z-control
+          жил только в velocity-пути). set_altitude меняет target_alt → работает в обоих.
+        """
+        pose = self._get_pose()
+        # статус для слайдера interface: True пока не вышли на target по высоте
+        self._alt_locking = abs(self.target_altitude - pose.z_m) > ALT_ARRIVE_TOL_M
+        fresh = (
+            self._manual_vel is not None
+            and (time.monotonic() - self._manual_vel_t) < MANUAL_VEL_TIMEOUT_S
+        )
+        if fresh:
+            vx, vy, yaw_rate = self._manual_vel
+            vx, vy = self._clamp_velocity_body(vx, vy)
+            yaw = pose.heading_rad
+            wx = vx * math.cos(yaw) - vy * math.sin(yaw)
+            wy = vx * math.sin(yaw) + vy * math.cos(yaw)
+            vz = max(-MANUAL_VZ_MAX_M_S, min(MANUAL_VZ_MAX_M_S,
+                                             MANUAL_Z_KP * (self.target_altitude - pose.z_m)))
+            vmsg = PositionTarget()
+            vmsg.header.frame_id = "map"
+            vmsg.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
+            vmsg.type_mask = RAW_TYPE_MASK_VEL_YAWRATE
+            vmsg.velocity.x = wx
+            vmsg.velocity.y = wy
+            vmsg.velocity.z = vz
+            vmsg.yaw_rate = float(yaw_rate)
+            vmsg.header.stamp = self.node.get_clock().now().to_msg()
+            self.raw_pub.publish(vmsg)
+            # держим текущую позицию для hover после отпускания стика
+            self._hold_x, self._hold_y, self._hold_yaw = pose.x_m, pose.y_m, yaw
+        else:
+            target = _make_raw_target(
+                self._hold_x, self._hold_y, self.target_altitude,
+                self._hold_yaw, RAW_TYPE_MASK_POS_YAW,
+            )
+            target.header.stamp = self.node.get_clock().now().to_msg()
+            self.raw_pub.publish(target)
 
     def _set_target(
         self, x: float, y: float, yaw: float, speed_m_s: float | None = None
@@ -673,15 +757,14 @@ class ActionExecutor:
 
     def set_target_altitude(self, z_m: float) -> float:
         """Ползунок-высота (Aleks 2026-06-11): «выйди на высоту H и держи».
-        Клампит в [ALT_MIN_M, ALT_MAX_M]; ставит target_altitude (= setpoint z-hold
-        P-регулятора в _publish_manual_velocity, он сам выводит дрон на высоту). Лочит
-        Z-control на target; горизонт-teleop ПРОДОЛЖАЕТ работать (согласовано с interface).
-        _alt_locking=True пока |z−target|>ALT_ARRIVE_TOL_M (индикатор перехода для статуса),
-        по достижении → False (контроль высоты «возвращён»). Дискретная команда (не
-        live-follow) — interface шлёт на commit ползунка. Возвращает clamped target."""
+        Клампит в [ALT_MIN_M, ALT_MAX_M] и ставит target_altitude — ЕДИНЫЙ setpoint
+        высоты для ручного контроллера (_publish_manual_flight): в hover AP-position
+        ведёт дрон на target, в полёте vz=Kp·Δalt. Работает и без горизонт-команды
+        (корень прошлого бага устранён). Статус выхода — _alt_locking (|z−target|),
+        считается в контроллере. Возвращает clamped target."""
         z = max(ALT_MIN_M, min(ALT_MAX_M, float(z_m)))
         self.target_altitude = z
-        self._alt_locking = True
+        self._alt_locking = True  # немедленный статус до следующего тика контроллера
         return z
 
     @property
