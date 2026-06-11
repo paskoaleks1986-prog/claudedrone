@@ -127,6 +127,13 @@ MANUAL_VEL_TIMEOUT_S = 0.5  # нет cmd дольше → тормозим в ho
 CLAMP_STOP_M = 0.50        # ToF в направлении движения ≤ → компонента к стене = 0
 CLAMP_FULL_M = 1.00        # ≥ → без клэмпа (полная скорость)
 MANUAL_Z_KP = 0.8          # P-коэф удержания высоты в velocity-режиме (vz = Kp·Δz)
+# Ползунок-высота (Aleks 2026-06-11): дискретная команда «выйди на высоту H и держи».
+# Не live-follow — interface шлёт на commit. Система ЛОЧИТ горизонт-контроль на
+# время вертикального выхода, по достижении ОТДАЁТ контроль.
+ALT_MIN_M = 0.5            # минималка ползунка (50 см)
+ALT_MAX_M = 2.2            # максималка ползунка (2.2 м)
+ALT_ARRIVE_TOL_M = 0.08    # |z − target| ниже → высота достигнута → возврат контроля
+MANUAL_ALT_DEFAULT_M = 1.0  # дефолт-высота взлёта manual-fly (в диапазоне, безопасно)
 # Pre-maneuver safety (Aleks 2026-06-10): манёвр (ЛЮБОЕ действие, вкл rotation) у
 # препятствия → НЕ выполнять, а ОТВЕСТИ дрон к самому открытому (max ToF) до клиренса.
 # Спин/манёвр у стены дрейфит → краш (наблюдалось 2.4м дрейф). Min-perimeter < gate → retreat.
@@ -377,6 +384,10 @@ class ActionExecutor:
         # (старый position/carrot путь). _manual_vel_t = monotonic метка свежести.
         self._manual_vel: tuple[float, float, float] | None = None
         self._manual_vel_t = 0.0
+        # Ползунок-высота (Aleks 2026-06-11): True пока дрон выходит на заданную
+        # высоту — горизонт-cmd заморожен (чистый вертикальный манёвр), по достижении
+        # → False (возврат контроля). target_altitude = текущий setpoint z-hold.
+        self._alt_locking = False
         # 10 Hz maintenance timer (необходим для ArduPilot GUIDED setpoint stream)
         self._maint_timer = node.create_timer(
             1.0 / MAINTAIN_RATE_HZ, self._publish_maintenance
@@ -512,8 +523,14 @@ class ActionExecutor:
         mavros ENU→NED). z держим P-регулятором (vz=Kp·Δalt)."""
         fresh = (time.monotonic() - self._manual_vel_t) < MANUAL_VEL_TIMEOUT_S
         vx, vy, yaw_rate = self._manual_vel if fresh else (0.0, 0.0, 0.0)
-        vx, vy = self._clamp_velocity_body(vx, vy)
         pose = self._get_pose()
+        # Ползунок-высота (Aleks 2026-06-11, согласовано с interface): sim лочит
+        # z-control на заданную высоту, ГОРИЗОНТ-teleop продолжает работать. _alt_locking
+        # = индикатор «идёт вертикальный выход» (для статуса interface), снимается по
+        # достижении. z-hold P-регулятор (vz ниже) сам выводит дрон на target.
+        if self._alt_locking and abs(self.target_altitude - pose.z_m) <= ALT_ARRIVE_TOL_M:
+            self._alt_locking = False
+        vx, vy = self._clamp_velocity_body(vx, vy)
         yaw = pose.heading_rad
         wx = vx * math.cos(yaw) - vy * math.sin(yaw)
         wy = vx * math.sin(yaw) + vy * math.cos(yaw)
@@ -525,7 +542,7 @@ class ActionExecutor:
         vmsg.velocity.x = wx
         vmsg.velocity.y = wy
         vmsg.velocity.z = vz
-        vmsg.yaw_rate = float(yaw_rate if fresh else 0.0)
+        vmsg.yaw_rate = float(yaw_rate)
         vmsg.header.stamp = self.node.get_clock().now().to_msg()
         self.raw_pub.publish(vmsg)
 
@@ -652,6 +669,30 @@ class ActionExecutor:
             pose = self._get_pose()
             self._set_target(pose.x_m, pose.y_m, pose.heading_rad)
         self._manual_vel = None
+        self._alt_locking = False
+
+    def set_target_altitude(self, z_m: float) -> float:
+        """Ползунок-высота (Aleks 2026-06-11): «выйди на высоту H и держи».
+        Клампит в [ALT_MIN_M, ALT_MAX_M]; ставит target_altitude (= setpoint z-hold
+        P-регулятора в _publish_manual_velocity, он сам выводит дрон на высоту). Лочит
+        Z-control на target; горизонт-teleop ПРОДОЛЖАЕТ работать (согласовано с interface).
+        _alt_locking=True пока |z−target|>ALT_ARRIVE_TOL_M (индикатор перехода для статуса),
+        по достижении → False (контроль высоты «возвращён»). Дискретная команда (не
+        live-follow) — interface шлёт на commit ползунка. Возвращает clamped target."""
+        z = max(ALT_MIN_M, min(ALT_MAX_M, float(z_m)))
+        self.target_altitude = z
+        self._alt_locking = True
+        return z
+
+    @property
+    def altitude_locked(self) -> bool:
+        """True пока идёт вертикальный выход на заданную высоту (контроль у системы)."""
+        return self._alt_locking
+
+    @property
+    def target_altitude_m(self) -> float:
+        """Текущий целевой setpoint высоты (м, clamped)."""
+        return self.target_altitude
 
     def _clamp_velocity_body(self, vx: float, vy: float) -> tuple[float, float]:
         """Safety-CBF (rl-lab B4): гасит компоненту скорости В СТОРОНУ близкой стены ∝

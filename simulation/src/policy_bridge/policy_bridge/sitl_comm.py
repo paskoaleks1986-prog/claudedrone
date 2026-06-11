@@ -63,6 +63,7 @@ from policy_bridge.obs_builder import ObsBuilder
 # ── константы взлёта/посадки (= takeoff_node, single source при правках сверять) ─
 TARGET_ALTITUDE_M = 2.0       # NAV_TAKEOFF target (takeoff_node.TARGET_ALTITUDE)
 CLIMB_ARRIVAL_M = 1.8         # z ≥ это = climb done (takeoff_node.CLIMB_ARRIVAL_M)
+CLIMB_ARRIVAL_FRAC = 0.9      # для низких целей (ползунок 0.5–2.2): climb done при z≥frac·target
 CLIMB_TIMEOUT_S = 15.0
 EKF_SETTLE_S = 8.0            # после GUIDED ждём схождения EKF/гиро перед arm
 HOVER_STABILIZE_S = 5.0       # z в полосе НЕПРЕРЫВНО столько = stable
@@ -527,12 +528,15 @@ class MavrosSITLComm:
         self._call(self._takeoff_cli, req, "NAV_TAKEOFF")
         if self.verbose:
             self._log.info(f"NAV_TAKEOFF {self.target_altitude}m, climb…")
+        # climb-arrival относительно target (поддержка низких высот ползунка 0.5–2.2);
+        # для высоких целей (≥2.0) = legacy 1.8м (min не меняет старое поведение).
+        arrival_z = min(CLIMB_ARRIVAL_M, CLIMB_ARRIVAL_FRAC * self.target_altitude)
         t0 = time.monotonic()
         while True:
             z = self.obs_builder.pose.z_m
-            if z >= CLIMB_ARRIVAL_M:
+            if z >= arrival_z:
                 if self.verbose:
-                    self._log.info(f"climb done z={z:.2f}m")
+                    self._log.info(f"climb done z={z:.2f}m (target {self.target_altitude:.2f})")
                 return
             if not self._state.armed:
                 raise RuntimeError("disarmed во время climb")
@@ -544,7 +548,7 @@ class MavrosSITLComm:
                 # hard_reset → relaunch чистого SITL = единственный надёжный
                 # re-takeoff (train_50k.log 2026-06-09).
                 raise RuntimeError(
-                    f"climb timeout z={z:.2f}m < {CLIMB_ARRIVAL_M} за {CLIMB_TIMEOUT_S:.0f}s"
+                    f"climb timeout z={z:.2f}m < {arrival_z:.2f} за {CLIMB_TIMEOUT_S:.0f}s"
                 )
             time.sleep(0.1)
 

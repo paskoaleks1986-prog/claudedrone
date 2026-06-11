@@ -62,7 +62,7 @@
       <link name="link">
         <collision name="c"><geometry><box><size>6.3 0.15 2.5</size></box></geometry></collision>
         <visual name="v"><geometry><box><size>6.3 0.15 2.5</size></box></geometry>
-          <material><ambient>0.80 0.82 0.85 1</ambient><diffuse>0.80 0.82 0.85 1</diffuse></material></visual>
+          <material><ambient>0.85 0.12 0.12 1</ambient><diffuse>0.85 0.12 0.12 1</diffuse></material></visual>
       </link>
     </model>
     <model name="wall_south">
@@ -108,10 +108,11 @@
       </link>
     </model>
 
-    <!-- Дрон — юго-западный угол -->
+    <!-- Дрон — открытый центр (≈2.9м до стен > prearm proximity 0.6м).
+         Был угол (-2.3,-2.3): 0.52м до стены → PreArm Proximity FAIL (interface 2026-06-11). -->
     <include>
       <uri>model://iris_claudedrone</uri>
-      <pose>-2.3 -2.3 0.2 0 0 0</pose>
+      <pose>0 0 0.2 0 0 0</pose>
     </include>
 
   </world>
