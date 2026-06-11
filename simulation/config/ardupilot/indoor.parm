@@ -95,7 +95,12 @@ WP_YAW_BEHAVIOR 0
 # → DISTANCE_SENSOR → FC). Без forwarder'а = "PreArm: No Data" (запускать вместе).
 # PRX1 = 6×VL53 proximity (id 1-6, yaw-ориентации). RNGFND2 = TF-Luna down
 # (id 7 PITCH_270). RNGFND1 type 10 + min/max 0.10/6.40.
-PRX1_TYPE 2
+# ⚠ MANUAL BRINGUP (Aleks 2026-06-11): AP-side avoidance ВЫРУБЛЕН — proximity-avoidance
+# уводил дрон боком вдоль стены, игнорируя стик («что ни жми — летит в одну сторону»).
+# AVOID_ENABLE 0 = AP не трогает velocity-setpoint. PRX1_TYPE 0 = нет proximity-avoidance
+# и нет proximity-prearm (снимает блокер 0.52м). RL/deploy parity — вернуть отдельно.
+AVOID_ENABLE 0
+PRX1_TYPE 0
 PRX1_ORIENT 0
 RNGFND1_TYPE 10
 RNGFND1_MIN 0.10

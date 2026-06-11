@@ -322,6 +322,7 @@ class ActionExecutor:
         settle_hover_s: float = 0.1,
         visited_update_fn: Callable[[float, float], None] | None = None,
         get_speed_m_s: Callable[[], float] | None = None,
+        get_vel_world: Callable[[], tuple[float, float]] | None = None,
         # 6 raw VL53 (м): [0]=0°front..[3]=180°rear..[5]=300°. Pre-maneuver safety
         # (min-perimeter gate + retreat к max-ToF, Aleks 2026-06-10).
         get_perimeter_distances: Callable[[], list] | None = None,
@@ -359,6 +360,9 @@ class ActionExecutor:
         self._get_free_run_cells = get_free_run_cells
         # v2 run F: |v| для velocity-gated arrival (None → гейт отключён)
         self._get_speed_m_s = get_speed_m_s
+        # DIRDIAG: мировая скорость (vwx,vwy) для проверки frame-mapping по логам
+        self._get_vel_world = get_vel_world
+        self._dirdiag_t = 0.0
         # attitude-aware settle: tilt (рад) live-accessor (None → фикс. sleep)
         self._get_tilt_rad = get_tilt_rad
 
@@ -489,9 +493,10 @@ class ActionExecutor:
         run F план (а): при активном carrot-сегменте публикуем промежуточную
         точку, движущуюся к финальному target со скоростью режима.
         """
-        # Ручной режим (Aleks 2026-06-11): ЕДИНЫЙ контроллер — приоритетнее всего.
-        # Чинит баг «ползунок не работает в hover»: высота управляется и без cmd_vel.
-        if self._manual_flight and not self._safety_hold:
+        # Ручной режим (Aleks 2026-06-11): ЕДИНЫЙ и АБСОЛЮТНЫЙ контроллер — выше всего.
+        # Aleks-пилот: НИКАКАЯ safety не вмешивается (safety_hold НЕ глушит стик, клэмп/
+        # retreat/backup сняты). Стик = единственный источник движения. RL/deploy — отдельно.
+        if self._manual_flight:
             self._publish_manual_flight()
             return
         # FlightRL-v1 непрерывный velocity-режим (rl-lab B2/B4): приоритетный путь.
@@ -616,43 +621,58 @@ class ActionExecutor:
             and (time.monotonic() - self._manual_vel_t) < MANUAL_VEL_TIMEOUT_S
         )
         if fresh:
+            # ЖИВОЙ ЗАМЕР (Aleks+DIRDIAG 2026-06-11 17:2x) — РЕШАЮЩИЙ: setpoint применялся
+            # в МИРОВОЙ системе, НЕ body. Одна команда vx давала противоположный курс при
+            # разном heading (head=+175°→назад, head=−14°→вперёд). θ_world=achieved+head
+            # железно: vx>0→world+X(0°), vy>0→world+Y(90°), НЕЗАВИСИМО от носа ⇒
+            # FRAME_BODY_OFFSET_NED здесь НЕ крутится с носом (применён как LOCAL_NED).
+            # Замер: velocity.(x,y) → world(x,y) ИДЕНТИЧНО (без свопа/негации).
+            # ФИКС: САМИ вращаем body→world по heading (как proven _publish_manual_velocity/
+            # action7) и шлём мировую скорость → «вперёд» = вдоль носа при ЛЮБОМ курсе.
+            # ⚠ НЕ перепроверено живьём (Aleks ушёл в ребут после этого замера).
             vx, vy, yaw_rate = self._manual_vel
-            vx, vy = self._clamp_velocity_body(vx, vy)
-            moving = abs(vx) > MANUAL_MOVE_EPS or abs(vy) > MANUAL_MOVE_EPS
-            if moving:
-                # ГОРИЗОНТ-полёт: VELOCITY setpoint (body→world) + vz(P) + yaw_rate.
-                # Центр не держим — это реальное перемещение (дуга при одновременном yaw — норма).
-                yaw = pose.heading_rad
-                wx = vx * math.cos(yaw) - vy * math.sin(yaw)
-                wy = vx * math.sin(yaw) + vy * math.cos(yaw)
-                vz = max(-MANUAL_VZ_MAX_M_S, min(MANUAL_VZ_MAX_M_S,
-                                                 MANUAL_Z_KP * (self.target_altitude - pose.z_m)))
-                vmsg = PositionTarget()
-                vmsg.header.frame_id = "map"
-                vmsg.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
-                vmsg.type_mask = RAW_TYPE_MASK_VEL_YAWRATE
-                vmsg.velocity.x = wx
-                vmsg.velocity.y = wy
-                vmsg.velocity.z = vz
-                vmsg.yaw_rate = float(yaw_rate)
-                vmsg.header.stamp = self.node.get_clock().now().to_msg()
-                self.raw_pub.publish(vmsg)
-                # запоминаем центр (x,y) и текущий yaw — для вращения/hover без отскока
-                self._hold_x, self._hold_y, self._hold_yaw = pose.x_m, pose.y_m, yaw
-            else:
-                # ВРАЩЕНИЕ НА МЕСТЕ (vx=vy≈0, yaw_rate≠0) и/или только высота:
-                # POSITION-hold центра (_hold_x,_hold_y, target_alt) + yaw_rate → AP держит
-                # x,y (нет velocity-дрейфа = нет спирали) и вращает дрон ВОКРУГ СЕБЯ.
-                # _hold_x/_hold_y НЕ обновляем (держим точку, вокруг которой крутимся);
-                # _hold_yaw тянем за текущим, чтобы при отпускании hover держал куда повернулись.
-                vmsg = _make_raw_target(
-                    self._hold_x, self._hold_y, self.target_altitude,
-                    0.0, RAW_TYPE_MASK_POS_YAWRATE,
-                )
-                vmsg.yaw_rate = float(yaw_rate)
-                vmsg.header.stamp = self.node.get_clock().now().to_msg()
-                self.raw_pub.publish(vmsg)
-                self._hold_yaw = pose.heading_rad
+            vz = max(-MANUAL_VZ_MAX_M_S, min(MANUAL_VZ_MAX_M_S,
+                                             MANUAL_Z_KP * (self.target_altitude - pose.z_m)))
+            yaw = pose.heading_rad
+            wx = vx * math.cos(yaw) - vy * math.sin(yaw)   # body→world (vy=влево+)
+            wy = vx * math.sin(yaw) + vy * math.cos(yaw)
+            vmsg = PositionTarget()
+            vmsg.header.frame_id = "map"
+            vmsg.coordinate_frame = PositionTarget.FRAME_BODY_OFFSET_NED
+            vmsg.type_mask = RAW_TYPE_MASK_VEL_YAWRATE
+            vmsg.velocity.x = wx       # world-X (нос спроецирован по heading)
+            vmsg.velocity.y = wy       # world-Y
+            vmsg.velocity.z = vz       # вверх+ (высота подтверждена живьём)
+            vmsg.yaw_rate = float(yaw_rate)
+            vmsg.header.stamp = self.node.get_clock().now().to_msg()
+            self.raw_pub.publish(vmsg)
+            self._hold_x, self._hold_y, self._hold_yaw = pose.x_m, pose.y_m, pose.heading_rad
+            # DIRDIAG (Aleks 2026-06-11): валидация body-frame mapping ПО ЛОГАМ (sim не у стенда,
+            # запускает interface). achieved = угол(мировой скорости) − heading; оба из odom, поэтому
+            # odom-vs-AHRS оффсет ~40° сокращается и не мешает проверке «вперёд vs вбок».
+            now = time.monotonic()
+            if (
+                self._get_vel_world is not None
+                and (abs(vx) + abs(vy)) > 0.05
+                and (now - self._dirdiag_t) > 1.5
+            ):
+                self._dirdiag_t = now
+                vwx, vwy = self._get_vel_world()
+                spd = math.hypot(vwx, vwy)
+                head_deg = math.degrees(pose.heading_rad)
+                if spd > 0.05:
+                    achieved = math.degrees(math.atan2(vwy, vwx) - pose.heading_rad)
+                    achieved = (achieved + 180.0) % 360.0 - 180.0
+                    self.node.get_logger().info(
+                        f"DIRDIAG cmd(vx={vx:+.2f} vy={vy:+.2f} yr={yaw_rate:+.2f}) "
+                        f"head={head_deg:+.0f}° |v|={spd:.2f} achieved={achieved:+.0f}° "
+                        "[0°=вперёд +90°=влево −90°=вправо ±180°=назад]"
+                    )
+                else:
+                    self.node.get_logger().info(
+                        f"DIRDIAG cmd(vx={vx:+.2f} vy={vy:+.2f} yr={yaw_rate:+.2f}) "
+                        f"head={head_deg:+.0f}° |v|≈0 (нет хода — yaw-only/клэмп/разгон)"
+                    )
         else:
             target = _make_raw_target(
                 self._hold_x, self._hold_y, self.target_altitude,

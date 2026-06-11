@@ -165,7 +165,9 @@ class MavrosSITLComm:
         # DroneMapEnv) → action7 стопает по полной сетке, ловит углы. None →
         # дефолт self._front_free_run (ch0-передний, для standalone smoke).
         get_free_run_cells: Callable[[], int] | None = None,
+        manual_mode: bool = False,
     ) -> None:
+        self._manual_mode = bool(manual_mode)   # ручной облёт Aleks: глушим RL-костыли (crash-latch)
         self._free_run_override = get_free_run_cells
         self.room_x = float(room_x_m)
         self.room_y = float(room_y_m)
@@ -256,6 +258,7 @@ class MavrosSITLComm:
             grid_size=int(round(max(self.room_x, self.room_y) / self.cell_size)),
             linear_speed=self.linear_speed,
             get_speed_m_s=lambda: self.obs_builder.speed_m_s,
+            get_vel_world=lambda: self.obs_builder.vel_world,
             get_tilt_rad=lambda: self._tilt_rad,
             v2_sensor_mask=True,
             wall_stop_cells=self.wall_stop_cells,
@@ -322,7 +325,7 @@ class MavrosSITLComm:
             # фон-гейт (поверх внутреннего гейта _is_crash_imminent: эффект. tilt-гейт
             # = 0.6с, z-гейт = 0.3с; оба фильтруют транзиент разгона, ловят реальный
             # переворот/падение). Латч держится до next start_episode.
-            if self._airborne and not self._crash_latched:
+            if self._airborne and not self._crash_latched and not self._manual_mode:
                 if self._is_crash_imminent():
                     if self._tilt_latch_start is None:
                         self._tilt_latch_start = time.monotonic()
