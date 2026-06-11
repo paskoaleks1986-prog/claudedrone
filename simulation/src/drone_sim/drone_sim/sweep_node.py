@@ -60,6 +60,7 @@ class SweepNode(Node):
 
         # subscribers
         self.sub_start = self.create_subscription(Empty, '/drone/sweep/start', self._on_start, 1)
+        self.sub_stop = self.create_subscription(Empty, '/drone/sweep/stop', self._on_stop, 1)
         self.sub_scan = self.create_subscription(LaserScan, '/scan/sweep', self._on_scan, 10)
 
         # 50 Hz tick — выше, чем TF-Luna 10 Hz, для отзывчивого FSM
@@ -78,6 +79,16 @@ class SweepNode(Node):
         if msg.ranges:
             self._last_range = float(msg.ranges[0])
             self._last_range_t = self._now_s()
+
+    def _on_stop(self, _msg: Empty):
+        # GUI radio-button (Aleks 2026-06-11): прерывание разового sweep на полпути
+        # (mode 2). До этого sweep_node не имел /stop — проход ~21.7с был неотменяем.
+        if not self._sweeping:
+            return
+        self.get_logger().info('sweep: STOP — прерываю проход')
+        self._sweeping = False
+        self._step_started_t = None
+        self.pub_status.publish(String(data='STOPPED'))
 
     def _on_start(self, _msg: Empty):
         if self._sweeping:

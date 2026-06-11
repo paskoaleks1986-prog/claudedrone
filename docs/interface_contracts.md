@@ -161,3 +161,84 @@ RL-env Discrete(8) при необходимости остаётся отдел
 
 _Сверено/спроектировано: 2026-06-10, ветка feature/pre-train-preparation. `[ЕСТЬ]` — live;
 `[НОВОЕ]` — bridge реализует под новую архитектуру._
+
+---
+
+## 7. TF-Luna sweep — режимы серво (GUI radio-button, Aleks 2026-06-11)
+
+Цепочка железа: `…/sg90/target_angle → servo_cmd_node (клемп 0..π) → /drone/sg90/cmd
+→ ros_gz_bridge → JointPositionController (model.sdf) → серво едет → TF-Luna на arm → /scan/sweep`.
+TF-Luna `/scan/sweep` (LaserScan, 10 Гц) **всегда** выдаёт ОДИН луч в текущем угле серво —
+«sweep» создаётся движением серво, а его задаёт отдельная нода.
+
+**VL53 ×6 + TF-Luna down — потоковые ВСЕГДА** (gz_bridge, не зависят от режима sweep):
+`/mavros/vl53_ch0..5`, `/drone/vl53l0x/ch0..5`, `/drone/tf_luna_down` (LaserScan 10 Гц).
+
+### Топики (типы подтверждены live 2026-06-11, стек session `sim`)
+| топик | тип | напр. | смысл |
+|---|---|---|---|
+| `/drone/sweep/start` | `std_msgs/Empty` | GUI→ | триггер разового прохода (mode 2 / 4) |
+| `/drone/sweep/stop` | `std_msgs/Empty` | GUI→ | стоп цикла (autoscan / sweep_storage; sweep_node НЕ слушает) |
+| `/drone/sweep/resume` | `std_msgs/Empty` | GUI→ | снять стоп (только autoscan) |
+| `/drone/sg90/target_angle` | `std_msgs/Float64` | GUI→ | прямой угол серво 0..π рад (mode 5) |
+| `/drone/sg90/cmd` | `std_msgs/Float64` | внутр. | выход servo_cmd → gz (GUI сюда НЕ пишет) |
+| `/scan/sweep` | `sensor_msgs/LaserScan` | →GUI | TF-Luna одиночный луч @10 Гц (ranges[0]) |
+| `/drone/sweep/result` | `sensor_msgs/LaserScan` | →GUI | агрегированный проход (mode 2/3/4) |
+| `/drone/sweep/progress` | `std_msgs/Float32` | →GUI | прогресс прохода 0..1 (mode 2) |
+| `/scan/status` | `std_msgs/String` | →GUI | `SCANNING` / `COMPLETE` / `STOPPED` |
+
+### Режимы радиокнопки
+| # | режим | как включить | runtime-переключаемо? | нода |
+|---|---|---|---|---|
+| 1 | **Статичный вперёд (90°)** | `Float64(π/2)` → `/drone/sg90/target_angle` (или ничего — дефолт после взлёта) | ✅ да | servo_cmd_node |
+| 2 | **Разовый sweep** | `Empty` → `/drone/sweep/start` | ✅ да (нода уже жива) | sweep_node |
+| 3 | **Autoscan** (авто-цикл) | relaunch `autoscan:=true`, ЛИБО GUI сам шлёт start по таймеру | ⚠ нода — нет; эмуляция — ✅ | autoscan_node |
+| 4 | **Непрерывный треугольный + NPZ** | relaunch `sweep_storage:=true` (заменяет sweep_node) | ❌ нужен restart | sweep_storage_node |
+| 5 | **Прямое управление серво** | ползунок → `Float64(0..π)` → `/drone/sg90/target_angle` | ✅ да | servo_cmd_node |
+
+### Параметры режимов (дефолты)
+- **mode 2 (sweep_node):** step 1° (`step_rad`), settle 120 мс (`settle_ms`) → **~181 шаг ≈ 21.7 с/проход**. ⚠ для живого облёта медленно — можно step 3–5°, settle 60 мс.
+- **mode 3 (autoscan_node):** `initial_delay_s=5.0`, `cooldown_s=10.0`. Стоп/резюм рантайм: `/drone/sweep/stop`÷`/resume`.
+- **mode 4 (sweep_storage_node):** `cycle_period_s=9.0` (триангл 0→π→0), `cmd_rate_hz=50`, `output_mode=laserscan|pointcloud2`, `n_bins=90`, NPZ-дамп в `$RESEARCHBEST_ROOT/output_data/TASK-047/`.
+
+### ⚠ Грабли для GUI
+1. **Режимы 3 и 4 НЕ переключаются радиокнопкой на лету** — это launch-флаги (нужен рестарт стека). 1/2/5 — чистые pub'ы, мгновенно.
+2. **Mode 3 лучше эмулировать в GUI/bridge** без рестарта: `sweep_node` уже жив → GUI шлёт `Empty`→`/drone/sweep/start` по таймеру (start, ждать `COMPLETE` на `/scan/status`, через cooldown повторить). Даёт autoscan-поведение на текущем стеке.
+3. **Разовый sweep (mode 2) НЕ прерывается** — у `sweep_node` нет `/stop`. Переключение с mode 2 в середине прохода (~22 с) не остановит серво до конца. Учитывать в UI (disable радио пока `SCANNING`, или ждать `COMPLETE`).
+4. **Mode 4 (sweep_storage) конфликтует с sweep_node** — оба слушают `/drone/sweep/start` и водят серво. Запускать ТОЛЬКО один (launch это и делает: sweep_storage ВМЕСТО sweep_node).
+5. **Владение серво:** в ручном `manual_fly` executor ставит серво в 90° лишь ОДНАЖДЫ на взлёте, далее не трогает → серво свободно для GUI/sweep. Конфликта нет, **пока GUI не шлёт target_angle и sweep одновременно** (радиокнопка = один источник).
+6. **Mount-offset:** дистанция до стены от ЦЕНТРА дрона = `ranges[0] + 0.1 м`.
+
+_Live-проверка 2026-06-11 (стек session `sim`, `--no-autoscan`): подняты `servo_cmd_node`, `sweep_node`,
+`distance_sensor_forwarder`; `autoscan_node`/`sweep_storage_node` — НЕ запущены. Типы топиков сверены `ros2 topic type`._
+
+### 7.1 Live-включение mode 3/4 БЕЗ рестарта стека (simulation 2026-06-11, ветка `v3`)
+
+ROS2-ноды можно добавлять в живой граф. Под радиокнопку добавлены параметры
+(дефолты сохраняют прежнее поведение, симлинк-инсталл → правки живут без rebuild):
+- `sweep_node`: **новый sub `/drone/sweep/stop` (Empty)** — mode 2 теперь прерываемый (раньше проход ~21.7с был неотменяем). ⚠ Оживёт только после рестарта sweep_node (нода уже крутится со старым кодом).
+- `autoscan_node`: **param `autostart` (bool, default true)** — `false` → нода поднимается в STOPPED, цикл стартует по `/drone/sweep/resume`, пауза `/drone/sweep/stop`.
+- `sweep_storage_node`: **param `loop` (bool, default false)** — `true` → после каждого триангл-цикла стартует следующий (непрерывный mode 4) до `/…/stop`. Топики уже параметризуемы (start/stop/output/status/cmd).
+
+**Mode 3 (autoscan) — spawn idle в живой стек, без рестарта:**
+```
+ros2 run drone_sim autoscan --ros-args -p autostart:=false -p cooldown_s:=10.0
+```
+GUI: выбрал mode 3 → `Empty`→`/drone/sweep/resume` (autoscan гонит `/drone/sweep/start` → существующий sweep_node метёт циклом). Снял → `Empty`→`/drone/sweep/stop`. Статус — `/scan/status`.
+
+**Mode 4 (sweep_storage) — spawn на ОТДЕЛЬНЫХ топиках (не дерётся с sweep_node за серво):**
+```
+ros2 run drone_sim sweep_storage --ros-args \
+  -p loop:=true -p cycle_period_s:=9.0 \
+  -p cmd_topic:=/drone/sg90/target_angle \
+  -p start_topic:=/drone/sweep/tri/start \
+  -p stop_topic:=/drone/sweep/tri/stop \
+  -p output_topic_laserscan:=/drone/sweep/tri/result \
+  -p status_topic:=/scan/tri/status \
+  -p frame_id:=sg90_arm
+```
+GUI: выбрал mode 4 → `Empty`→`/drone/sweep/tri/start` (непрерывный триангл). Снял → `Empty`→`/drone/sweep/tri/stop` (парковка серво в 0). Результат `/drone/sweep/tri/result` (LaserScan, n_bins=90), статус `/scan/tri/status`. cmd идёт через `target_angle`→servo_cmd (клемп 0..π).
+
+⚠ **Один источник угла за раз** — радиокнопка гарантирует, что активен ровно один режим; sweep_node(`/drone/sweep/start`), autoscan и sweep_storage(`/drone/sweep/tri/*`) разведены по топикам, но физически серво одно. При смене режима GUI должен сначала остановить текущий (stop старого), потом включить новый.
+
+⚠ **Не протестировано на стенде** (sim не поднимает стек сам). py_compile OK; проверить при ближайшем bringup. Альтернатива spawn'у — могу добавить флаг `sweep_modes:=true` в `drone.launch.py` (предзагрузка всех провайдеров idle одним стеком) — скажи, если так удобнее.
