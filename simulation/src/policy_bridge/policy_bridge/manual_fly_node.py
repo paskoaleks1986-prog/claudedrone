@@ -64,17 +64,16 @@ def main() -> int:
     # Высота взлёта «с указанием» (Aleks 2026-06-11): клампим в диапазон ползунка.
     takeoff_alt = max(ALT_MIN_M, min(ALT_MAX_M, args.alt))
 
-    restart = f"{SIM}/help_scripts/launch.sh --restart-sitl -s {args.session} -w {args.world} -d"
-    relaunch = (
-        f"{SIM}/help_scripts/launch.sh --full --mavros --no-autoscan "
-        f"--no-safety-guard --gui -w {args.world} -s {args.session} -d -log"
-    )
-    gz_log = f"/data/drone_media/sim/_runtime_logs/{args.session}-gz.log"
-
+    # Aleks 2026-06-11: РУЧНОЙ режим НЕ перезапускает стек сам. Teleop-нода не должна
+    # дёргать launch.sh (раньше watchdog на climb-timeout запускал FULL relaunch
+    # `-s rltrain` поверх живого стека → MAVLINK_PORT 5760 already bound → мусор).
+    # relaunch/restart=None → hard_reset() деградирует в «soft land+disarm+warn»
+    # (sitl_comm.py:747), стек остаётся живым. Если взлёт реально не идёт — это EGL/
+    # рендер (фиксится env __EGL_VENDOR_LIBRARY_FILENAMES в launch.sh), не relaunch.
     comm = MavrosSITLComm(
         room_x_m=args.room, room_y_m=args.room, cell_size_m=0.1,
         target_altitude_m=takeoff_alt, sitl_instance=args.instance,
-        sitl_restart_cmd=restart, relaunch_cmd=relaunch, gz_log_path=gz_log,
+        sitl_restart_cmd=None, relaunch_cmd=None, gz_log_path=None,
     )
     ex = comm.executor_act
 

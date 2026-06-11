@@ -236,7 +236,13 @@ cd '$WS_DIR'
 source '$ROS_SETUP'
 export GZ_SIM_RESOURCE_PATH='$GZ_RESOURCE_EXTRA'
 export GZ_PARTITION='$GZ_PARTITION'
-echo "[gz] world=$WORLD_PATH flags=$GZ_FLAGS partition=$GZ_PARTITION"
+# Aleks 2026-06-11: форсим NVIDIA-EGL для Ogre2 offscreen-рендера сенсоров.
+# Без этого GLVND уходил в Mesa-libEGL → 'failed to create dri2 screen, driver(null)'
+# на RTX 5070 → ray-сенсоры не рендерятся, физика не шагает → дрон не взлетает (z=0.21).
+# eglinfo подтвердил: NVIDIA EGL (GBM) рабочий, нужно лишь не дать GLVND выбрать Mesa.
+export __EGL_VENDOR_LIBRARY_FILENAMES='/usr/share/glvnd/egl_vendor.d/10_nvidia.json'
+export __GLX_VENDOR_LIBRARY_NAME='nvidia'
+echo "[gz] world=$WORLD_PATH flags=$GZ_FLAGS partition=$GZ_PARTITION egl=nvidia"
 exec gz sim '$WORLD_PATH'$GZ_FLAGS
 EOF
 }
