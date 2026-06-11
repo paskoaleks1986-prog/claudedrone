@@ -97,6 +97,17 @@ RAW_TYPE_MASK_VEL_YAW = (
     | PositionTarget.IGNORE_AFX | PositionTarget.IGNORE_AFY | PositionTarget.IGNORE_AFZ
     | PositionTarget.IGNORE_YAW_RATE
 )  # Active: VX, VY, VZ, YAW
+
+# Position+yaw_rate маска (Aleks 2026-06-11, фикс «спирали» при вращении на месте):
+# чистый yaw (vx=vy=0) через VELOCITY=(0,0)+yaw_rate НЕ держит точку — guided velocity-
+# контроллер AP дрейфует (известный дрейф pos/vel-контроллера) → дрон описывает окружность
+# вместо вращения вокруг центра. Решение: держим POSITION (hold_x,hold_y,z) И крутим yaw_rate
+# → AP активно держит x,y (нет дрейфа) и вращает на месте. Игнорим velocity+accel+абсолютный yaw.
+RAW_TYPE_MASK_POS_YAWRATE = (
+    PositionTarget.IGNORE_VX | PositionTarget.IGNORE_VY | PositionTarget.IGNORE_VZ
+    | PositionTarget.IGNORE_AFX | PositionTarget.IGNORE_AFY | PositionTarget.IGNORE_AFZ
+    | PositionTarget.IGNORE_YAW
+)  # Active: PX, PY, PZ, YAW_RATE
 # accel-ramp velocity-action7 (Aleks 2026-06-10): плавный разгон/торможение убирает
 # tilt-транзиент старта/стопа (был ~8° на step-velocity → цель ≤5°).
 VELOCITY_RAMP_S = 0.4        # время линейного разгона 0→speed
@@ -128,6 +139,8 @@ CLAMP_STOP_M = 0.50        # ToF в направлении движения ≤ 
 CLAMP_FULL_M = 1.00        # ≥ → без клэмпа (полная скорость)
 MANUAL_Z_KP = 0.8          # P-коэф удержания высоты в velocity-режиме (vz = Kp·Δz)
 MANUAL_VZ_MAX_M_S = 0.5    # клэмп vertical velocity ползунка-высоты (плавный выход)
+MANUAL_MOVE_EPS = 0.03     # |vx|,|vy| ≤ → считаем «нет горизонт-движения» → вращение/высота
+                           # держим POSITION-hold центра (без velocity-дрейфа → нет спирали)
 # Ползунок-высота (Aleks 2026-06-11): дискретная команда «выйди на высоту H и держи».
 # Не live-follow — interface шлёт на commit. Система ЛОЧИТ горизонт-контроль на
 # время вертикального выхода, по достижении ОТДАЁТ контроль.
@@ -605,23 +618,41 @@ class ActionExecutor:
         if fresh:
             vx, vy, yaw_rate = self._manual_vel
             vx, vy = self._clamp_velocity_body(vx, vy)
-            yaw = pose.heading_rad
-            wx = vx * math.cos(yaw) - vy * math.sin(yaw)
-            wy = vx * math.sin(yaw) + vy * math.cos(yaw)
-            vz = max(-MANUAL_VZ_MAX_M_S, min(MANUAL_VZ_MAX_M_S,
-                                             MANUAL_Z_KP * (self.target_altitude - pose.z_m)))
-            vmsg = PositionTarget()
-            vmsg.header.frame_id = "map"
-            vmsg.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
-            vmsg.type_mask = RAW_TYPE_MASK_VEL_YAWRATE
-            vmsg.velocity.x = wx
-            vmsg.velocity.y = wy
-            vmsg.velocity.z = vz
-            vmsg.yaw_rate = float(yaw_rate)
-            vmsg.header.stamp = self.node.get_clock().now().to_msg()
-            self.raw_pub.publish(vmsg)
-            # держим текущую позицию для hover после отпускания стика
-            self._hold_x, self._hold_y, self._hold_yaw = pose.x_m, pose.y_m, yaw
+            moving = abs(vx) > MANUAL_MOVE_EPS or abs(vy) > MANUAL_MOVE_EPS
+            if moving:
+                # ГОРИЗОНТ-полёт: VELOCITY setpoint (body→world) + vz(P) + yaw_rate.
+                # Центр не держим — это реальное перемещение (дуга при одновременном yaw — норма).
+                yaw = pose.heading_rad
+                wx = vx * math.cos(yaw) - vy * math.sin(yaw)
+                wy = vx * math.sin(yaw) + vy * math.cos(yaw)
+                vz = max(-MANUAL_VZ_MAX_M_S, min(MANUAL_VZ_MAX_M_S,
+                                                 MANUAL_Z_KP * (self.target_altitude - pose.z_m)))
+                vmsg = PositionTarget()
+                vmsg.header.frame_id = "map"
+                vmsg.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
+                vmsg.type_mask = RAW_TYPE_MASK_VEL_YAWRATE
+                vmsg.velocity.x = wx
+                vmsg.velocity.y = wy
+                vmsg.velocity.z = vz
+                vmsg.yaw_rate = float(yaw_rate)
+                vmsg.header.stamp = self.node.get_clock().now().to_msg()
+                self.raw_pub.publish(vmsg)
+                # запоминаем центр (x,y) и текущий yaw — для вращения/hover без отскока
+                self._hold_x, self._hold_y, self._hold_yaw = pose.x_m, pose.y_m, yaw
+            else:
+                # ВРАЩЕНИЕ НА МЕСТЕ (vx=vy≈0, yaw_rate≠0) и/или только высота:
+                # POSITION-hold центра (_hold_x,_hold_y, target_alt) + yaw_rate → AP держит
+                # x,y (нет velocity-дрейфа = нет спирали) и вращает дрон ВОКРУГ СЕБЯ.
+                # _hold_x/_hold_y НЕ обновляем (держим точку, вокруг которой крутимся);
+                # _hold_yaw тянем за текущим, чтобы при отпускании hover держал куда повернулись.
+                vmsg = _make_raw_target(
+                    self._hold_x, self._hold_y, self.target_altitude,
+                    0.0, RAW_TYPE_MASK_POS_YAWRATE,
+                )
+                vmsg.yaw_rate = float(yaw_rate)
+                vmsg.header.stamp = self.node.get_clock().now().to_msg()
+                self.raw_pub.publish(vmsg)
+                self._hold_yaw = pose.heading_rad
         else:
             target = _make_raw_target(
                 self._hold_x, self._hold_y, self.target_altitude,
