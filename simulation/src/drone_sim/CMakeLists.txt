@@ -66,6 +66,11 @@ install(PROGRAMS
   RENAME safety_guard
   DESTINATION lib/${PROJECT_NAME}
 )
+install(PROGRAMS
+  drone_sim/scan_points_node.py
+  RENAME scan_points
+  DESTINATION lib/${PROJECT_NAME}
+)
 # Ресурсы — launch, models, worlds
 install(DIRECTORY
   launch
