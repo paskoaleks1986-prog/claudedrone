@@ -62,7 +62,9 @@ class ScanPointsNode(Node):
         self.precise_topic = str(p("precise_topic", "/drone/scan/precise").value)
         self.odom_topic = str(p("odom_topic", "/mavros/local_position/odom").value)
         self.servo_topic = str(p("servo_topic", "/drone/sg90/cmd").value)
-        self.record_topic = str(p("record_topic", "/drone/scan/record").value)
+        # /scan/record (согласовано с interface 2026-06-14, parity §6): interface
+        # control_api (scan_record_node) подписан сюда → пишет flight_log.jsonl.
+        self.record_topic = str(p("record_topic", "/scan/record").value)
         self.pose_info_topic = str(
             p("pose_info_topic", f"/world/{world}/pose/info").value
         )
@@ -162,18 +164,25 @@ class ScanPointsNode(Node):
 
     # ---- сборка и эмит scan-записи ----
 
+    def _publish_record(self, record: dict) -> None:
+        """Эмит одной записи: на топик /scan/record (interface-writer) + опц. в jsonl."""
+        self.pub_record.publish(String(data=json.dumps(record, ensure_ascii=False)))
+        self._append_jsonl(record)
+
     def _emit(self, record: dict) -> None:
-        if not self._meta_written and self.jsonl_path:
-            self._append_jsonl({
+        # meta — ПЕРВОЙ записью (на топик И в jsonl), self-describing mount: interface
+        # recover_range/true_point восстанавливает gt-точку без хардкода sim-констант.
+        if not self._meta_written:
+            self._publish_record({
                 "rec": "meta", "schema": "scan_store/1.0", "run_id": self.run_id,
                 "world": self.pose_info_topic.split("/")[2] if "/world/" in self.pose_info_topic else "",
                 "frame": {"world": "x_right_y_north_m", "angle": "rad_ccw"},
+                "mount": {"fwd": MOUNT_FWD_M, "z": MOUNT_Z_M},
+                "servo_zero_offset": SERVO_ZERO_OFFSET_RAD,  # bearing_body = θ_servo − offset
                 "units": "m", "t0": self._now(),
             })
             self._meta_written = True
-        line = json.dumps(record, ensure_ascii=False)
-        self.pub_record.publish(String(data=line))
-        self._append_jsonl(record)
+        self._publish_record(record)
 
     def _append_jsonl(self, record: dict) -> None:
         if not self.jsonl_path:

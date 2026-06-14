@@ -95,10 +95,12 @@ Sim эмитит одну `scan`-запись на проход (fan) / выст
   `/world/{world}/pose/info` + servo-θ;
 - на каждый завершённый проход/выстрел: собрать позы (odom+gt на момент скана), посчитать
   world-точки (§2), собрать `scan`-запись (§3);
-- sink: эмит в общий поток `flight_log.jsonl` (C2, надмножество) — durable аппенд +
-  (опц.) Redis live-канал, как договорено в rl-lab §4b. Writer формата = сторона
-  interface (классы Store), sim отдаёт уже посчитанные `scan`-записи (ROS2-топик или
-  прямой аппенд — согласуем с interface).
+- sink (СОГЛАСОВАНО 2026-06-14, parity §6): sim публикует записи в **`/scan/record`**
+  (`std_msgs/String` = JSON одной записи); **writer `flight_log.jsonl` = interface**
+  (`control_api`/`scan_record_node` подписан, аппендит — единый владелец файла). Первая
+  запись — `meta` с **self-describing mount** (`meta.mount:{fwd,z}` + `servo_zero_offset`),
+  чтобы interface `recover_range/true_point` не хардкодил sim-константы. rl-lab на живом
+  стеке файл НЕ пишет (его navigator_rl_node шлёт velocity+state, персист у interface).
 
 ✅ **Gazebo stand-verify ПРОЙДЕН (2026-06-14, base_stand_12x12, свипы на земле + hover 1.2м):**
 (1) `bearing_body` верен — нос=восток (θ=π/2→0), право=южн.стена(−6), лево=ГЛУХАЯ +Y центр-комнаты(1.5);
@@ -107,11 +109,16 @@ Sim эмитит одну `scan`-запись на проход (fan) / выст
 (4) Δ(gt,odom)=0.9см в стабильном hover (dual-pose снимается; реальный дрейф — в динамическом полёте, TODO).
 Визуал: `$DRONE_MEDIA_ROOT/sim/c1-stand-verify-2026-06-14/` (top-down PNG + mp4).
 
-## 6. Открытые вопросы (к rl-lab / Aleks)
+## 6. Открытые вопросы — ✅ ЗАКРЫТЫ (ответы rl-lab 15:43 + interface 16:05/16:40)
 
-1. **Sink-механизм:** sim публикует `scan`-записи в ROS2-топик (interface-writer слушает и
-   пишет `flight_log.jsonl`), ИЛИ sim сам аппендит в файл? Чей процесс владеет файлом на
-   живом стеке (interface control_api держит писатель — логично отдать ему топик).
-2. **range explicit?** хранить `range` полем или восстановление из x,y (см. §2) ок?
-3. **trust-правило (C4):** дефолт `true` + drop inf/out-of-range — достаточно для gen_0?
-4. **continuous per-point поза** (§4) — нужен ли RL-скан в движении в A.1, или только hover-скан?
+1. ✅ **Sink:** sim → топик `/scan/record`; writer `flight_log.jsonl` = **interface**
+   (`scan_record_node`/`control_api`). Реализовано обеими сторонами; цепь замкнута.
+2. ✅ **range:** отдельное поле НЕ нужно — interface `geometry.recover_range` восстанавливает
+   из x,y + `from_pose` + bearing (`export_cartographer(with_true_point=True)` → колонки
+   `range,gt_x,gt_y,gt_z`).
+3. ✅ **trust C4:** дефолт `true` + drop `inf`/вне `[0.2,8.0]` ДОСТАТОЧНО. ⚠ **НИКАКОГО
+   настенного clip / гео-trust на gen_0** (rl-lab §7) — gen_0 = честный «где дрон думал»
+   (дрейф = обучающий сигнал; clip убьёт dual-trajectory пару). Привязка к стене = gen_1/2.
+4. 🟡 **continuous per-point поза:** rl-lab — для A.1 НЕ нужен (SCAN_PRECISE вар.a, hover-скан).
+   Interface добавил опц. `Dot.from_pose`. **Follow-up (по go):** при continuous-свипе класть
+   `from_pose` в КАЖДЫЙ Dot (интерп. odom/gt по `t_rel`). Сейчас per-scan hover — реализован.
