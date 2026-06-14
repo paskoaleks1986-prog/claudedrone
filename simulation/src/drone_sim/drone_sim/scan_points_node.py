@@ -93,6 +93,11 @@ class ScanPointsNode(Node):
 
         self.pub_record = self.create_publisher(String, self.record_topic, 10)
         self._last_sweep_range: float | None = None
+        # meta (self-describing mount) re-публикуется по таймеру: топик НЕ latched, а
+        # interface-writer может подписаться ПОЗЖЕ первого скана → иначе пропустит meta.
+        # Идемпотентно (одинаковая meta); writer дедупит/игнорит повтор. 2026-06-14 hand-over.
+        self._meta: dict | None = None
+        self.create_timer(5.0, self._republish_meta)
 
         self.get_logger().info(
             f"scan_points: result←{self.result_topic} precise←{self.precise_topic} "
@@ -169,18 +174,24 @@ class ScanPointsNode(Node):
         self.pub_record.publish(String(data=json.dumps(record, ensure_ascii=False)))
         self._append_jsonl(record)
 
+    def _republish_meta(self) -> None:
+        """Периодический re-emit meta (для late-subscriber interface-writer)."""
+        if self._meta is not None:
+            self.pub_record.publish(String(data=json.dumps(self._meta, ensure_ascii=False)))
+
     def _emit(self, record: dict) -> None:
         # meta — ПЕРВОЙ записью (на топик И в jsonl), self-describing mount: interface
         # recover_range/true_point восстанавливает gt-точку без хардкода sim-констант.
         if not self._meta_written:
-            self._publish_record({
+            self._meta = {
                 "rec": "meta", "schema": "scan_store/1.0", "run_id": self.run_id,
                 "world": self.pose_info_topic.split("/")[2] if "/world/" in self.pose_info_topic else "",
                 "frame": {"world": "x_right_y_north_m", "angle": "rad_ccw"},
                 "mount": {"fwd": MOUNT_FWD_M, "z": MOUNT_Z_M},
                 "servo_zero_offset": SERVO_ZERO_OFFSET_RAD,  # bearing_body = θ_servo − offset
                 "units": "m", "t0": self._now(),
-            })
+            }
+            self._publish_record(self._meta)
             self._meta_written = True
         self._publish_record(record)
 
