@@ -319,12 +319,17 @@ set-point (см. §2.2). `set_target_altitude` клампит в **[`ALT_MIN_M=0
 
 ### 8.3 S3 — скан-нода: беспараметрический дефолт-триггер (ПОДТВЕРЖДЕНО — уже есть)
 
-- **SCAN_FAN (action 9) → `/drone/sweep/start` (`std_msgs/Empty`)** — уже **беспараметрический**,
-  метёт `SWEEP_MIN_RAD=0.0 .. SWEEP_MAX_RAD=π` (полный веер — ровно дефолт rl-lab). Результат →
-  `/drone/sweep/result` (`LaserScan`, детерминированный полный проход), статус `/scan/status`
-  (`SCANNING`→`COMPLETE`). ⚠ Дефолт step 1°/settle 120 мс = **~21.7 с/проход** — для бюджета
-  RL-эпизода долго; могу объявить RL-дефолт быстрее (step 3-5°, settle 60 мс) параметрами
-  `sweep_node`. Параметры lo/hi/угол ОСТАЮТСЯ для ручного GUI (слой энергооптимизации Aleks).
+- **SCAN_FAN (action 9):**
+  - **RL fast (S3, готово 2026-06-14) → `/drone/sweep/start_fast` (`std_msgs/Empty`)** —
+    беспараметрический **быстрый** проход: coarse `fast_step_rad=5°` / `fast_settle_ms=60`
+    ≈ **37 шагов ≈ ~3.7 с/проход** (≈6× быстрее fine). Это дефолт-триггер RL SCAN_FAN.
+  - **Ручной GUI fine → `/drone/sweep/start` (`std_msgs/Empty`)** — `step 1°/settle 120 мс`
+    ≈ 181 шаг ≈ ~21.7 с/проход (качество картографа). **Не трогается** RL-триггером — отдельные
+    топики, один и тот же серво, но конфигурации независимы.
+  - Оба метут `SWEEP_MIN_RAD=0.0 .. SWEEP_MAX_RAD=π` (полный веер). Результат → `/drone/sweep/result`
+    (`LaserScan`, `angle_increment` = активный step), статус `/scan/status` (`SCANNING`→`COMPLETE`).
+  - ⚠ TF-Luna 10 Гц → settle<100мс упирается в freshness-guard (≈100мс/шаг минимум); реальный
+    выигрыш fast-режима — от МЕНЬШЕГО числа шагов, не от settle.
 - **SCAN_PRECISE (action 10) → фикс-выстрел по носу servo=π/2:** publish `Float64(π/2)` →
   `/drone/sg90/target_angle` (servo_cmd_node клампит [0,π]). Дистанция — `ranges[0]` с `/scan/sweep`
   (TF-Luna в текущем угле серво) + 0.1 м mount-offset до центра. Беспараметрично ✅.

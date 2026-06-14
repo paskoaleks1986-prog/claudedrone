@@ -37,16 +37,26 @@ class SweepNode(Node):
     def __init__(self):
         super().__init__('sweep_node')
 
+        # Ручной (GUI) fine-дефолт: 1°/120мс ≈ 181 шаг ≈ 21.7с/проход — качество картографа.
         self.declare_parameter('step_rad', math.radians(1.0))
         self.declare_parameter('settle_ms', 120)
+        # RL fast-дефолт (S3, Aleks 2026-06-14): 5°/60мс ≈ 37 шагов ≈ 2.2с/проход —
+        # беспараметрический триггер /drone/sweep/start_fast для дискрет-обёртки SCAN_FAN.
+        # Отдельный триггер → не конфликтует с GUI fine-настройками (один и тот же серво).
+        self.declare_parameter('fast_step_rad', math.radians(5.0))
+        self.declare_parameter('fast_settle_ms', 60)
 
         self._step_rad = float(self.get_parameter('step_rad').value)
         self._settle_ms = int(self.get_parameter('settle_ms').value)
+        self._fast_step_rad = float(self.get_parameter('fast_step_rad').value)
+        self._fast_settle_ms = int(self.get_parameter('fast_settle_ms').value)
 
-        # state machine
+        # state machine — «активные» параметры текущего прохода (fine ИЛИ fast)
         self._sweeping = False
         self._step_idx = 0
-        self._n_steps = int(math.ceil(SWEEP_MAX_RAD / self._step_rad)) + 1
+        self._step_rad_active = self._step_rad
+        self._settle_ms_active = self._settle_ms
+        self._n_steps = self._calc_n_steps(self._step_rad)
         self._collected: list[float] = []
         self._last_range: Optional[float] = None
         self._last_range_t: Optional[float] = None
@@ -60,6 +70,7 @@ class SweepNode(Node):
 
         # subscribers
         self.sub_start = self.create_subscription(Empty, '/drone/sweep/start', self._on_start, 1)
+        self.sub_start_fast = self.create_subscription(Empty, '/drone/sweep/start_fast', self._on_start_fast, 1)
         self.sub_stop = self.create_subscription(Empty, '/drone/sweep/stop', self._on_stop, 1)
         self.sub_scan = self.create_subscription(LaserScan, '/scan/sweep', self._on_scan, 10)
 
@@ -71,6 +82,10 @@ class SweepNode(Node):
             f'({self._step_rad:.4f} rad), settle={self._settle_ms} ms, '
             f'n_steps={self._n_steps}'
         )
+
+    @staticmethod
+    def _calc_n_steps(step_rad: float) -> int:
+        return int(math.ceil(SWEEP_MAX_RAD / step_rad)) + 1
 
     def _now_s(self) -> float:
         return self.get_clock().now().nanoseconds / 1e9
@@ -91,10 +106,23 @@ class SweepNode(Node):
         self.pub_status.publish(String(data='STOPPED'))
 
     def _on_start(self, _msg: Empty):
+        self._begin(self._step_rad, self._settle_ms, 'fine')
+
+    def _on_start_fast(self, _msg: Empty):
+        # S3: беспараметрический быстрый проход для RL SCAN_FAN (coarse step/short settle).
+        self._begin(self._fast_step_rad, self._fast_settle_ms, 'fast')
+
+    def _begin(self, step_rad: float, settle_ms: int, label: str):
         if self._sweeping:
             self.get_logger().warn('sweep уже идёт — игнорирую новый /start')
             return
-        self.get_logger().info(f'sweep: start — будет {self._n_steps} шагов')
+        self._step_rad_active = step_rad
+        self._settle_ms_active = settle_ms
+        self._n_steps = self._calc_n_steps(step_rad)
+        self.get_logger().info(
+            f'sweep: start ({label}) — {self._n_steps} шагов, '
+            f'step={math.degrees(step_rad):.1f}° settle={settle_ms}мс'
+        )
         self._sweeping = True
         self._step_idx = 0
         self._collected = []
@@ -115,7 +143,7 @@ class SweepNode(Node):
             return
 
         elapsed_ms = (self._now_s() - self._step_started_t) * 1000.0
-        if elapsed_ms < self._settle_ms:
+        if elapsed_ms < self._settle_ms_active:
             return
 
         # требуем чтобы был хоть один scan-сэмпл, полученный после старта шага
@@ -132,7 +160,7 @@ class SweepNode(Node):
             return
 
         # next angle
-        next_angle = min(self._step_idx * self._step_rad, SWEEP_MAX_RAD)
+        next_angle = min(self._step_idx * self._step_rad_active, SWEEP_MAX_RAD)
         self._send_target(next_angle)
         self._step_started_t = self._now_s()
 
@@ -142,8 +170,8 @@ class SweepNode(Node):
         scan.header.frame_id = 'sg90_arm'
         scan.angle_min = SWEEP_MIN_RAD
         scan.angle_max = SWEEP_MAX_RAD
-        scan.angle_increment = self._step_rad
-        scan.time_increment = self._settle_ms / 1000.0
+        scan.angle_increment = self._step_rad_active
+        scan.time_increment = self._settle_ms_active / 1000.0
         scan.scan_time = scan.time_increment * self._n_steps
         scan.range_min = 0.2
         scan.range_max = 8.0
