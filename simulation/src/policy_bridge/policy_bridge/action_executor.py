@@ -133,10 +133,6 @@ LATERAL_FULL_M = 0.95        # ≥ → полная скорость (lateral_fa
 V_MAX_MS = 0.5              # макс линейная скорость (new_env_spec §3, vx/vy ×0.5)
 W_MAX_RAD_S = 1.0          # макс yaw-rate (new_env_spec §3, yaw_rate ×1.0)
 MANUAL_VEL_TIMEOUT_S = 0.5  # нет cmd дольше → тормозим в hover (failsafe потери связи)
-# Safety-CBF клэмп (B4): компонента скорости В СТОРОНУ стены гасится ∝ дистанции,
-# отворот/перпендикуляр свободен (не блок, уменьшение).
-CLAMP_STOP_M = 0.50        # ToF в направлении движения ≤ → компонента к стене = 0
-CLAMP_FULL_M = 1.00        # ≥ → без клэмпа (полная скорость)
 MANUAL_Z_KP = 0.8          # P-коэф удержания высоты в velocity-режиме (vz = Kp·Δz)
 MANUAL_VZ_MAX_M_S = 0.5    # клэмп vertical velocity ползунка-высоты (плавный выход)
 MANUAL_MOVE_EPS = 0.03     # |vx|,|vy| ≤ → считаем «нет горизонт-движения» → вращение/высота
@@ -499,12 +495,10 @@ class ActionExecutor:
         if self._manual_flight:
             self._publish_manual_flight()
             return
-        # FlightRL-v1 непрерывный velocity-режим (rl-lab B2/B4): приоритетный путь.
-        # Body-velocity (safety-клэмп B4) → velocity+yaw_rate setpoint каждый тик.
-        # Единый путь движения новой арх (нет execute/carrot/settle). safety_hold глушит.
-        if self._manual_vel is not None and not self._safety_hold:
-            self._publish_manual_velocity()
-            return
+        # Легаси velocity-путь _publish_manual_velocity УДАЛЁН (S1, 2026-06-14): имел
+        # скрытый safety-клэмп B4 + ручной body→world поворот (double-rotation footgun),
+        # расходился с RL train-env. Единый детерминированный путь velocity = manual_flight
+        # выше (_publish_manual_flight). RL-источник гонит через cmd_vel_body в manual_flight.
         final = self._target_pose
         if final is None or self._safety_hold or self._rotating or self._suppress_maintenance:
             return
@@ -546,36 +540,6 @@ class ActionExecutor:
         target = _make_raw_target(x, y, z, self._target_yaw, mask)
         target.header.stamp = self.node.get_clock().now().to_msg()
         self.raw_pub.publish(target)
-
-    def _publish_manual_velocity(self) -> None:
-        """FlightRL-v1 (rl-lab B2/B4): body-velocity → velocity+yaw_rate setpoint.
-        Свежесть < MANUAL_VEL_TIMEOUT иначе тормоз в 0 (failsafe). safety-клэмп B4
-        гасит компоненту в стену. body→world ENU (как action7-ветка, FRAME_LOCAL_NED +
-        mavros ENU→NED). z держим P-регулятором (vz=Kp·Δalt)."""
-        fresh = (time.monotonic() - self._manual_vel_t) < MANUAL_VEL_TIMEOUT_S
-        vx, vy, yaw_rate = self._manual_vel if fresh else (0.0, 0.0, 0.0)
-        pose = self._get_pose()
-        # Ползунок-высота (Aleks 2026-06-11, согласовано с interface): sim лочит
-        # z-control на заданную высоту, ГОРИЗОНТ-teleop продолжает работать. _alt_locking
-        # = индикатор «идёт вертикальный выход» (для статуса interface), снимается по
-        # достижении. z-hold P-регулятор (vz ниже) сам выводит дрон на target.
-        if self._alt_locking and abs(self.target_altitude - pose.z_m) <= ALT_ARRIVE_TOL_M:
-            self._alt_locking = False
-        vx, vy = self._clamp_velocity_body(vx, vy)
-        yaw = pose.heading_rad
-        wx = vx * math.cos(yaw) - vy * math.sin(yaw)
-        wy = vx * math.sin(yaw) + vy * math.cos(yaw)
-        vz = max(-0.5, min(0.5, MANUAL_Z_KP * (self.target_altitude - pose.z_m)))
-        vmsg = PositionTarget()
-        vmsg.header.frame_id = "map"
-        vmsg.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
-        vmsg.type_mask = RAW_TYPE_MASK_VEL_YAWRATE
-        vmsg.velocity.x = wx
-        vmsg.velocity.y = wy
-        vmsg.velocity.z = vz
-        vmsg.yaw_rate = float(yaw_rate)
-        vmsg.header.stamp = self.node.get_clock().now().to_msg()
-        self.raw_pub.publish(vmsg)
 
     # ---- ручной режим (Aleks 2026-06-11): взлёт/посадка/высота вверх-вниз ----
 
@@ -823,28 +787,6 @@ class ActionExecutor:
     def target_altitude_m(self) -> float:
         """Текущий целевой setpoint высоты (м, clamped)."""
         return self.target_altitude
-
-    def _clamp_velocity_body(self, vx: float, vy: float) -> tuple[float, float]:
-        """Safety-CBF (rl-lab B4): гасит компоненту скорости В СТОРОНУ близкой стены ∝
-        дистанции; отворот/перпендикуляр свободен. НЕ блок — плавное уменьшение.
-        ToF в направлении движения = min по forward-arc ±60° к вектору (ловит боковой
-        клип, как lateral-слой). Переиспользует proximity-наработку."""
-        speed = math.hypot(vx, vy)
-        if speed < 1e-3 or self._get_perimeter is None:
-            return vx, vy
-        p = self._get_perimeter()
-        if p is None or len(p) < 6:
-            return vx, vy
-        theta = math.atan2(vy, vx)  # body-направление движения (0=ch0 вперёд, +60=ch1…)
-        d_dir = float("inf")
-        for i in range(6):
-            diff = abs((math.radians(i * 60.0) - theta + math.pi) % (2 * math.pi) - math.pi)
-            if diff <= math.radians(60.0):
-                d_dir = min(d_dir, float(p[i]))
-        if math.isinf(d_dir):
-            return vx, vy
-        scale = max(0.0, min(1.0, (d_dir - CLAMP_STOP_M) / (CLAMP_FULL_M - CLAMP_STOP_M)))
-        return vx * scale, vy * scale
 
     # ---- internals ----
 
