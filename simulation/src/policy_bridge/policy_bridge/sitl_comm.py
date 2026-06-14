@@ -643,8 +643,11 @@ class MavrosSITLComm:
         """Ручная посадка (Aleks 2026-06-11): LAND mode → плавный спуск → disarm.
         ⚠ Зови executor_act.exit_manual_flight() ПЕРЕД этим — иначе 10Гц
         maintenance-стрим перебивает LAND (держит дрон в воздухе position-setpoint'ом).
-        ⚠ SITL: повторный взлёт после LAND ненадёжен (memory
-        project_sitl_navtakeoff_after_land_fails) — для нового взлёта перезапусти стек."""
+        Повторный взлёт после LAND: РАБОТАЕТ при живом GPS-фиксе (SIM_GPS1_ENABLE=1
+        на буте) — _land_and_disarm ставит _airborne=False, следующий start_episode
+        делает свежий _full_takeoff (re-arm+NAV_TAKEOFF). Stand-verify 2026-06-14:
+        re-takeoff до 1.0м после LAND прошёл. (Старый memory
+        project_sitl_navtakeoff_after_land_fails был при GPS NO_FIX.)"""
         self._log.info("LAND — посадка по команде")
         self._land_and_disarm()
         self._log.info("✅ приземлился и disarmed")

@@ -262,7 +262,7 @@ cmd_sitl() {
     cat <<EOF
 cd '$ARDUPILOT_DIR/ArduCopter'
 echo "[sitl] params=$PARAMS instance=$SITL_INSTANCE port=$MAVLINK_PORT streamrate=10"
-exec sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON \\
+exec sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON -w \\
     -I $SITL_INSTANCE \\
     --add-param-file='$PARAMS' \\
     -m '--streamrate=10'

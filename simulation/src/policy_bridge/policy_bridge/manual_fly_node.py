@@ -162,10 +162,17 @@ def main() -> int:
             if do_land:
                 comm.node.get_logger().info("посадка…")
                 ex.exit_manual_flight()           # стоп стрима (иначе перебивает LAND)
-                comm.land()                       # LAND mode → спуск → disarm
+                comm.land()                       # LAND mode → спуск → disarm (→ _airborne=False)
+                # Сброс латча → принимаем новый /drone/takeoff (взлёт/посадка ×N,
+                # Aleks 2026-06-14). comm.land() уже сбросил _airborne → следующий
+                # start_episode сделает свежий _full_takeoff. Повторный взлёт после
+                # LAND в SITL РАБОТАЕТ при живом GPS-фиксе (SIM_GPS1_ENABLE=1 на буте);
+                # stand-verify 2026-06-14: re-arm+climb до 1.0м после LAND прошёл.
+                with tk_lock:
+                    tk["done"] = False
                 comm.node.get_logger().info(
-                    "✅ приземлился. Повторный взлёт после LAND в SITL ненадёжен — "
-                    "для нового полёта перезапусти стек."
+                    f"✅ приземлился. Готов к повторному взлёту — шли {TAKEOFF_TOPIC} "
+                    f"(Float64 высота)."
                 )
             time.sleep(0.2)
     except KeyboardInterrupt:

@@ -15,6 +15,13 @@
 # GPS enabled for SITL fake GPS (origin auto-set, position control works).
 # Real hardware future: disable to use optflow only.
 GPS1_TYPE 1
+# SITL sim-GPS backend MUST be on at boot, else status=-1 NO_FIX → prearm
+# "GPS 1: Bad fix" блокирует arm (root cause 2026-06-14). Имя 4.8-dev =
+# SIM_GPS1_ENABLE (старые SIM_GPS_DISABLE/SIM_GPS_TYPE переименованы, молча
+# игнорятся). Включать ТОЛЬКО на буте: рантайм-enable даёт EKF↔GPS origin-разрыв
+# (152км) → "GPS and AHRS differ". launch.sh вайпит eeprom (-w), иначе старое
+# SIM_GPS1_ENABLE=0 из eeprom.bin перекрывает этот файл (project_sitl_eeprom_persistence).
+SIM_GPS1_ENABLE 1
 
 # Skip all pre-arm checks (ARMING_SKIPCHK is the 4.7+ name; old ARMING_CHECK).
 ARMING_SKIPCHK 1
