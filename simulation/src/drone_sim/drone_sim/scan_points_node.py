@@ -123,6 +123,11 @@ class ScanPointsNode(Node):
     # ---- gt-поза: ближайшая к odom запись PoseArray (стены статичны и далеко) ----
 
     def _gt_pose(self, odom: dict) -> dict | None:
+        # ⚠ /world/<w>/pose/info = PoseArray БЕЗ имён, содержит корни моделей И
+        # саб-линки. У дрона много линков на XY≈(0,0) (sg90, ротеры) → XY-nearest
+        # неоднозначен (ничья в начале координат). Матчим по 3D (с Z): корень дрона
+        # на z≈odom.z, саб-линки на иных Z дальше. Подтверждено stand-verify 2026-06-14
+        # (base_stand: корень [16] z=0.22 vs саб-линки z=0.02/0.10/0.13/0.15).
         if not self._poses:
             return None
         best = None
@@ -130,7 +135,8 @@ class ScanPointsNode(Node):
         for ps in self._poses:
             dx = ps.position.x - odom["x"]
             dy = ps.position.y - odom["y"]
-            d = math.hypot(dx, dy)
+            dz = ps.position.z - odom["z"]
+            d = math.sqrt(dx * dx + dy * dy + dz * dz)
             if d <= best_d:
                 best_d = d
                 best = ps
