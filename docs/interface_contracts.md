@@ -242,3 +242,100 @@ GUI: выбрал mode 4 → `Empty`→`/drone/sweep/tri/start` (непреры�
 ⚠ **Один источник угла за раз** — радиокнопка гарантирует, что активен ровно один режим; sweep_node(`/drone/sweep/start`), autoscan и sweep_storage(`/drone/sweep/tri/*`) разведены по топикам, но физически серво одно. При смене режима GUI должен сначала остановить текущий (stop старого), потом включить новый.
 
 ⚠ **Не протестировано на стенде** (sim не поднимает стек сам). py_compile OK; проверить при ближайшем bringup. Альтернатива spawn'у — могу добавить флаг `sweep_modes:=true` в `drone.launch.py` (предзагрузка всех провайдеров idle одним стеком) — скажи, если так удобнее.
+
+---
+
+## 8. ТРЕК-1 — детерминизм shared velocity + watchdog (RL дискрет-обёртка A.1, S1-S3)
+
+> Запрос rl-lab (HANDOFF 2026-06-14 13:45) под `navigator_rl_node` / `Discrete(11)`: дискрет-слой
+> строит rl-lab поверх ТОЙ ЖЕ velocity-ноды; ручной полёт interface остаётся континуальным (Aleks).
+> Этот раздел **фиксирует контракт по факту кода** (`v3`, `policy_bridge/action_executor.py` +
+> `manual_fly_node.py`). Инфраструктура S1-S3 **уже существует** — раздел сверяет детерминизм/частоты,
+> не вводит новый код. ⚠ Один пункт «на ревью» (см. S1, легаси velocity-путь) — runtime не трогаю
+> без go (правило «никаких правок на лету»).
+
+### 8.1 S1 — shared velocity-нода: source-agnostic + детерминизм + watchdog
+
+**Source-agnostic ✅.** Единый вход `/drone/cmd_vel_body` (`geometry_msgs/Twist`, BODY: `linear.x`=vx
+вперёд+, `linear.y`=vy влево+, `angular.z`=yaw_rate CCW+). Подписчик — `manual_fly_node`
+(`set_manual_velocity` → executor). Любой источник взаимозаменяем ВЫШЕ контроллера: ручной GUI
+(`/teleop/velocity`→`cmd_vel_body`), `teleop_keyboard`, RL `navigator_rl_node` — пишут в один топик.
+На стек — ОДИН executor (`manual_fly_node`); арбитраж «кто за рулём» (manual↔RL mux + приоритет
+BRAKE/`/emergency`) — фланг interface (control_api), не sim.
+
+**Клэмпы (детерминированная сатурация, НЕ сглаживание).** `set_manual_velocity` клампит:
+`vx,vy ∈ [−0.5, +0.5] м/с` (`V_MAX_MS=0.5`), `yaw_rate ∈ [−1.0, +1.0] рад/с` (`W_MAX_RAD_S=1.0`).
+RL-константы амплитуд ДОЛЖНЫ лежать в этих границах — за ними команда молча насыщается. Это чистая
+сатурация (idempotent), не ramp.
+
+**Детерминизм отклика (S1.б) — путь `manual_flight`.** После взлёта `manual_fly_node` зовёт
+`enter_manual_flight()` → executor в режиме `_manual_flight=True`. Активный путь `_publish_manual_flight`:
+- удержанный вектор публикуется **СЫРЫМ** — `velocity.x=vx`, `velocity.y=vy`, `yaw_rate` напрямую.
+  **Нет ramp, нет сглаживания, нет safety-клэмпа** (Aleks 2026-06-11 «как на пульте» — вся safety
+  из ручного пути вырезана);
+- `coordinate_frame = FRAME_BODY_OFFSET_NED` → **единственный** поворот body→world делает САМ AP по
+  своей оценке курса. ⚠ RL/источник **НЕ вращает vx,vy руками** (двойное вращение = баг 538b16d,
+  фикс 11f0971);
+- `vz` — НЕ из vx/vy: P-регулятор высоты `vz = clamp(Kp·(target_alt − z), ±0.5)`, `Kp=MANUAL_Z_KP=0.8`,
+  ведёт к `target_altitude` (см. S2);
+- ⇒ отклик на удержанный `(vx,vy,yaw_rate)` детерминирован на уровне setpoint; форму придаёт лишь
+  внутренний velocity-PID ArduPilot (часть «планта», одинаков для всех источников/прогонов).
+
+⚠ **Развилка двух velocity-путей (важно для parity, S1.б).** В executor ДВА пути:
+| путь | когда активен | поведение |
+|---|---|---|
+| `_publish_manual_flight` | `_manual_flight=True` (после взлёта через `manual_fly_node`) | **чистый** BODY_OFFSET_NED, без клэмпа/ramp ← **детерминированный путь для RL** |
+| `_publish_manual_velocity` | `_manual_vel` задан при `_manual_flight=False` (легаси FlightRL-v1) | safety-клэмп B4 (`_clamp_velocity_body`) + body→world поворот РУКАМИ (FRAME_LOCAL_NED) — скрытый клэмп + старый double-rotation footgun |
+
+⇒ Для паритета RL-обёртка обязана гонять команды **через тот же `manual_fly_node` в режиме
+`manual_flight`** (т.е. publish в `/drone/cmd_vel_body`), а НЕ поднимать второй executor, который
+сядет на легаси-путь. На живом стеке легаси-путь фактически мёртв (manual_fly всегда входит в
+`manual_flight`). **Рекомендация «на ревью»:** удалить/загейтить `_publish_manual_velocity`, чтобы
+ambiguity исчезла физически — отдельным коммитом по go Aleks, не на лету.
+**Поправка к §2.1:** safety-клэмп из §2.1 описывает ЛЕГАСИ-путь; живой `manual_flight`-путь клэмпа
+НЕ имеет. Это СОВПАДАЕТ с train-env RL (нет скрытого клэмпа; `safety_guard` — отдельная нода,
+OFF на fine-tune, [[project_safety_guard_off_for_rl_finetune]]).
+
+**Watchdog / частота OFFBOARD-стрима (S1.в):**
+- **Частота setpoint-стрима = `MAINTAIN_RATE_HZ = 10.0 Гц`** — внутренний maintenance-таймер executor
+  сам стримит setpoint в `/mavros/setpoint_raw/local` @10 Гц (обязательно для ArduPilot GUIDED). RL
+  **НЕ обязан** стримить 10 Гц сам: он задаёт вектор, стримит executor.
+- **Таймаут свежести команды = `MANUAL_VEL_TIMEOUT_S = 0.5 с`.** Опубликованный `cmd_vel_body`
+  «свежий» 0.5 с; нет новой команды дольше → failsafe: POSITION-hold hover (тормоз в 0).
+- ⇒ RL `action_hold` = 3 тика @10 Гц = **0.3 с < 0.5 с ✅** — одна команда держится все 3 тика без
+  срабатывания failsafe. Для удержания дольше — RL пере-публикует ДО истечения 0.5 с. Рекоменд:
+  RL шлёт ≥2 Гц (запас), идеально 10 Гц (чёткие переходы между действиями).
+
+### 8.2 S2 — UP/DOWN = ±Δ к `set_altitude` (position-step, ПОДТВЕРЖДЕНО)
+
+`/drone/set_altitude` (`std_msgs/Float64`, м ENU над точкой взлёта) — детерминированный position
+set-point (см. §2.2). `set_target_altitude` клампит в **[`ALT_MIN_M=0.5`, `ALT_MAX_M=2.2`]**, ставит
+`target_altitude`. Контроллер держит x,y и ведёт z (в hover — AP-position-контроллер; в полёте —
+`vz=Kp·Δz`, ±0.5). Возврат контроля по `|z−target| ≤ ALT_ARRIVE_TOL_M = 0.08` (`altitude_locked=False`).
+- **RL дискрет ±Δ:** прочитать текущий target (echo `/drone/altitude_target` @5 Гц), опубликовать
+  `target±Δ` (re-clamp [0.5,2.2]). **Величина Δ — выбор rl-lab (parity-таблица), sim её не фиксирует.**
+- `vz` НЕ велосити-вход — `manual_fly` игнорит `linear.z` Twist; вертикаль только через `set_altitude`.
+  Подтверждаю: устраивает (как и просил rl-lab).
+
+### 8.3 S3 — скан-нода: беспараметрический дефолт-триггер (ПОДТВЕРЖДЕНО — уже есть)
+
+- **SCAN_FAN (action 9) → `/drone/sweep/start` (`std_msgs/Empty`)** — уже **беспараметрический**,
+  метёт `SWEEP_MIN_RAD=0.0 .. SWEEP_MAX_RAD=π` (полный веер — ровно дефолт rl-lab). Результат →
+  `/drone/sweep/result` (`LaserScan`, детерминированный полный проход), статус `/scan/status`
+  (`SCANNING`→`COMPLETE`). ⚠ Дефолт step 1°/settle 120 мс = **~21.7 с/проход** — для бюджета
+  RL-эпизода долго; могу объявить RL-дефолт быстрее (step 3-5°, settle 60 мс) параметрами
+  `sweep_node`. Параметры lo/hi/угол ОСТАЮТСЯ для ручного GUI (слой энергооптимизации Aleks).
+- **SCAN_PRECISE (action 10) → фикс-выстрел по носу servo=π/2:** publish `Float64(π/2)` →
+  `/drone/sg90/target_angle` (servo_cmd_node клампит [0,π]). Дистанция — `ranges[0]` с `/scan/sweep`
+  (TF-Luna в текущем угле серво) + 0.1 м mount-offset до центра. Беспараметрично ✅.
+  - ⚠ **Открыто:** нет атомарной ноды «навёл→устаканил→снял один результат» для precise (sweep_node
+    делает полный проход). Два варианта детерминированной одиночной отдачи: **(a)** RL шлёт π/2, ждёт
+    settle (~120-200 мс), читает свежий `/scan/sweep` — без новой ноды; **(b)** добавить мини-триггер
+    (`Empty`), который наводит серво π/2, устаканивает и эмитит один `/drone/sweep/result` с одним bin
+    (единый формат сообщения). Рекоменд **(a)** сейчас; **(b)** — если rl-lab нужен единый shape
+    результата. Решаем в parity-раунде.
+- `bearing` каждой точки + `servo_range` результата → стыкуется с **C1** (точки-сторона, отдельный трек).
+
+_Сверено по коду `v3` (`action_executor.py`, `manual_fly_node.py`, `sweep_node.py`, `servo_cmd_node.py`),
+2026-06-14. Runtime-поведение НЕ изменено (только документация). Реализация любых правок (RL-дефолт
+скана, чистка легаси velocity-пути) — отдельными коммитами по go Aleks._
