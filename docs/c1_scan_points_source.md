@@ -26,9 +26,10 @@
 | **gt-поза** (факт) | `/world/{world}/pose/info` | `geometry_msgs/PoseArray` (gz Pose_V) | Gazebo-истина; дрон = модель `iris_claudedrone` — `from_pose.gt` |
 | servo θ | `/drone/sg90/cmd` (echo) / NPZ theta | `Float64` рад | угол серво на момент сэмпла |
 
-⚠ `/world/{world}/pose/info` — `PoseArray` со ВСЕМИ моделями мира; индекс/имя дрона
-(`iris_claudedrone`) нужно найти по порядку моделей (mapping строим на bringup, как
-dual-trajectory 06-10). gt=null в real-world (там этого топика нет).
+⚠ `/world/{world}/pose/info` — `PoseArray` со ВСЕМИ моделями+саб-линками БЕЗ имён
+(stand-verify: 73 поз на base_stand). gt-дрон = запись с **3D-минимумом расстояния до
+odom (с Z!)** — корень дрона на z≈odom.z, саб-линки (sg90/ротеры) на XY≈0 но иных Z →
+XY-match неоднозначен, 3D разводит. gt=null в real-world (там этого топика нет).
 
 ## 2. Геометрия: (servo θ, range) → world-точка
 
@@ -99,10 +100,12 @@ Sim эмитит одну `scan`-запись на проход (fan) / выст
   interface (классы Store), sim отдаёт уже посчитанные `scan`-записи (ROS2-топик или
   прямой аппенд — согласуем с interface).
 
-⚠ **Перед закрытием C1 — обязателен Gazebo stand-verify:** (1) знак/zero `bearing_body`
-(θ=π/2 точно нос? CCW знак?) на реальном свипе у стены известной геометрии; (2) совпадение
-world-точек с геометрией мира (base_stand_12x12, стены на ±6 м); (3) Δ(gt,odom) ненулевой и
-осмысленный (dual-trajectory). Стенд сам не поднимаю — по go Aleks / когда стек свободен.
+✅ **Gazebo stand-verify ПРОЙДЕН (2026-06-14, base_stand_12x12, свипы на земле + hover 1.2м):**
+(1) `bearing_body` верен — нос=восток (θ=π/2→0), право=южн.стена(−6), лево=ГЛУХАЯ +Y центр-комнаты(1.5);
+(2) world-точки ложатся на реальную геометрию (центр-комната ~1.5 + внешние стены ~6 через проёмы);
+(3) `z` точек = odom.z+0.151 точно; gt-дрон находится 3D-матчем на земле и в воздухе;
+(4) Δ(gt,odom)=0.9см в стабильном hover (dual-pose снимается; реальный дрейф — в динамическом полёте, TODO).
+Визуал: `$DRONE_MEDIA_ROOT/sim/c1-stand-verify-2026-06-14/` (top-down PNG + mp4).
 
 ## 6. Открытые вопросы (к rl-lab / Aleks)
 
