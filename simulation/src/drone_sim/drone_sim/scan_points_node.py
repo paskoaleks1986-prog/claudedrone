@@ -75,12 +75,22 @@ class ScanPointsNode(Node):
         self.gt_match_max_m = float(p("gt_match_max_m", 1.5).value)
         self.run_id = str(p("run_id", "live").value)
 
+        self.start_topic = str(p("start_topic", "/drone/sweep/start").value)
+        self.start_fast_topic = str(p("start_fast_topic", "/drone/sweep/start_fast").value)
+
         # последнее состояние (кэш для сборки from_pose на момент скана)
         self._odom: dict | None = None      # {x,y,z,yaw,t}
         self._poses: list | None = None     # PoseArray.poses
         self._servo_rad: float = SERVO_ZERO_OFFSET_RAD  # последний угол серво
         self._scan_seq = 0
         self._meta_written = False
+
+        # B (де-скос веера, 2026-06-15): буфер позы НА КАЖДЫЙ угол серво во время
+        # прохода. Веер ~21.7с — дрон дрейфует/реактивный yaw серво крутит курс →
+        # регистрация всех лучей ОДНОЙ позой конца смазывала одну сторону. Теперь
+        # каждый луч регистрируется позой на момент ЕГО замера. Ключ — round(θ,3) рад.
+        self._capturing = False
+        self._ray_poses: dict[float, dict] = {}   # θ_round → {odom, gt, t}
 
         self.create_subscription(Odometry, self.odom_topic, self._on_odom,
                                  qos_profile_sensor_data)
@@ -90,6 +100,9 @@ class ScanPointsNode(Node):
         self.create_subscription(LaserScan, self.sweep_topic, self._on_sweep,
                                  qos_profile_sensor_data)
         self.create_subscription(Empty, self.precise_topic, self._on_precise, 1)
+        # старт прохода → начинаем буферить позу по углам (де-скос)
+        self.create_subscription(Empty, self.start_topic, self._on_sweep_start, 1)
+        self.create_subscription(Empty, self.start_fast_topic, self._on_sweep_start, 1)
 
         self.pub_record = self.create_publisher(String, self.record_topic, 10)
         self._last_sweep_range: float | None = None
@@ -126,6 +139,21 @@ class ScanPointsNode(Node):
         if msg.ranges:
             r = float(msg.ranges[0])
             self._last_sweep_range = r if math.isfinite(r) else None
+        # B: во время прохода буферим позу под ТЕКУЩИМ углом серво. /scan/sweep 10Гц,
+        # на угол приходит несколько замеров → перезаписываем (последний = осевший),
+        # с ним же — поза дрона на ЭТОТ момент.
+        if self._capturing and self._odom is not None:
+            key = round(self._servo_rad, 3)
+            self._ray_poses[key] = {
+                "odom": dict(self._odom),
+                "gt": self._gt_pose(self._odom),
+                "t": self._now(),
+            }
+
+    def _on_sweep_start(self, _msg: Empty) -> None:
+        """Старт прохода (fine/fast) → чистим буфер поз, начинаем захват per-угол."""
+        self._capturing = True
+        self._ray_poses = {}
 
     # ---- gt-поза: ближайшая к odom запись PoseArray (стены статичны и далеко) ----
 
@@ -242,21 +270,75 @@ class ScanPointsNode(Node):
             "dots": dots,
         }
 
+    def _nearest_pose(self, theta: float) -> dict | None:
+        """Поза из буфера прохода под углом, ближайшим к theta (B: де-скос)."""
+        if not self._ray_poses:
+            return None
+        key = min(self._ray_poses, key=lambda k: abs(k - theta))
+        return self._ray_poses[key]
+
     def _on_result(self, msg: LaserScan) -> None:
-        """fan-проход завершён → scan-запись (точка на каждый валидный луч)."""
-        samples = [
-            (msg.angle_min + i * msg.angle_increment, float(r))
-            for i, r in enumerate(msg.ranges)
-        ]
-        rec = self._build_scan(
-            "fan", [round(msg.angle_min, 4), round(msg.angle_max, 4)], samples
-        )
-        if rec is not None:
-            self._emit(rec)
-            self.get_logger().info(
-                f"fan scan {rec['id']}: {len(rec['dots'])} точек "
-                f"(из {len(msg.ranges)} лучей), gt={'есть' if rec['from_pose']['gt'] else 'null'}"
-            )
+        """fan-проход завершён → scan-запись. B: КАЖДЫЙ луч регистрируется позой на
+        момент ЕГО замера (буфер per-угол), а не одной позой конца прохода."""
+        self._capturing = False
+        per_ray = bool(self._ray_poses)
+        if not per_ray:
+            # фолбэк: буфер пуст (нода стартовала среди прохода) → старое поведение
+            samples = [(msg.angle_min + i * msg.angle_increment, float(r))
+                       for i, r in enumerate(msg.ranges)]
+            rec = self._build_scan(
+                "fan", [round(msg.angle_min, 4), round(msg.angle_max, 4)], samples)
+            if rec is not None:
+                rec["registration"] = "single_pose_fallback"
+                self._emit(rec)
+                self.get_logger().warn(
+                    f"fan scan {rec['id']}: {len(rec['dots'])} точек — БЕЗ буфера поз "
+                    "(single-pose фолбэк)")
+            return
+
+        t = self._now()
+        sid = f"s{self._scan_seq}"
+        self._scan_seq += 1
+        dots = []
+        for i, r in enumerate(msg.ranges):
+            rng = float(r)
+            if not math.isfinite(rng) or rng < self.range_min or rng > self.range_max:
+                continue
+            theta = msg.angle_min + i * msg.angle_increment
+            pose = self._nearest_pose(theta)
+            if pose is None:
+                continue
+            odom = pose["odom"]
+            bearing = theta - SERVO_ZERO_OFFSET_RAD
+            x, y, z = self._world_point(odom, bearing, rng)
+            dots.append({
+                "id": f"{sid}d{i}", "scan_id": sid, "t": pose["t"], "gen": 0,
+                "x": round(x, 4), "y": round(y, 4), "z": round(z, 4),
+                "origin": "fan", "bearing": round(bearing, 4),
+                "trust": True, "cat": None, "source": "sensor",
+            })
+        # from_pose (метаданные records): репрезентативная поза центра прохода (≈π/2)
+        center = self._nearest_pose(SERVO_ZERO_OFFSET_RAD)
+        c_odom = center["odom"] if center else self._odom
+        c_gt = center["gt"] if center else None
+        rec = {
+            "rec": "scan", "id": sid, "t": t, "origin": "fan",
+            "registration": "per_ray",
+            "servo_range": [round(msg.angle_min, 4), round(msg.angle_max, 4)],
+            "from_pose": {
+                "odom": ({k: round(c_odom[k], 4) for k in ("x", "y", "z", "yaw")}
+                         if c_odom else None),
+                "gt": ({k: round(c_gt[k], 4) for k in ("x", "y", "z", "yaw")}
+                       if c_gt else None),
+            },
+            "dots": dots,
+        }
+        n_poses = len(self._ray_poses)
+        self._emit(rec)
+        self._ray_poses = {}
+        self.get_logger().info(
+            f"fan scan {sid}: {len(dots)} точек per-ray (из {len(msg.ranges)} лучей, "
+            f"{n_poses} поз в буфере), gt={'есть' if c_gt else 'null'}")
 
     def _on_precise(self, _msg: Empty) -> None:
         """precise-выстрел: текущий луч /scan/sweep @ текущем угле серво → 1 точка."""
