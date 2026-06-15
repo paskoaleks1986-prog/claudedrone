@@ -45,11 +45,18 @@ class SweepNode(Node):
         # Отдельный триггер → не конфликтует с GUI fine-настройками (один и тот же серво).
         self.declare_parameter('fast_step_rad', math.radians(5.0))
         self.declare_parameter('fast_settle_ms', 60)
+        # ШАГ 0 = стартовый ПЕРЕГОН серво к началу (после прошлого прохода серво
+        # стоит на θ=π; перегон π→0 ~520мс при velocity 6 рад/с). Обычный settle
+        # (120/60мс) короче перегона → первые сэмплы снимались ПОКА серво ещё ехал →
+        # старт-сторона веера выгнута (RCA 2026-06-15, скрин Aleks). home_settle_ms
+        # = дать серво доехать до start до первого сэмпла. Направление-агностично.
+        self.declare_parameter('home_settle_ms', 900)
 
         self._step_rad = float(self.get_parameter('step_rad').value)
         self._settle_ms = int(self.get_parameter('settle_ms').value)
         self._fast_step_rad = float(self.get_parameter('fast_step_rad').value)
         self._fast_settle_ms = int(self.get_parameter('fast_settle_ms').value)
+        self._home_settle_ms = int(self.get_parameter('home_settle_ms').value)
 
         # state machine — «активные» параметры текущего прохода (fine ИЛИ fast)
         self._sweeping = False
@@ -142,8 +149,11 @@ class SweepNode(Node):
         if self._step_started_t is None:
             return
 
+        # шаг 0 = большой перегон серво к стартовому углу → ждём дольше (home_settle),
+        # иначе старт-сторона веера снимается на едущем серво → выгиб (RCA 2026-06-15).
+        settle = self._home_settle_ms if self._step_idx == 0 else self._settle_ms_active
         elapsed_ms = (self._now_s() - self._step_started_t) * 1000.0
-        if elapsed_ms < self._settle_ms_active:
+        if elapsed_ms < settle:
             return
 
         # требуем чтобы был хоть один scan-сэмпл, полученный после старта шага
