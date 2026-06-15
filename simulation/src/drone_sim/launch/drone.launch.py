@@ -66,12 +66,24 @@ def generate_launch_description():
     )
     safety_guard_cfg = LaunchConfiguration('safety_guard')
 
+    # scan_points (C1): /scan/record для interface scan_store (точки веера/precise по
+    # ФАКТ. углу джойнта). Aleks 2026-06-15: interface рисует веер ИЗ /scan/record, а
+    # не из /drone/sweep/result (там командные углы → выгиб). default true для GUI/мануала;
+    # RL может выключить (точки не нужны, серва у action 6).
+    scan_points_arg = DeclareLaunchArgument(
+        'scan_points',
+        default_value='true',
+        description='C1 нода /scan/record (точки по факт. углу). false для RL-ранов.',
+    )
+    scan_points_cfg = LaunchConfiguration('scan_points')
+
     return LaunchDescription([
 
         sweep_storage_arg,
         launch_gz_arg,
         autoscan_arg,
         safety_guard_arg,
+        scan_points_arg,
 
         # Запускаем Gazebo (только если launch_gz:=true — backward compat для standalone)
         ExecuteProcess(
@@ -140,6 +152,16 @@ def generate_launch_description():
             name='autoscan_node',
             output='screen',
             condition=IfCondition(autoscan),
+        ),
+        # scan_points (C1) — /scan/record: точки веера/precise в world по ФАКТ. углу
+        # джойнта (joint_state) + per-ray поза. interface рисует веер отсюда.
+        Node(
+            package='drone_sim',
+            executable='scan_points',
+            name='scan_points_node',
+            output='screen',
+            parameters=[{'world': world_name, 'use_sim_time': True}],
+            condition=IfCondition(scan_points_cfg),
         ),
         # Safety guard — TOF-уровневая аварийная остановка (TASK-059 attempt #4).
         # Independent reactive layer ниже policy_bridge: если ANY VL53L0X/sweep
