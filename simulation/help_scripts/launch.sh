@@ -28,7 +28,8 @@ GUI=0
 MANUAL=0
 MONITOR=0
 MAVROS=0
-NO_AUTOSCAN=0   # v2: autoscan:=false для RL-ранов (серва — у policy action 6)
+AUTOSCAN=0   # button-only ДЕФОЛТ (Aleks 2026-06-15): авто-цикл sweep = opt-in --autoscan.
+             # Скан только по кнопке /drone/sweep/start. RL/мануал серву циклом не трогают.
 NO_SAFETY_GUARD=0   # SITL-RL: safety_guard:=false для fine-tune (паритет с train-env)
 AUTO_NODE=""
 RESTART_SITL=0  # gz-alive hard_reset: рестарт ТОЛЬКО sitl+mavros панелей живой сессии
@@ -57,7 +58,8 @@ Modifiers:
   --manual        extra pane for MAVProxy manual control
   --monitor       extra pane: watch ros2 topic list
   --mavros        extra pane: ros2 launch mavros apm.launch (SITL → /mavros/*)
-  --no-autoscan   drone.launch.py autoscan:=false (RL-раны: серва — у action 6)
+  --autoscan      drone.launch.py autoscan:=true (авто-цикл sweep с cooldown; ОПТ-ИН)
+  --no-autoscan   autoscan:=false (дефолт; явный для совместимости — скан по кнопке)
   --no-safety-guard  drone.launch.py safety_guard:=false (RL fine-tune: паритет с train-env)
   --auto NAME     extra pane: ros2 run drone_sim NAME
   --restart-sitl  gz-alive hard_reset: рестарт ТОЛЬКО sitl+mavros в живой -s сессии
@@ -97,7 +99,8 @@ while [[ $# -gt 0 ]]; do
         --manual)    MANUAL=1; shift ;;
         --monitor)   MONITOR=1; shift ;;
         --mavros)    MAVROS=1; shift ;;
-        --no-autoscan) NO_AUTOSCAN=1; shift ;;
+        --autoscan)    AUTOSCAN=1; shift ;;
+        --no-autoscan) AUTOSCAN=0; shift ;;
         --no-safety-guard) NO_SAFETY_GUARD=1; shift ;;
         --auto)      AUTO_NODE="${2:?--auto needs a node name}"; shift 2 ;;
         --restart-sitl) RESTART_SITL=1; WANT_SITL=1; MAVROS=1; shift ;;
@@ -288,7 +291,8 @@ cmd_ros() {
     # И DEFAULT_WORLD проброс — чтобы drone.launch.py читал world из env.
     local launch_gz_val extra_args=""
     if (( WANT_GZ )); then launch_gz_val=false; else launch_gz_val=true; fi
-    if (( NO_AUTOSCAN )); then extra_args+=" autoscan:=false"; fi
+    # autoscan передаём ЯВНО всегда (дефолт false=button-only; --autoscan → true)
+    if (( AUTOSCAN )); then extra_args+=" autoscan:=true"; else extra_args+=" autoscan:=false"; fi
     if (( NO_SAFETY_GUARD )); then extra_args+=" safety_guard:=false"; fi
     cat <<EOF
 cd '$WS_DIR'

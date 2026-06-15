@@ -41,10 +41,13 @@ def generate_launch_description():
     # autoscan каждые cooldown_s триггерит sweep_node, который гоняет серву
     # 0→π — а в тренировке серву двигает ТОЛЬКО action 6 шагами 30°.
     # Параллельные sweep'ы делают servo_angle/distances[6] в obs бессмысленными.
+    # Aleks 2026-06-15: ДЕФОЛТ false = скан ТОЛЬКО по кнопке /drone/sweep/start (GUI
+    # мануал). true = авто-цикл (opt-in, --autoscan). RL-раны и так false.
     autoscan_arg = DeclareLaunchArgument(
         'autoscan',
-        default_value='true',
-        description='Автотриггер sweep циклов. false для policy_bridge RL-ранов (серва — у action 6).',
+        default_value='false',
+        description='Автотриггер sweep циклов. ДЕФОЛТ false = скан по кнопке (GUI мануал). '
+                    'true = авто-цикл (opt-in). RL-раны: false (серва — у action 6).',
     )
     autoscan = LaunchConfiguration('autoscan')
 
