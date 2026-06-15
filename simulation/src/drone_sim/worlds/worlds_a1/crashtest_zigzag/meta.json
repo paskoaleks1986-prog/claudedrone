@@ -1,0 +1,58 @@
+{
+  "world_name": "crashtest_zigzag",
+  "size_m": [
+    18.0,
+    10.0
+  ],
+  "grid": [
+    100,
+    180
+  ],
+  "resolution_m": 0.1,
+  "origin_gz": [
+    -9.0,
+    -5.0
+  ],
+  "frame": "gz_centered (origin=center; SW corner = origin_gz)",
+  "cell_formula": "ix=floor((wx+w/2)/res); iy=floor((wy+h/2)/res); iy=0=south",
+  "occ_codes": {
+    "free": 0,
+    "unknown": 1,
+    "wall": 2
+  },
+  "wall_height_m": 4.0,
+  "wall_thickness_m": 0.1,
+  "spawn": [
+    -6.2,
+    -1.5,
+    0.0
+  ],
+  "doors": [
+    {
+      "id": "A|corridor",
+      "center": [
+        -3.85,
+        -1.5
+      ],
+      "width": 1.9,
+      "axis": "x"
+    },
+    {
+      "id": "corridor|B",
+      "center": [
+        4.176488874308759,
+        -0.08586725868961342
+      ],
+      "width": 1.9,
+      "axis": "x"
+    }
+  ],
+  "counts": {
+    "free": 5466,
+    "unknown": 11516,
+    "wall": 1018
+  },
+  "n_boxes": 60,
+  "source": "help_scripts/gen_worlds_a1.py",
+  "spec_ref": "rl-lab/docs/worlds_a1_spec.md + worlds_a1_grid.yaml"
+}
