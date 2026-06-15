@@ -41,27 +41,36 @@ SIM_ROOT = Path(__file__).resolve().parent.parent
 OUT_ROOT = SIM_ROOT / "src/drone_sim/worlds/worlds_a1"
 
 RES = 0.1
-WALL_H = 4.0          # стандарт мира (worlds.yaml): ≥4.0
-WALL_T = 0.1          # толщина стен/перегородок
+WALL_H = 2.5          # как эталон base_stand_12x12 (комната, не «колодец»)
+WALL_T = 0.15         # толщина стен/перегородок (как base_stand)
 SPAWN_Z = 0.2
 FREE, UNKNOWN, WALL = 0, 1, 2
 
+# материалы по виду (ambient=diffuse) — как base_stand_12x12 (визуальный объём в 3D)
+MAT = {
+    "wall":     (0.80, 0.82, 0.85),   # внешние стены — светлые
+    "wall_red": (0.85, 0.12, 0.12),   # стена-ориентир (север +Y)
+    "inner":    (0.70, 0.68, 0.55),   # внутренние перегородки — песочные
+    "column":   (0.50, 0.40, 0.30),   # колонны — коричневые
+}
+FLOOR_MAT = (0.72, 0.74, 0.76)
+
 # ───────────────────────── геометрия-примитивы ─────────────────────────
-# box = dict(cx, cy, sx, sy, yaw=0.0, name) — центр/размер по XY, yaw рад.
+# box = dict(cx, cy, sx, sy, yaw, name, kind) — центр/размер по XY, yaw рад.
 
 
-def box(cx, cy, sx, sy, name, yaw=0.0):
-    return dict(cx=cx, cy=cy, sx=sx, sy=sy, yaw=yaw, name=name)
+def box(cx, cy, sx, sy, name, yaw=0.0, kind="wall"):
+    return dict(cx=cx, cy=cy, sx=sx, sy=sy, yaw=yaw, name=name, kind=kind)
 
 
 def rect_walls(w, h, t=WALL_T, prefix="outer"):
-    """4 стены по периметру bbox w×h, центрированы на границах."""
+    """4 стены по периметру bbox w×h; север (+Y) = красный ориентир."""
     hw, hh = w / 2, h / 2
     return [
-        box(0, -hh, w, t, f"{prefix}_south"),
-        box(0, hh, w, t, f"{prefix}_north"),
-        box(-hw, 0, t, h, f"{prefix}_west"),
-        box(hw, 0, t, h, f"{prefix}_east"),
+        box(0, -hh, w, t, f"{prefix}_south", kind="wall"),
+        box(0, hh, w, t, f"{prefix}_north", kind="wall_red"),
+        box(-hw, 0, t, h, f"{prefix}_west", kind="wall"),
+        box(hw, 0, t, h, f"{prefix}_east", kind="wall"),
     ]
 
 
@@ -101,15 +110,15 @@ def spec_corridor_L():
     w, h = 8.0, 8.0
     aw = 2.0  # ширина рукава
     bx = []
-    # внешние: юг (весь низ) + запад (весь левый)
-    bx.append(box(0, -h / 2, w, WALL_T, "out_south"))
-    bx.append(box(-w / 2, 0, WALL_T, h, "out_west"))
+    # внешние: юг (весь низ) + запад (весь левый); север-рефанем красным через cap
+    bx.append(box(0, -h / 2, w, WALL_T, "out_south", kind="wall"))
+    bx.append(box(-w / 2, 0, WALL_T, h, "out_west", kind="wall"))
     # горизонт. рукав: y∈[-4,-2]; внутр. сев. стена y=-2 от x=-2 до 4 (длина 6)
-    bx.append(box(1.0, -2.0, 6.0, WALL_T, "h_inner_north"))
-    bx.append(box(w / 2, -3.0, WALL_T, aw, "h_east_cap"))   # вост. торец x=4, y∈[-4,-2]
+    bx.append(box(1.0, -2.0, 6.0, WALL_T, "h_inner_north", kind="inner"))
+    bx.append(box(w / 2, -3.0, WALL_T, aw, "h_east_cap", kind="wall"))   # вост. торец
     # вертик. рукав: x∈[-4,-2]; внутр. вост. стена x=-2 от y=-2 до 4 (длина 6)
-    bx.append(box(-2.0, 1.0, WALL_T, 6.0, "v_inner_east"))
-    bx.append(box(-3.0, h / 2, aw, WALL_T, "v_north_cap"))  # сев. торец y=4, x∈[-4,-2]
+    bx.append(box(-2.0, 1.0, WALL_T, 6.0, "v_inner_east", kind="inner"))
+    bx.append(box(-3.0, h / 2, aw, WALL_T, "v_north_cap", kind="wall_red"))  # сев. торец
     return dict(w=w, h=h, spawn=(3.0, -3.0, 0.0), boxes=bx, doors=[])
 
 
@@ -119,8 +128,8 @@ def spec_two_rooms():
     door_w = 1.4
     bx = rect_walls(w, h)
     seg = (h - door_w) / 2          # длина сегмента перегородки = 2.05
-    bx.append(box(0, -(door_w / 2 + seg / 2), WALL_T, seg, "div_south"))
-    bx.append(box(0, (door_w / 2 + seg / 2), WALL_T, seg, "div_north"))
+    bx.append(box(0, -(door_w / 2 + seg / 2), WALL_T, seg, "div_south", kind="inner"))
+    bx.append(box(0, (door_w / 2 + seg / 2), WALL_T, seg, "div_north", kind="inner"))
     return dict(
         w=w, h=h, spawn=(-3.5, 0.0, 0.0), boxes=bx,
         doors=[dict(id="A|B", center=[0.0, 0.0], width=door_w, axis="y")],
@@ -136,14 +145,14 @@ def spec_apartment():
     # сегменты: y∈[-5,-3.2], [-1.8,1.8], [3.2,5]
     segs_x0 = [(-5.0, -3.2), (-1.8, 1.8), (3.2, 5.0)]
     for k, (y0, y1) in enumerate(segs_x0):
-        bx.append(box(0.0, (y0 + y1) / 2, WALL_T, y1 - y0, f"vdiv_{k}"))
+        bx.append(box(0.0, (y0 + y1) / 2, WALL_T, y1 - y0, f"vdiv_{k}", kind="inner"))
     # горизонт. перегородка слева (x∈[-6,0]) y=0, дверь A|C @ x=-3
     segs_y0 = [(-6.0, -3.7), (-2.3, 0.0)]
     for k, (x0, x1) in enumerate(segs_y0):
-        bx.append(box((x0 + x1) / 2, 0.0, x1 - x0, WALL_T, f"hdiv_{k}"))
+        bx.append(box((x0 + x1) / 2, 0.0, x1 - x0, WALL_T, f"hdiv_{k}", kind="inner"))
     # колонны в комнате B (восток)
-    bx.append(box(3.0, -1.5, 0.4, 0.4, "col_b1"))
-    bx.append(box(3.5, 2.0, 0.4, 0.4, "col_b2"))
+    bx.append(box(3.0, -1.5, 0.5, 0.5, "col_b1", kind="column"))
+    bx.append(box(3.5, 2.0, 0.5, 0.5, "col_b2", kind="column"))
     return dict(
         w=w, h=h, spawn=(-4.0, -3.0, 0.0), boxes=bx,
         doors=[
@@ -160,65 +169,91 @@ def spec_open_hall_columns():
     bx = rect_walls(w, h)
     cols = [(-3.5, -2.5), (3.5, -2.5), (-3.5, 2.5), (3.5, 2.5), (0.0, 0.0)]
     for i, (cx, cy) in enumerate(cols):
-        bx.append(box(cx, cy, 0.5, 0.5, f"col_{i}"))
+        bx.append(box(cx, cy, 0.5, 0.5, f"col_{i}", kind="column"))
     return dict(w=w, h=h, spawn=(-6.0, -5.0, 0.0), boxes=bx, doors=[])
 
 
 def spec_crashtest_zigzag():
-    # bbox 18×10; зигзаг 4 колена ×100° (внутр.угол) + 2 кругл. комн. R2.5; кор. 1.9.
-    # Центрлайн строим ходьбой: 5 сегментов, направления чередуют ±40° от оси east
-    # → смена курса 80° на каждом колене → внутренний угол 100° (НЕ прямой). 4 колена.
-    w, h = 18.0, 10.0
-    cw = 1.9
-    theta, L = 40.0, 2.2
-    start = (-4.0, -1.5)
-    dirs = [theta, -theta, theta, -theta, theta]    # 5 сегм. → 4 колена
-    pts = [start]
-    cx, cy = start
-    for d in dirs:
+    # bbox 22×10; зигзаг 4 колена ×100° (внутр.угол) между 2 кругл. комн. R2.5.
+    # Колена: ядро из 5 сегментов, направления чередуют ±40° от east → смена курса
+    # 80°/колено → внутр. угол 100° (НЕ прямой). По краям прямые «шейки», выровненные
+    # с кромками кольцевого зазора (chord зазора = ширина коридора) → стыковка стен
+    # коридора с кольцом без щелей (иначе flood утекал в застенье).
+    w, h = 22.0, 10.0
+    cw = 2.0
+    R = 2.5
+    gap_deg = 47.16              # 2·R·sin(gap/2)=cw=2.0 → кромки кольца = стенам коридора
+    half = cw / 2
+    mdx = R * math.cos(math.radians(gap_deg / 2))   # x-вынос устья от центра комнаты ≈2.29
+    theta, L = 40.0, 2.6
+    a_c = (-8.0, -1.5)
+    mouth_A = (a_c[0] + mdx, a_c[1])
+    neck_A = (mouth_A[0] + 0.8, a_c[1])             # прямая шейка east
+    zz = [neck_A]
+    cx, cy = neck_A
+    for d in [theta, -theta, theta, -theta, theta]:
         r = math.radians(d)
         cx += L * math.cos(r)
         cy += L * math.sin(r)
-        pts.append((cx, cy))
-    a_c = (-6.2, -1.5)                 # центр кругл. комн. A (R2.5, в bbox)
-    b_c = (pts[-1][0] + 2.0, pts[-1][1])   # центр комн. B у конца коридора
+        zz.append((cx, cy))
+    zz_last = zz[-1]
+    b_c = (zz_last[0] + 0.8 + mdx, zz_last[1])
+    mouth_B = (b_c[0] - mdx, b_c[1])
+    pts = [mouth_A] + zz + [mouth_B]                # центрлайн: устье A → ядро → устье B
     bx = rect_walls(w, h)
     bx += corridor_from_centerline(pts, cw, "zz")
-    # gap-направления: к коридору (A смотрит east→0°, B назад на коридор→180°)
-    bx += circle_walls(*a_c, 2.5, "roomA", gap_center_deg=0, gap_deg=62)
-    bx += circle_walls(*b_c, 2.5, "roomB", gap_center_deg=180, gap_deg=62)
+    bx += circle_walls(*a_c, R, "roomA", gap_center_deg=0, gap_deg=gap_deg)
+    bx += circle_walls(*b_c, R, "roomB", gap_center_deg=180, gap_deg=gap_deg)
     return dict(
         w=w, h=h, spawn=(a_c[0], a_c[1], 0.0), boxes=bx,
         doors=[
-            dict(id="A|corridor", center=[(a_c[0] + 2.5 + pts[0][0]) / 2, -1.5],
-                 width=cw, axis="x"),
-            dict(id="corridor|B", center=[(b_c[0] - 2.5 + pts[-1][0]) / 2,
-                                          pts[-1][1]], width=cw, axis="x"),
+            dict(id="A|corridor", center=[mouth_A[0], mouth_A[1]], width=cw, axis="y"),
+            dict(id="corridor|B", center=[mouth_B[0], mouth_B[1]], width=cw, axis="y"),
         ],
     )
 
 
 def corridor_from_centerline(pts, width, prefix):
-    """Стены по обе стороны ломаной центрлайна — повёрнутые box-сегменты."""
-    out = []
+    """Стены коридора = две offset-ломаные (left/right) со скосом углов (miter).
+    Непрерывная стена ровной ширины: нет щелей на внешних углах, нет пережима
+    внутренних. Концы открыты (входят в комнаты)."""
     half = width / 2
+    seg_norm = []                              # левая нормаль каждого сегмента
     for i in range(len(pts) - 1):
-        ax, ay = pts[i]
-        bxp, byp = pts[i + 1]
-        dx, dy = bxp - ax, byp - ay
-        seg_len = math.hypot(dx, dy)
-        if seg_len < 1e-6:
-            continue
-        yaw = math.atan2(dy, dx)
-        # нормаль (влево/вправо от направления)
-        nx, ny = -dy / seg_len, dx / seg_len
-        midx, midy = (ax + bxp) / 2, (ay + byp) / 2
-        # удлиняем сегмент для перекрытия в коленах
-        L = seg_len + width
-        for s, lab in ((+1, "L"), (-1, "R")):
-            wx = midx + s * half * nx
-            wy = midy + s * half * ny
-            out.append(box(wx, wy, L, WALL_T, f"{prefix}{i}_{lab}", yaw=yaw))
+        dx, dy = pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]
+        sl = math.hypot(dx, dy)
+        seg_norm.append((-dy / sl, dx / sl))
+
+    def offset_polyline(side):                 # side=+1 left, -1 right
+        poly = [(pts[0][0] + side * half * seg_norm[0][0],
+                 pts[0][1] + side * half * seg_norm[0][1])]
+        for i in range(1, len(pts) - 1):       # внутр. вершины — miter
+            n1, n2 = seg_norm[i - 1], seg_norm[i]
+            mx, my = n1[0] + n2[0], n1[1] + n2[1]
+            ml = math.hypot(mx, my)
+            if ml < 1e-6:
+                mx, my, d = n2[0], n2[1], half
+            else:
+                mx, my = mx / ml, my / ml
+                cos_half = max(n1[0] * mx + n1[1] * my, 0.25)   # клип miter
+                d = half / cos_half
+            poly.append((pts[i][0] + side * d * mx, pts[i][1] + side * d * my))
+        poly.append((pts[-1][0] + side * half * seg_norm[-1][0],
+                     pts[-1][1] + side * half * seg_norm[-1][1]))
+        return poly
+
+    out = []
+    for side, lab in ((+1, "L"), (-1, "R")):
+        poly = offset_polyline(side)
+        for i in range(len(poly) - 1):
+            ax, ay = poly[i]
+            bxp, byp = poly[i + 1]
+            dx, dy = bxp - ax, byp - ay
+            sl = math.hypot(dx, dy)
+            if sl < 1e-6:
+                continue
+            out.append(box((ax + bxp) / 2, (ay + byp) / 2, sl + WALL_T, WALL_T,
+                           f"{prefix}{i}_{lab}", yaw=math.atan2(dy, dx)))
     return out
 
 
@@ -283,28 +318,10 @@ def flood_free(occ, spawn, w, h):
 # ───────────────────────── SDF-эмиссия ─────────────────────────
 SDF_HEAD = """<?xml version="1.0" ?>
 <sdf version="1.9">
+  <!-- worlds_a1 — формат как base_stand_12x12 (Aleks 2026-06-15): БЕЗ <gui> →
+       Gazebo поднимает дефолтный GUI со свободной орбитальной камерой
+       (крутить мышью, зум колесом). Стены h=2.5/толщ.0.15, материалы, север=красный. -->
   <world name="{name}">
-
-    <gui fullscreen="0">
-      <plugin filename="MinimalScene" name="3D View">
-        <ignition-gui>
-          <title>3D View</title>
-          <property type="bool" key="showTitleBar">false</property>
-          <property type="string" key="state">docked</property>
-        </ignition-gui>
-        <engine>ogre2</engine>
-        <scene>scene</scene>
-        <ambient_light>0.4 0.4 0.4</ambient_light>
-        <background_color>0.8 0.8 0.8</background_color>
-        <camera_pose>0 0 {cam_z} 0 1.5707 0</camera_pose>
-      </plugin>
-      <plugin filename="GzSceneManager" name="Scene Manager">
-        <ignition-gui>
-          <property key="state" type="string">floating</property>
-          <property type="bool" key="visible">false</property>
-        </ignition-gui>
-      </plugin>
-    </gui>
 
     <physics name="1ms" type="ignored">
       <max_step_size>0.001</max_step_size>
@@ -354,8 +371,8 @@ SDF_HEAD = """<?xml version="1.0" ?>
         <visual name="v">
           <geometry><box><size>{fw} {fh} 0.05</size></box></geometry>
           <material>
-            <ambient>0.85 0.80 0.65 1</ambient>
-            <diffuse>0.85 0.80 0.65 1</diffuse>
+            <ambient>{fr} {fg} {fb} 1</ambient>
+            <diffuse>{fr} {fg} {fb} 1</diffuse>
             <specular>0.1 0.1 0.1 1</specular>
           </material>
         </visual>
@@ -373,8 +390,9 @@ SDF_BOX = """    <model name="{name}">
         <visual name="v">
           <geometry><box><size>{sx:.4f} {sy:.4f} {h:.3f}</size></box></geometry>
           <material>
-            <ambient>0.7 0.78 0.88 1</ambient>
-            <diffuse>0.7 0.78 0.88 1</diffuse>
+            <ambient>{r} {g} {b} 1</ambient>
+            <diffuse>{r} {g} {b} 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
           </material>
         </visual>
       </link>
@@ -394,12 +412,13 @@ SDF_TAIL = """    <!-- Drone spawn — z={sz} м (clearance); takeoff_node по�
 
 def emit_sdf(name, spec):
     w, h = spec["w"], spec["h"]
-    cam_z = max(w, h) * 1.3
-    out = SDF_HEAD.format(name=name, cam_z=f"{cam_z:.1f}", fw=w, fh=h)
+    fr, fg, fb = FLOOR_MAT
+    out = SDF_HEAD.format(name=name, fw=w, fh=h, fr=fr, fg=fg, fb=fb)
     for b in spec["boxes"]:
+        r, g, bl = MAT.get(b.get("kind", "wall"), MAT["wall"])
         out += SDF_BOX.format(
             name=b["name"], cx=b["cx"], cy=b["cy"], z=WALL_H / 2,
-            yaw=b["yaw"], sx=b["sx"], sy=b["sy"], h=WALL_H,
+            yaw=b["yaw"], sx=b["sx"], sy=b["sy"], h=WALL_H, r=r, g=g, b=bl,
         )
     sp = spec["spawn"]
     out += SDF_TAIL.format(x=sp[0], y=sp[1], sz=SPAWN_Z, yaw=sp[2])

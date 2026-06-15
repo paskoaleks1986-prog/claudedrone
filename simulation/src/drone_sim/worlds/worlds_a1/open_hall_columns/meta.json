@@ -20,8 +20,8 @@
     "unknown": 1,
     "wall": 2
   },
-  "wall_height_m": 4.0,
-  "wall_thickness_m": 0.1,
+  "wall_height_m": 2.5,
+  "wall_thickness_m": 0.15,
   "spawn": [
     -6.0,
     -5.0,

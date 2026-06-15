@@ -20,8 +20,8 @@
     "unknown": 1,
     "wall": 2
   },
-  "wall_height_m": 4.0,
-  "wall_thickness_m": 0.1,
+  "wall_height_m": 2.5,
+  "wall_thickness_m": 0.15,
   "spawn": [
     -4.0,
     -3.0,
@@ -57,9 +57,9 @@
     }
   ],
   "counts": {
-    "free": 11418,
+    "free": 11264,
     "unknown": 0,
-    "wall": 582
+    "wall": 736
   },
   "n_boxes": 11,
   "source": "help_scripts/gen_worlds_a1.py",

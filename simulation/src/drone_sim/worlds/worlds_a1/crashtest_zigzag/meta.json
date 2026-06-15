@@ -1,16 +1,16 @@
 {
   "world_name": "crashtest_zigzag",
   "size_m": [
-    18.0,
+    22.0,
     10.0
   ],
   "grid": [
     100,
-    180
+    220
   ],
   "resolution_m": 0.1,
   "origin_gz": [
-    -9.0,
+    -11.0,
     -5.0
   ],
   "frame": "gz_centered (origin=center; SW corner = origin_gz)",
@@ -20,10 +20,10 @@
     "unknown": 1,
     "wall": 2
   },
-  "wall_height_m": 4.0,
-  "wall_thickness_m": 0.1,
+  "wall_height_m": 2.5,
+  "wall_thickness_m": 0.15,
   "spawn": [
-    -6.2,
+    -8.0,
     -1.5,
     0.0
   ],
@@ -31,28 +31,28 @@
     {
       "id": "A|corridor",
       "center": [
-        -3.85,
+        -5.708743945232754,
         -1.5
       ],
-      "width": 1.9,
-      "axis": "x"
+      "width": 2.0,
+      "axis": "y"
     },
     {
       "id": "corridor|B",
       "center": [
-        4.176488874308759,
-        -0.08586725868961342
+        5.849833815313959,
+        0.17124778518500205
       ],
-      "width": 1.9,
-      "axis": "x"
+      "width": 2.0,
+      "axis": "y"
     }
   ],
   "counts": {
-    "free": 5466,
-    "unknown": 11516,
-    "wall": 1018
+    "free": 6365,
+    "unknown": 14122,
+    "wall": 1513
   },
-  "n_boxes": 60,
+  "n_boxes": 68,
   "source": "help_scripts/gen_worlds_a1.py",
   "spec_ref": "rl-lab/docs/worlds_a1_spec.md + worlds_a1_grid.yaml"
 }
