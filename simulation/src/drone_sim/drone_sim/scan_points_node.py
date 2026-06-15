@@ -37,7 +37,7 @@ from geometry_msgs.msg import PoseArray
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import JointState, LaserScan
 from std_msgs.msg import Empty, Float64, String
 
 # Геометрия серво/луча (iris_claudedrone/model.sdf: sg90_arm yaw −π/2, ось Z, θ∈[0,π];
@@ -77,11 +77,17 @@ class ScanPointsNode(Node):
 
         self.start_topic = str(p("start_topic", "/drone/sweep/start").value)
         self.start_fast_topic = str(p("start_fast_topic", "/drone/sweep/start_fast").value)
+        # A (2026-06-15): bearing по ФАКТИЧЕСКОМУ углу джойнта (joint_state), не по
+        # команде /cmd — controller имеет лаг/ошибку, команда≠факт → часть кривизны.
+        self.joint_state_topic = str(
+            p("joint_state_topic", f"/world/{world}/model/iris_claudedrone/joint_state").value)
+        self.joint_name = str(p("joint_name", "sg90_joint").value)
 
         # последнее состояние (кэш для сборки from_pose на момент скана)
         self._odom: dict | None = None      # {x,y,z,yaw,t}
         self._poses: list | None = None     # PoseArray.poses
-        self._servo_rad: float = SERVO_ZERO_OFFSET_RAD  # последний угол серво
+        self._servo_rad: float = SERVO_ZERO_OFFSET_RAD  # команда серво (/cmd)
+        self._joint_rad: float = SERVO_ZERO_OFFSET_RAD  # ФАКТ. угол sg90_joint (joint_state, A)
         self._scan_seq = 0
         self._meta_written = False
 
@@ -96,6 +102,8 @@ class ScanPointsNode(Node):
                                  qos_profile_sensor_data)
         self.create_subscription(PoseArray, self.pose_info_topic, self._on_poses, 10)
         self.create_subscription(Float64, self.servo_topic, self._on_servo, 10)
+        self.create_subscription(JointState, self.joint_state_topic, self._on_joint,
+                                 qos_profile_sensor_data)
         self.create_subscription(LaserScan, self.result_topic, self._on_result, 10)
         self.create_subscription(LaserScan, self.sweep_topic, self._on_sweep,
                                  qos_profile_sensor_data)
@@ -135,6 +143,15 @@ class ScanPointsNode(Node):
     def _on_servo(self, msg: Float64) -> None:
         self._servo_rad = float(msg.data)
 
+    def _on_joint(self, msg: JointState) -> None:
+        # A: фактический угол sg90_joint из физики (не команда). bearing считаем с него.
+        try:
+            i = list(msg.name).index(self.joint_name)
+        except ValueError:
+            return
+        if i < len(msg.position):
+            self._joint_rad = float(msg.position[i])
+
     def _on_sweep(self, msg: LaserScan) -> None:
         if msg.ranges:
             r = float(msg.ranges[0])
@@ -143,10 +160,11 @@ class ScanPointsNode(Node):
         # на угол приходит несколько замеров → перезаписываем (последний = осевший),
         # с ним же — поза дрона на ЭТОТ момент.
         if self._capturing and self._odom is not None:
-            key = round(self._servo_rad, 3)
+            key = round(self._servo_rad, 3)     # ключ = команда (под лучи result'а)
             self._ray_poses[key] = {
                 "odom": dict(self._odom),
                 "gt": self._gt_pose(self._odom),
+                "actual": self._joint_rad,       # A: ФАКТ. угол серво → с него bearing
                 "t": self._now(),
             }
 
@@ -304,12 +322,14 @@ class ScanPointsNode(Node):
             rng = float(r)
             if not math.isfinite(rng) or rng < self.range_min or rng > self.range_max:
                 continue
-            theta = msg.angle_min + i * msg.angle_increment
+            theta = msg.angle_min + i * msg.angle_increment   # команда (для матчинга)
             pose = self._nearest_pose(theta)
             if pose is None:
                 continue
             odom = pose["odom"]
-            bearing = theta - SERVO_ZERO_OFFSET_RAD
+            # A: bearing с ФАКТИЧЕСКОГО угла джойнта (фолбэк на команду theta)
+            actual = pose.get("actual", theta)
+            bearing = actual - SERVO_ZERO_OFFSET_RAD
             x, y, z = self._world_point(odom, bearing, rng)
             dots.append({
                 "id": f"{sid}d{i}", "scan_id": sid, "t": pose["t"], "gen": 0,
@@ -323,7 +343,7 @@ class ScanPointsNode(Node):
         c_gt = center["gt"] if center else None
         rec = {
             "rec": "scan", "id": sid, "t": t, "origin": "fan",
-            "registration": "per_ray",
+            "registration": "per_ray", "bearing_source": "actual_joint",
             "servo_range": [round(msg.angle_min, 4), round(msg.angle_max, 4)],
             "from_pose": {
                 "odom": ({k: round(c_odom[k], 4) for k in ("x", "y", "z", "yaw")}
@@ -345,7 +365,7 @@ class ScanPointsNode(Node):
         if self._last_sweep_range is None:
             self.get_logger().warn("precise: нет свежего /scan/sweep — пропуск")
             return
-        theta = self._servo_rad
+        theta = self._joint_rad   # A: ФАКТ. угол джойнта (не команда)
         rec = self._build_scan("precise", [round(theta, 4), round(theta, 4)],
                                [(theta, self._last_sweep_range)])
         if rec is not None:
