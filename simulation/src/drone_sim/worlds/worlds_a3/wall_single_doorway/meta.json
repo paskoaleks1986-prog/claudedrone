@@ -1,0 +1,70 @@
+{
+  "world_name": "wall_single_doorway",
+  "sprint": "A.3",
+  "skill": "surface-hug",
+  "size_m": [
+    8.0,
+    6.0
+  ],
+  "grid": [
+    60,
+    80
+  ],
+  "resolution_m": 0.1,
+  "origin_gz": [
+    -4.0,
+    -3.0
+  ],
+  "frame": "gz_centered (origin=center; SW corner = origin_gz)",
+  "cell_formula": "ix=floor((wx+w/2)/res); iy=floor((wy+h/2)/res); iy=0=south",
+  "occ_codes": {
+    "free": 0,
+    "unknown": 1,
+    "wall": 2
+  },
+  "wall_height_m": 2.5,
+  "wall_thickness_m": 0.15,
+  "spawn": [
+    -2.0,
+    0.0,
+    0.0
+  ],
+  "spawn_sw": [
+    2.0,
+    3.0
+  ],
+  "waypoints_sw": [
+    [
+      3.5,
+      1.0
+    ],
+    [
+      3.5,
+      5.0
+    ],
+    [
+      6.0,
+      3.0
+    ]
+  ],
+  "doors": [
+    {
+      "id": "W|E",
+      "center": [
+        0.0,
+        0.0
+      ],
+      "width": 0.9,
+      "axis": "y"
+    }
+  ],
+  "counts": {
+    "free": 4426,
+    "unknown": 0,
+    "wall": 374
+  },
+  "n_boxes": 6,
+  "free_mask": "free_mask.png (free=0/else=255, SW iy=0 \u044e\u0433, \u0438\u0437 yaw-aware occ)",
+  "source": "help_scripts/gen_worlds_a3.py",
+  "spec_ref": "researchbest:v3/plan_sprint/v3_a3_surface_hug_v1.md \u00a710 (HANDOFF 2026-06-18 13:49)"
+}
