@@ -134,17 +134,31 @@ def main() -> None:
     axB.set_title("Расстояние до follow-стены (wall-follow check)")
     axB.legend(fontsize=8); axB.grid(alpha=0.3)
 
-    # ── C: команды M1c ──
+    # ── C: команды M1c + ‖Δa‖-сглаженность (число, а не вводящая в заблуждение форма:
+    # line-plot соединяет редкие ±1 yaw-флипы драматичными линиями → «псевдо-bang-bang») ──
     if cmd:
         ct = np.array(cmd["t"]) - t0
-        axC.plot(ct, cmd["vx"], label="vx", lw=1)
-        axC.plot(ct, cmd["vy"], label="vy", lw=1)
-        axC.plot(ct, cmd["yaw_rate"], label="yaw_rate", lw=1)
+        vx = np.asarray(cmd["vx"], float); vy = np.asarray(cmd["vy"], float)
+        yw = np.asarray(cmd["yaw_rate"], float)
+        axC.plot(ct, vx, label="vx", lw=1)
+        axC.plot(ct, vy, label="vy", lw=1)
+        axC.plot(ct, yw, label="yaw_rate", lw=1)
         axC.legend(fontsize=8)
+        # ‖Δa‖ в action-space (vx,vy / v_max=0.6 ; yaw / w_max=1.0) — сглаженность политики
+        act = np.column_stack([vx / 0.6, vy / 0.6, yw / 1.0])
+        if len(act) > 1:
+            da = np.linalg.norm(np.diff(act, axis=0), axis=1)
+            flip = 100.0 * np.mean(np.abs(np.diff(yw)) > 0.5)
+            axC.annotate(
+                f"‖Δa‖ median={np.median(da):.3f} mean={np.mean(da):.3f}  "
+                f"|Δyaw|>0.5: {flip:.0f}% шагов",
+                xy=(0.02, 0.92), xycoords="axes fraction", fontsize=9,
+                bbox=dict(boxstyle="round", fc="lightblue", alpha=0.8))
     else:
         axC.text(0.5, 0.5, "нет _cmd.csv", ha="center", va="center")
     axC.set_xlabel("t, с"); axC.set_ylabel("cmd")
-    axC.set_title("Команды M1c (/drone/cmd_vel_body)"); axC.grid(alpha=0.3)
+    axC.set_title("Команды M1c (/drone/cmd_vel_body) + сглаженность ‖Δa‖")
+    axC.grid(alpha=0.3)
 
     # FINISH-вертикаль на B/C
     if t_finish is not None:
