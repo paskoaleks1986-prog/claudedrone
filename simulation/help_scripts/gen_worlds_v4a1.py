@@ -43,25 +43,48 @@ from pathlib import Path
 import numpy as np
 
 import gen_worlds_a1 as a1
-from gen_worlds_a1 import RES, WALL_T, rect_walls
+from gen_worlds_a1 import RES, box
 
 SIM_ROOT = Path(__file__).resolve().parent.parent
 OUT_ROOT = SIM_ROOT / "src/drone_sim/worlds/worlds_v4a1"
 
 # отступ START/FINISH-маркеров от торцевых стен (центр зоны СТАРТ/ФИНИШ)
 END_INSET = 1.0
+# ⚠ ПАРИТИ-ФИКС (researchbest 08:30 + rl-lab train-env): (length,width) = FLYABLE
+# interior (НЕ bbox). Стена = 1 КЛЕТКА (0.1м) снаружи flyable → occupancy совпадает
+# с rl-lab `blind_corridor_env` (1-cell border, flyable 100×20=10×2 → grid (22,102)).
+# 0.1 вместо проектных 0.15 — осознанно: bit-exact с train-env (вся цель парити).
+WALL_T_V4 = 0.1
+
+
+def border_walls(bbox_w, bbox_h):
+    """1-клеточный border (как rl-lab blind_corridor_env): стена-box центрирована
+    на ЦЕНТРЕ крайней клетки (±bbox/2 − res/2), толщина = 1 клетка. ⚠ НЕ rect_walls
+    (та центрирует на КРАЮ bbox ±bbox/2 → внутр.грань падает на cell-boundary →
+    fp-эпсилон роняет ряд). Центр-на-клетке растеризуется в чистый 1-cell ring.
+    Север (+Y) = красный ориентир (как worlds_a1)."""
+    ox, oy = bbox_w / 2 - RES / 2, bbox_h / 2 - RES / 2
+    return [
+        box(0, -oy, bbox_w, RES, "border_south", kind="wall"),
+        box(0,  oy, bbox_w, RES, "border_north", kind="wall_red"),
+        box(-ox, 0, RES, bbox_h, "border_west", kind="wall"),
+        box( ox, 0, RES, bbox_h, "border_east", kind="wall"),
+    ]
 
 
 def spec_straight(length, width):
-    """Прямой коридор length(X)×width(Y), стены по периметру, ось вдоль X.
-    spawn=START у западного торца (y=0); FINISH у восточного."""
-    w, h = float(length), float(width)
-    start_x = -w / 2 + END_INSET
-    finish_x = w / 2 - END_INSET
+    """Прямой коридор: flyable interior length(X)×width(Y); 1-клеточный border снаружи.
+    bbox = flyable + 2×0.1 (border). spawn=START у западного торца (y=0); FINISH
+    у восточного. flyable центрирован в (0,0) → coords в flyable-кадре."""
+    fl_L, fl_W = float(length), float(width)
+    w, h = fl_L + 2 * WALL_T_V4, fl_W + 2 * WALL_T_V4   # exterior bbox
+    start_x = -fl_L / 2 + END_INSET
+    finish_x = fl_L / 2 - END_INSET
     return dict(
         w=w, h=h,
+        flyable=(fl_L, fl_W),
         spawn=(start_x, 0.0, 0.0),          # START, нос вдоль +x (к FINISH)
-        boxes=rect_walls(w, h),
+        boxes=border_walls(w, h),
         doors=[],
         corridor_axis="x",
         start_gz=[round(start_x, 3), 0.0],
@@ -122,28 +145,30 @@ def build(world):
     interior = interior_bounds_gz(occ, w, h)
     counts = {k: int((occ == v).sum()) for k, v in
               (("free", a1.FREE), ("unknown", a1.UNKNOWN), ("wall", a1.WALL))}
-    length_m = round(w if spec["corridor_axis"] == "x" else h, 3)
-    width_m = round(h if spec["corridor_axis"] == "x" else w, 3)
-    # внутр. ширина/длина (вычет толщины стен) — то что реально облётно
+    # ⚠ корридор-габариты = FLYABLE (контракт парити с rl-lab train-env), НЕ bbox
+    fl_L, fl_W = spec["flyable"]
+    length_m = round(fl_L if spec["corridor_axis"] == "x" else fl_W, 3)
+    width_m = round(fl_W if spec["corridor_axis"] == "x" else fl_L, 3)
+    # измеренный flyable из occupancy (должен == номинал flyable)
     interior_w = round(interior[1][0] - interior[0][0], 3)
     interior_h = round(interior[1][1] - interior[0][1], 3)
     meta = {
         "world_name": world,
         "sprint": "V4-A1",
         "skill": "wall-hug (тактильный, VL-only)",
-        "size_m": [w, h],                        # внешний bbox (по центрам стен)
-        "grid": [ny, nx],
+        "size_m": [round(w, 3), round(h, 3)],    # внешний bbox (flyable + 2×0.1 border)
+        "grid": [ny, nx],                        # = (flyable_W/res + 2, flyable_L/res + 2)
         "resolution_m": RES,
         "origin_gz": [-w / 2, -h / 2],
-        "frame": "gz_centered (origin=center; SW corner = origin_gz)",
+        "frame": "gz_centered (origin=center=flyable-центр; SW corner = origin_gz)",
         "cell_formula": "ix=floor((wx+w/2)/res); iy=floor((wy+h/2)/res); iy=0=south",
         "occ_codes": {"free": a1.FREE, "unknown": a1.UNKNOWN, "wall": a1.WALL},
         "wall_height_m": a1.WALL_H,
-        "wall_thickness_m": WALL_T,
-        # ── V4-A1 навигация (rl-lab кладёт зоны ПО ЭТОМУ) ──
+        "wall_thickness_m": WALL_T_V4,           # 1 клетка (0.1) = парити с rl-lab border
+        # ── V4-A1 навигация (rl-lab кладёт зоны ПО ЭТОМУ) — всё в FLYABLE-кадре ──
         "corridor_axis": spec["corridor_axis"],
-        "corridor_length_m": length_m,           # габарит вдоль оси
-        "corridor_width_m": width_m,             # габарит поперёк
+        "corridor_length_m": length_m,           # FLYABLE габарит вдоль оси
+        "corridor_width_m": width_m,             # FLYABLE габарит поперёк
         "interior_bounds_gz": interior,          # точный flyable-прямоуг (free-клетки)
         "interior_size_m": [interior_w, interior_h],
         "start_gz": spec["start_gz"],            # центр зоны СТАРТ (= spawn xy)
@@ -163,7 +188,9 @@ def build(world):
         "counts": counts,
         "n_boxes": len(spec["boxes"]),
         "free_mask": "free_mask.png (free=0/else=255, SW iy=0 юг, из occ)",
-        "parity": "SDF+occupancy из одного box-list → bit-wise; rl-lab сверяет IoU=1.0",
+        "parity": "FLYABLE interior = corridor_length×width; стена 1 клетка → occupancy "
+                  "совпадает с rl-lab blind_corridor_env (1-cell border). SDF+occupancy "
+                  "из одного box-list → bit-wise; IoU=1.0 на flyable.",
         "source": "help_scripts/gen_worlds_v4a1.py",
         "spec_ref": "rl-lab:v4/sprint_a1/v4_a1_spec_v1.md (канон) + "
                     "researchbest HANDOFF [TO:simulation] 2026-06-20 04:40/04:48",

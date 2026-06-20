@@ -3,19 +3,19 @@
   "sprint": "V4-A1",
   "skill": "wall-hug (тактильный, VL-only)",
   "size_m": [
-    16.0,
-    2.0
+    16.2,
+    2.2
   ],
   "grid": [
-    20,
-    160
+    22,
+    162
   ],
   "resolution_m": 0.1,
   "origin_gz": [
-    -8.0,
-    -1.0
+    -8.1,
+    -1.1
   ],
-  "frame": "gz_centered (origin=center; SW corner = origin_gz)",
+  "frame": "gz_centered (origin=center=flyable-центр; SW corner = origin_gz)",
   "cell_formula": "ix=floor((wx+w/2)/res); iy=floor((wy+h/2)/res); iy=0=south",
   "occ_codes": {
     "free": 0,
@@ -23,23 +23,23 @@
     "wall": 2
   },
   "wall_height_m": 2.5,
-  "wall_thickness_m": 0.15,
+  "wall_thickness_m": 0.1,
   "corridor_axis": "x",
   "corridor_length_m": 16.0,
   "corridor_width_m": 2.0,
   "interior_bounds_gz": [
     [
-      -7.9,
-      -0.9
+      -8.0,
+      -1.0
     ],
     [
-      7.9,
-      0.9
+      8.0,
+      1.0
     ]
   ],
   "interior_size_m": [
-    15.8,
-    1.8
+    16.0,
+    2.0
   ],
   "start_gz": [
     -7.0,
@@ -65,13 +65,13 @@
   },
   "doors": [],
   "counts": {
-    "free": 2844,
+    "free": 3200,
     "unknown": 0,
-    "wall": 356
+    "wall": 364
   },
   "n_boxes": 4,
   "free_mask": "free_mask.png (free=0/else=255, SW iy=0 юг, из occ)",
-  "parity": "SDF+occupancy из одного box-list → bit-wise; rl-lab сверяет IoU=1.0",
+  "parity": "FLYABLE interior = corridor_length×width; стена 1 клетка → occupancy совпадает с rl-lab blind_corridor_env (1-cell border). SDF+occupancy из одного box-list → bit-wise; IoU=1.0 на flyable.",
   "source": "help_scripts/gen_worlds_v4a1.py",
   "spec_ref": "rl-lab:v4/sprint_a1/v4_a1_spec_v1.md (канон) + researchbest HANDOFF [TO:simulation] 2026-06-20 04:40/04:48"
 }
