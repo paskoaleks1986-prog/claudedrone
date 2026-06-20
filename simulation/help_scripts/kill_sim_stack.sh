@@ -43,6 +43,8 @@ PATTERNS=(
   'gz sim'
   'parameter_bridge.*world/'
   'arducopter'
+  'sim_vehicle'          # SITL-лаунчер (sim_vehicle.py) — держит порт, мог респавнить arducopter
+  'mavproxy'             # MAVProxy-консоль (mavproxy.py) — отд. процесс, держит MAVLINK_PORT
   'mavros_node'
 )
 
