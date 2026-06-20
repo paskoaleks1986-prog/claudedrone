@@ -32,6 +32,11 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
 )
 install(PROGRAMS
+  drone_sim/zone_semantic_server.py
+  RENAME zone_semantic_server
+  DESTINATION lib/${PROJECT_NAME}
+)
+install(PROGRAMS
   drone_sim/takeoff_node.py
   RENAME takeoff
   DESTINATION lib/${PROJECT_NAME}
