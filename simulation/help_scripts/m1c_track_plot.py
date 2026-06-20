@@ -25,6 +25,9 @@ import argparse
 import csv
 import json
 import os
+import sys
+
+csv.field_size_limit(min(sys.maxsize, 2**31 - 1))  # длинные zone-JSON поля не должны валить парс
 
 import matplotlib
 matplotlib.use("Agg")
@@ -32,19 +35,35 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-def _load(path, cols):
-    """CSV → dict[col]=list(float|str). Нет файла → None."""
+def _load(path, cols, numeric):
+    """CSV → dict[col]=list. `numeric` колонки → float; строка, где любая
+    numeric-колонка не парсится (битый append/teardown), ПРОПУСКАЕТСЯ целиком
+    (выравнивание списков сохраняется). Нет файла → None."""
     if not path or not os.path.exists(path):
         return None
     out = {c: [] for c in cols}
+    skipped = 0
     with open(path) as f:
         for row in csv.DictReader(f):
+            vals = {}
+            bad = False
             for c in cols:
                 v = row.get(c, "")
-                try:
-                    out[c].append(float(v))
-                except (ValueError, TypeError):
-                    out[c].append(v)
+                if c in numeric:
+                    try:
+                        vals[c] = float(v)
+                    except (ValueError, TypeError):
+                        bad = True
+                        break
+                else:
+                    vals[c] = v
+            if bad:
+                skipped += 1
+                continue
+            for c in cols:
+                out[c].append(vals[c])
+    if skipped:
+        print(f"[m1c_track_plot] {os.path.basename(path)}: пропущено {skipped} битых строк")
     return out if out[cols[0]] else None
 
 
@@ -58,15 +77,20 @@ def main() -> None:
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
-    gt = _load(f"{args.prefix}_gt.csv", ["t", "x", "y", "z", "yaw"])
-    odom = _load(f"{args.prefix}_odom.csv", ["t", "x", "y", "z", "yaw"])
-    cmd = _load(f"{args.prefix}_cmd.csv", ["t", "vx", "vy", "yaw_rate"])
+    xyz = {"t", "x", "y", "z", "yaw"}
+    gt = _load(f"{args.prefix}_gt.csv", ["t", "x", "y", "z", "yaw"], xyz)
+    odom = _load(f"{args.prefix}_odom.csv", ["t", "x", "y", "z", "yaw"], xyz)
+    cmd = _load(f"{args.prefix}_cmd.csv", ["t", "vx", "vy", "yaw_rate"],
+                {"t", "vx", "vy", "yaw_rate"})
     zone = _load(f"{args.prefix}_zone.csv",
-                 ["t", "type", "label", "score_value", "in_course", "sectors_ok"])
+                 ["t", "type", "label", "score_value", "in_course", "sectors_ok"],
+                 {"t"})
     if gt is None and odom is None:
         raise SystemExit("нет ни _gt ни _odom CSV — нечего рисовать")
 
-    t0 = (gt or odom)["t"][0]
+    # глобальный t0 = мин по всем источникам (топики коннектятся в разное время →
+    # иначе оси панелей рассинхронены и появляются ложные диагонали)
+    t0 = min(s["t"][0] for s in (gt, odom, cmd, zone) if s)
     # момент первого FINISH-события
     t_finish = None
     if zone:
