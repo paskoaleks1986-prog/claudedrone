@@ -154,12 +154,33 @@ class M1cTrackRecorder(Node):
         )
 
 
+def _acquire_lock(prefix: str) -> str:
+    """Lock-guard: запрет ДВУХ рекордеров на один --prefix (конкурентная запись
+    в одни CSV → битые строки, кейс runA ×2). Stale-lock от мёртвого PID снимаем."""
+    import os
+    lock = f"{prefix}.lock"
+    if os.path.exists(lock):
+        try:
+            old = int(open(lock).read().strip())
+            os.kill(old, 0)                      # жив? → коллизия
+            raise SystemExit(
+                f"m1c_track_recorder: prefix '{prefix}' УЖЕ пишется рекордером PID {old}. "
+                f"Убей его (kill {old}) или возьми другой --prefix — иначе CSV побьются.")
+        except (ValueError, ProcessLookupError):
+            pass                                  # stale-lock → перезапишем
+    with open(lock, "w") as f:
+        f.write(str(os.getpid()))
+    return lock
+
+
 def main() -> int:
+    import os
     ap = argparse.ArgumentParser()
     ap.add_argument("--prefix", required=True, help="префикс выходных CSV")
     ap.add_argument("--world", default="corridor_straight_m", help="имя мира (для pose/info топика)")
     args = ap.parse_args()
 
+    lock = _acquire_lock(args.prefix)            # до открытия файлов (truncate)
     rclpy.init()
     node = M1cTrackRecorder(args.prefix, args.world)
 
@@ -175,6 +196,10 @@ def main() -> int:
         node.close()
         node.destroy_node()
         rclpy.shutdown()
+        try:
+            os.remove(lock)
+        except OSError:
+            pass
     return 0
 
 
