@@ -32,6 +32,11 @@ install(PROGRAMS
   RENAME teleop_keyboard
   DESTINATION lib/${PROJECT_NAME}
 )
+install(PROGRAMS
+  policy_bridge/m1c_bridge_node.py
+  RENAME m1c_bridge_node
+  DESTINATION lib/${PROJECT_NAME}
+)
 
 install(DIRECTORY
   launch
