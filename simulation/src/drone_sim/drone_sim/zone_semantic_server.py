@@ -39,8 +39,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from std_msgs.msg import Float32MultiArray, String
 
-from drone_sim.zone_geometry import (VL_RANGE_CELLS, WALL_TO_SIDE,
-                                      perp_to_wall_cells)
+from drone_sim.zone_geometry import classify_zone
 
 
 class ZoneSemanticServer(Node):
@@ -62,6 +61,7 @@ class ZoneSemanticServer(Node):
 
         # состояние позы
         self.x_gz = self.y_gz = self.heading = 0.0
+        self.vel_world = (0.0, 0.0)                       # из odom twist (для course-score)
         self.have_pose = False
         self.vl = np.full(6, np.inf, dtype=np.float32)   # /drone/perimeter (м), inf=нет стены
 
@@ -105,6 +105,8 @@ class ZoneSemanticServer(Node):
         self.x_gz, self.y_gz = p.x, p.y
         self.heading = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
                                   1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        tw = msg.twist.twist.linear           # world-ish планарная скорость (course-score)
+        self.vel_world = (tw.x, tw.y)
         self.have_pose = True
 
     def _perim_cb(self, msg: Float32MultiArray):
@@ -112,112 +114,16 @@ class ZoneSemanticServer(Node):
         if len(d) >= 6:
             self.vl = np.array(d[:6], dtype=np.float32)
 
-    # ── геометрия (парити) ──
-    def _cell_xy(self):
-        """gz-метры → continuous cell coords (как rl-lab pose в клетках)."""
-        return ((self.x_gz - self.origin_gz[0]) / self.res,
-                (self.y_gz - self.origin_gz[1]) / self.res)
-
-    def _perp_to_wall(self, side: str) -> float:
-        """Перп-дистанция до следуемой стены (м). Реплика BlindCorridorEnv."""
-        cx, cy = self._cell_xy()
-        return perp_to_wall_cells(self.grid, cx, cy, self.heading, side) * self.res
-
-    def _sectors_in_contact(self, idxs) -> bool:
-        """require_sectors в контакте: VL-reading < VL_max (= их vl_norm<0.999)."""
-        vl_max = VL_RANGE_CELLS * self.res
-        return all(self.vl[i] < vl_max - 1e-9 for i in idxs)
-
-    def _pose_sw(self):
-        return (self.x_gz - self.flyable_sw_origin[0],
-                self.y_gz - self.flyable_sw_origin[1])
-
-    def _in_zone(self, z) -> tuple[bool, bool]:
-        """(in_zone, sectors_ok) для зоны z по текущей позе."""
-        g = z["geometry"]
-        kind = g["kind"]
-        req = z.get("require_sectors", [])
-        sectors_ok = self._sectors_in_contact(req) if req else True
-        if kind == "wall_band":
-            side = WALL_TO_SIDE.get(g["wall"], "right")
-            perp = self._perp_to_wall(side)
-            inside = perp <= g["width_m"]
-            return (inside and sectors_ok, sectors_ok)
-        if kind == "rect":
-            xs, ys = self._pose_sw()
-            xlo, xhi = g["x_m"]; ylo, yhi = g["y_m"]
-            return (xlo <= xs <= xhi and ylo <= ys <= yhi, sectors_ok)
-        if kind == "dead_band":
-            # середина шириной width_m по центру коридора (поперёк); стены вне зоны
-            _, ys = self._pose_sw()
-            half = g["width_m"] / 2.0
-            cy = self._corridor_mid_sw()
-            return (abs(ys - cy) <= half, sectors_ok)
-        if kind == "polygon":
-            return (self._in_polygon(g["points"]), sectors_ok)
-        # complement резолвится на уровне _tick (нужны прочие зоны)
-        return (False, sectors_ok)
-
-    def _corridor_mid_sw(self):
-        # центр flyable поперёк оси (для dead_band); коридор вдоль X → середина по Y
-        y0 = self.flyable_sw_origin[1]
-        # interior высота = grid_h*res - 2*res (border); проще: half flyable
-        return (self.grid.shape[0] - 2) * self.res / 2.0
-
-    def _in_polygon(self, pts) -> bool:
-        xs, ys = self._pose_sw()
-        n = len(pts); inside = False; j = n - 1
-        for i in range(n):
-            xi, yi = pts[i]; xj, yj = pts[j]
-            if ((yi > ys) != (yj > ys)) and \
-               (xs < (xj - xi) * (ys - yi) / (yj - yi + 1e-12) + xi):
-                inside = not inside
-            j = i
-        return inside
-
-    def _score(self, z) -> float:
-        s = z.get("reaction", {}).get("score")
-        if s == "course_progress":
-            v = self._vel_world()
-            lam = z["reaction"].get("lambda_drift", 3.0)
-            on = float(np.dot(v, self.course_dir))
-            perp = abs(float(v[0] * self.course_dir[1] - v[1] * self.course_dir[0]))
-            return on - lam * perp
-        if s == "finish_bonus":
-            return 1.0
-        if s == "soft_neg":
-            return -0.1
-        return 0.0
-
-    def _vel_world(self):
-        return np.array([0.0, 0.0])   # twist-слой добавим при wire с odom twist
-
-    # ── основной тик ──
+    # ── основной тик (вся геометрия — в zone_geometry.classify_zone, пар-тест оффлайн) ──
     def _tick(self):
         if not self.have_pose:
             return
-        active = None
-        for z in self.zones:
-            if z["geometry"]["kind"] == "complement":
-                continue
-            inside, sectors_ok = self._in_zone(z)
-            if inside:
-                active = (z, sectors_ok)
-                break
-        if active is None:   # ни одна именованная → complement (FORBIDDEN)
-            comp = next((z for z in self.zones
-                         if z["geometry"]["kind"] == "complement"), None)
-            if comp is None:
-                return
-            z, sectors_ok = comp, True
-        else:
-            z, sectors_ok = active
-        on_course = float(np.dot(self._vel_world(), self.course_dir))
-        evt = {
-            "zone_id": z["id"], "type": z["type"], "label": z.get("label", ""),
-            "score_value": round(self._score(z), 4),
-            "sectors_ok": bool(sectors_ok), "in_course": round(on_course, 4),
-        }
+        evt = classify_zone(
+            self.grid, self.res, self.origin_gz, self.flyable_sw_origin,
+            self.zones, self.course_dir, self.x_gz, self.y_gz, self.heading,
+            self.vl, vel_world=self.vel_world)
+        if evt is None:
+            return
         m = String(); m.data = json.dumps(evt, ensure_ascii=False)
         self.pub.publish(m)
 
