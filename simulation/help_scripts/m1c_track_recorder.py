@@ -70,7 +70,7 @@ class M1cTrackRecorder(Node):
             self._files[name] = f
             self._writers[name] = w
         self.n = {"gt": 0, "odom": 0, "cmd": 0, "zone": 0}
-        self._last_odom_xy: tuple[float, float] | None = None
+        self._last_odom: tuple[float, float, float] | None = None
 
         self.create_subscription(
             Odometry, "/mavros/local_position/odom", self._odom_cb, qos_profile_sensor_data
@@ -93,7 +93,7 @@ class M1cTrackRecorder(Node):
     def _odom_cb(self, m: Odometry) -> None:
         p = m.pose.pose.position
         q = m.pose.pose.orientation
-        self._last_odom_xy = (p.x, p.y)
+        self._last_odom = (p.x, p.y, p.z)
         self._writers["odom"].writerow(
             [f"{self._t():.3f}", f"{p.x:.4f}", f"{p.y:.4f}", f"{p.z:.4f}",
              f"{_yaw_from_quat(q.x, q.y, q.z, q.w):.4f}"]
@@ -101,17 +101,19 @@ class M1cTrackRecorder(Node):
         self.n["odom"] += 1
 
     def _gt_cb(self, m: PoseArray) -> None:
-        # PoseArray не несёт имён → дрон = pose, ближайший к последнему odom XY
-        # (стены статичны и далеко; до первого odom берём pose с макс |xy|, т.к.
-        # дрон спавнится у входа x≈-4, стены центрированы — но надёжнее ждать odom).
+        # PoseArray не несёт имён → дрон = pose, ближайший к odom в 3D (x,y,z).
+        # ⚠ XY-only матч ловил пол/основание ПОД дроном (тот же xy, z≈0) →
+        # z-артефакт (фикс после ре-рана #2: z бимодально 0/1). 3D-матч (вкл. z)
+        # снимает вертикальную неоднозначность стека сущностей.
         if not m.poses:
             return
-        ref = self._last_odom_xy
+        ref = self._last_odom
         if ref is None:
             return  # ждём первый odom для якоря (доли секунды)
         best, bestd = None, 1e18
         for pose in m.poses:
-            d = (pose.position.x - ref[0]) ** 2 + (pose.position.y - ref[1]) ** 2
+            d = ((pose.position.x - ref[0]) ** 2 + (pose.position.y - ref[1]) ** 2
+                 + (pose.position.z - ref[2]) ** 2)
             if d < bestd:
                 bestd, best = d, pose
         if best is None:
