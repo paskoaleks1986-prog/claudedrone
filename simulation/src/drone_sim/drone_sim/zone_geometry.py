@@ -94,10 +94,19 @@ def classify_zone(grid, res, origin_gz, flyable_sw_origin, zones, course_dir,
             return on - lam * perp
         return {"finish_bonus": 1.0, "soft_neg": -0.1}.get(s, 0.0)
 
+    # ПАРИТИ: в BlindCorridorEnv.step финиш (x>=finish_x → terminate) проверяется
+    # ПЕРЕД follow-reward (in_zone) — это `elif`, НЕ зависит от band. Поэтому
+    # терминальные зоны (reaction.on_enter == "terminate") классифицируем ПЕРВЫМИ:
+    # иначе wall_band шадовит finish при хагге у финиша → terminate не срабатывает.
+    # Стабильная сортировка сохраняет порядок yaml внутри равного приоритета.
+    def _zone_priority(z):
+        return 0 if z.get("reaction", {}).get("on_enter") == "terminate" else 1
+    ordered = sorted(
+        (z for z in zones if z["geometry"]["kind"] != "complement"),
+        key=_zone_priority,
+    )
     active = None
-    for z in zones:
-        if z["geometry"]["kind"] == "complement":
-            continue
+    for z in ordered:
         inside, ok = in_zone(z)
         if inside:
             active = (z, ok); break
