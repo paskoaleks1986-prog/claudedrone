@@ -16,6 +16,14 @@ def generate_launch_description():
     # Используется и для SDF path, и для gz_bridge `/world/<name>/...` topics.
     world_name = os.environ.get('DEFAULT_WORLD', 'indoor_room')
     world = os.path.join(pkg, 'worlds', f'{world_name}.sdf')
+    if not os.path.exists(world):
+        # вложенные наборы (worlds_v4a1/<name>/<name>.sdf, worlds_a1/a2/a3/...):
+        # flat-имя первично; gz берёт world-имя из SDF → bridge-топики совпадают.
+        import glob as _glob
+        _hits = _glob.glob(os.path.join(pkg, 'worlds', '**', f'{world_name}.sdf'),
+                           recursive=True)
+        if _hits:
+            world = _hits[0]
 
     # Путь к моделям
     models = os.path.join(pkg, 'models')

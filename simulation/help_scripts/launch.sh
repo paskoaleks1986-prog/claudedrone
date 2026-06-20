@@ -207,8 +207,15 @@ if (( ASK_WORLD )); then
 fi
 [[ -z "$WORLD" ]] && WORLD="$DEFAULT_WORLD"
 WORLD_PATH="$WORLD_DIR/$WORLD.sdf"
+if [[ ! -f "$WORLD_PATH" ]]; then
+    # вложенные наборы (worlds_v4a1/<name>/<name>.sdf, worlds_a1/a2/a3/...):
+    # gz берёт world-имя из <world name=...> ВНУТРИ SDF, не из пути → bridge-топики
+    # /world/<name>/... совпадают. flat-имя по-прежнему резолвится первым.
+    nested=$(find "$WORLD_DIR" -name "$WORLD.sdf" -print -quit 2>/dev/null)
+    [[ -n "$nested" ]] && WORLD_PATH="$nested"
+fi
 if (( WANT_GZ )) && [[ ! -f "$WORLD_PATH" ]]; then
-    echo "ERROR: world not found: $WORLD_PATH" >&2
+    echo "ERROR: world not found: '$WORLD' (ни flat, ни вложенно под $WORLD_DIR)" >&2
     exit 1
 fi
 
