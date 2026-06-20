@@ -79,8 +79,18 @@ class ZoneSemanticServer(Node):
 
     # ── загрузка карты/зон ──
     def _default_worlds_root(self):
+        # Канон ROS2: миры ставятся install(DIRECTORY worlds DESTINATION share/drone_sim)
+        # → берём через ament share-dir, а НЕ относительно __file__ (symlink-install
+        # резолвил __file__ в src → parents[2] мимо). Source-fallback для оффлайн/dev.
+        try:
+            from ament_index_python.packages import get_package_share_directory
+            cand = Path(get_package_share_directory("drone_sim")) / "worlds" / "worlds_v4a1"
+            if cand.exists():
+                return str(cand)
+        except Exception:
+            pass
         here = Path(__file__).resolve()
-        return str(here.parents[2] / "worlds" / "worlds_v4a1")
+        return str(here.parents[1] / "worlds" / "worlds_v4a1")  # src/drone_sim/worlds/...
 
     def _load_map(self, world_dir: Path):
         occ = np.load(world_dir / "occupancy.npz")
