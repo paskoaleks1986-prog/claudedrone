@@ -26,7 +26,7 @@ from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from std_msgs.msg import Float32MultiArray, String
+from std_msgs.msg import Bool, Float32MultiArray, String
 
 from policy_bridge.m1c_obs_builder import (ToFMemory, build_obs17,
                                            normalize_vl, yaw_rel_of)
@@ -51,6 +51,9 @@ class M1cBridge(Node):
         # terminate-stop (опц., greenlit для чистого лога): на FINISH-зону → нулевой
         # Twist (hover), чтобы политика не долбила торец (z-просадка ре-рана #1/#2).
         self.declare_parameter("stop_on_finish", False)
+        # полная stop-обвязка терминала (Aleks 2026-06-20): на FINISH ещё и LAND
+        # (миссия завершена, не вечный hover) → Bool в /drone/land manual_fly.
+        self.declare_parameter("land_on_finish", False)
         mp = self.get_parameter("model_path").value
         if not mp:
             raise SystemExit("m1c_bridge: -p model_path:=<...model.zip> обязателен")
@@ -68,7 +71,9 @@ class M1cBridge(Node):
         self.lpf_alpha = dt / (tau + dt) if tau > 0.0 else 1.0   # 1.0 = passthrough
         self._cmd_filt = np.zeros(3, dtype=np.float32)           # [vx,vy,yaw] фильтр-состояние
         self.stop_on_finish = bool(self.get_parameter("stop_on_finish").value)
+        self.land_on_finish = bool(self.get_parameter("land_on_finish").value)
         self._finished = False
+        self._land_sent = False
 
         self.have_vl = self.have_odom = False
         self.vl_norm = np.ones(6, dtype=np.float32)
@@ -80,14 +85,16 @@ class M1cBridge(Node):
         self.create_subscription(Odometry, "/mavros/local_position/odom",
                                  self._odom_cb, qos_profile_sensor_data)
         self.cmd_pub = self.create_publisher(Twist, CMD_TOPIC, 10)
-        if self.stop_on_finish:
+        self.land_pub = self.create_publisher(Bool, "/drone/land", 10)
+        if self.stop_on_finish or self.land_on_finish:
             self.create_subscription(String, "/drone/zone_event", self._zone_cb, 10)
         self.create_timer(dt, self._tick)
         lpf = f"LPF α={self.lpf_alpha:.2f}" if self.lpf_alpha < 1.0 else "LPF off"
         self.get_logger().info(
             f"M1cBridge up: model={mp.split('/')[-1]} side={self.side_cmd:+.0f} "
             f"v_max={self.v_max} band={self.band_hi} decay={self.decay_steps}шагов "
-            f"{lpf} stop_on_finish={self.stop_on_finish} → Twist в {CMD_TOPIC}")
+            f"{lpf} stop_on_finish={self.stop_on_finish} land_on_finish={self.land_on_finish} "
+            f"→ Twist в {CMD_TOPIC}")
 
     def _perim_cb(self, msg: Float32MultiArray):
         d = list(msg.data)
@@ -111,6 +118,11 @@ class M1cBridge(Node):
                 if not self._finished:
                     self._finished = True
                     self.get_logger().info("FINISH-зона → terminate-stop: hover (нулевой Twist)")
+                # полная stop-обвязка: stop скоростей (hover) → LAND миссии (один раз)
+                if self.land_on_finish and not self._land_sent:
+                    self._land_sent = True
+                    self.land_pub.publish(Bool(data=True))
+                    self.get_logger().info("FINISH-зона → LAND (миссия завершена) /drone/land")
         except (ValueError, TypeError):
             pass
 
