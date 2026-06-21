@@ -1,6 +1,8 @@
 {
   "world_name": "corridor_straight_m",
-  "sprint": "V4-A1",
+  "version": "v4",
+  "sprint": "v4_a1",
+  "task_default": "t1_follow_right",
   "skill": "wall-hug (тактильный, VL-only)",
   "size_m": [
     10.2,

@@ -1,5 +1,8 @@
 {
   "world_name": "two_rooms",
+  "version": "v3",
+  "sprint": "v3_a1",
+  "task_default": null,
   "size_m": [
     11.0,
     5.5

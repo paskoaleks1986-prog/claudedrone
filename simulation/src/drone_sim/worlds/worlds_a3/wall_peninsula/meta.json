@@ -1,6 +1,8 @@
 {
   "world_name": "wall_peninsula",
-  "sprint": "A.3",
+  "version": "v3",
+  "sprint": "v3_a3",
+  "task_default": null,
   "skill": "surface-hug",
   "size_m": [
     8.0,
@@ -62,7 +64,7 @@
     "wall": 1096
   },
   "n_boxes": 5,
-  "free_mask": "free_mask.png (free=0/else=255, SW iy=0 \u044e\u0433, \u0438\u0437 yaw-aware occ)",
+  "free_mask": "free_mask.png (free=0/else=255, SW iy=0 юг, из yaw-aware occ)",
   "source": "help_scripts/gen_worlds_a3.py",
-  "spec_ref": "researchbest:v3/plan_sprint/v3_a3_surface_hug_v1.md \u00a710 (HANDOFF 2026-06-18 13:49)"
+  "spec_ref": "researchbest:v3/plan_sprint/v3_a3_surface_hug_v1.md §10 (HANDOFF 2026-06-18 13:49)"
 }

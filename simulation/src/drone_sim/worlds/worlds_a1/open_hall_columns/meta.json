@@ -1,5 +1,8 @@
 {
   "world_name": "open_hall_columns",
+  "version": "v3",
+  "sprint": "v3_a1",
+  "task_default": null,
   "size_m": [
     14.0,
     12.0

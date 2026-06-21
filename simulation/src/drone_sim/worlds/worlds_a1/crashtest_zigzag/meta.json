@@ -1,5 +1,8 @@
 {
   "world_name": "crashtest_zigzag",
+  "version": "v3",
+  "sprint": "v3_a1",
+  "task_default": null,
   "size_m": [
     22.0,
     10.0

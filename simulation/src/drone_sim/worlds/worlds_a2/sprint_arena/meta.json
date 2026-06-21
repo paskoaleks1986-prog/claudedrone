@@ -1,6 +1,8 @@
 {
   "world_name": "sprint_arena",
-  "sprint": "A.2",
+  "version": "v3",
+  "sprint": "v3_a2",
+  "task_default": null,
   "size_m": [
     14.0,
     14.0
@@ -58,5 +60,5 @@
   },
   "n_boxes": 4,
   "source": "help_scripts/gen_worlds_a2.py",
-  "spec_ref": "rl-lab HANDOFF 2026-06-16 12:18 (A.2 draft) \u2014 \u0442\u043e\u0447\u043d\u044b\u0435 box-\u043b\u0438\u0441\u0442\u044b \u0414\u041e train"
+  "spec_ref": "rl-lab HANDOFF 2026-06-16 12:18 (A.2 draft) — точные box-листы ДО train"
 }
