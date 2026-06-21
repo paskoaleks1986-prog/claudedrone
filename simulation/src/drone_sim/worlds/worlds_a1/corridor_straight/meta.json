@@ -1,4 +1,5 @@
 {
+  "schema": "world-meta/v4",
   "world_name": "corridor_straight",
   "version": "v3",
   "sprint": "v3_a1",

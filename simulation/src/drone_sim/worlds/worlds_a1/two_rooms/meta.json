@@ -1,4 +1,5 @@
 {
+  "schema": "world-meta/v4",
   "world_name": "two_rooms",
   "version": "v3",
   "sprint": "v3_a1",
