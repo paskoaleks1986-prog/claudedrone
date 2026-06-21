@@ -18,8 +18,10 @@ track_recorder.py (старая дискретная схема /rl_policy/actio
                                        /world/<world>/pose/info, индекс = ближайший к odom)
     <prefix>_odom.csv  t,x,y,z,yaw     sensor (/mavros/local_position/odom)
     <prefix>_cmd.csv   t,vx,vy,yaw_rate  M1c action (/drone/cmd_vel_body, Twist)
-    <prefix>_zone.csv  t,type,label,score_value,in_course,sectors_ok
-                                       (/drone/zone_event, std_msgs/String JSON)
+    <prefix>_zone.csv  t,zone_id,type,label,score_value,in_course,sectors_ok
+                                       (/drone/zone_event, std_msgs/String JSON;
+                                        zone_id добавлен для ингеста interface →
+                                        полная RL zone-record схема)
 
 perp-to-follow-wall профиль = gt_y (низ-стена y=0, side=right) → drift/perp считается
 оффлайн из _gt.csv + геометрии коридора (track_plot / summary).
@@ -62,7 +64,7 @@ class M1cTrackRecorder(Node):
             ("gt", ["t", "x", "y", "z", "yaw"]),
             ("odom", ["t", "x", "y", "z", "yaw"]),
             ("cmd", ["t", "vx", "vy", "yaw_rate"]),
-            ("zone", ["t", "type", "label", "score_value", "in_course", "sectors_ok"]),
+            ("zone", ["t", "zone_id", "type", "label", "score_value", "in_course", "sectors_ok"]),
         ):
             f = open(f"{prefix}_{name}.csv", "w", newline="")
             w = csv.writer(f)
@@ -137,7 +139,7 @@ class M1cTrackRecorder(Node):
         except (ValueError, TypeError):
             return
         self._writers["zone"].writerow(
-            [f"{self._t():.3f}", e.get("type", ""), e.get("label", ""),
+            [f"{self._t():.3f}", e.get("zone_id", ""), e.get("type", ""), e.get("label", ""),
              e.get("score_value", ""), e.get("in_course", ""), e.get("sectors_ok", "")]
         )
         self.n["zone"] += 1
