@@ -3,7 +3,7 @@
   <!-- W-core «Column Corridor» (спринт v4_A1_memory_infra, P-SIM).
        Геометрия по контракту researchbest (HANDOFF 2026-06-22 18:0x):
          коридор ~10×2.2м (= gz A1), 3 пилона Ø0.4 поочерёдно L/R @ x=3/6/9,
-         высота 1.5м; спавн x=0.5 центр, нос +x; ЗАДНЯЯ СТЕНА = border_west (x=0,
+         высота 2.5м (floor-to-ceiling); спавн x=0.5 центр, нос +x; ЗАДНЯЯ СТЕНА = border_west (x=0,
          за спавном) → после входа уходит за спину = цель hidden_rear_wall_dist.
        Фрейм: X∈[0,10] (вдоль коридора), Y∈[-1.1,1.1]; L=+y (port), R=-y.
        Формат как base_stand / A1: БЕЗ <gui> (Aleks 2026-06-15 → дефолтная
@@ -139,17 +139,17 @@
       </link>
     </model>
 
-    <!-- Пилоны Ø0.4 (cylinder r=0.2, h=1.5, z центр 0.75), поочерёдно L/R,
+    <!-- Пилоны Ø0.4 (cylinder r=0.2, h=2.5 floor-to-ceiling, z центр 1.25), поочерёдно L/R,
          шаг 3м. pylon_0 L@x=3, pylon_1 R@x=6, pylon_2 L@x=9. y=±0.5. -->
     <model name="pylon_0">
       <static>true</static>
-      <pose>3.0 0.5 0.75 0 0 0</pose>
+      <pose>3.0 0.5 1.25 0 0 0</pose>
       <link name="link">
         <collision name="c">
-          <geometry><cylinder><radius>0.2</radius><length>1.5</length></cylinder></geometry>
+          <geometry><cylinder><radius>0.2</radius><length>2.5</length></cylinder></geometry>
         </collision>
         <visual name="v">
-          <geometry><cylinder><radius>0.2</radius><length>1.5</length></cylinder></geometry>
+          <geometry><cylinder><radius>0.2</radius><length>2.5</length></cylinder></geometry>
           <material>
             <ambient>0.25 0.45 0.85 1</ambient>
             <diffuse>0.25 0.45 0.85 1</diffuse>
@@ -160,13 +160,13 @@
     </model>
     <model name="pylon_1">
       <static>true</static>
-      <pose>6.0 -0.5 0.75 0 0 0</pose>
+      <pose>6.0 -0.5 1.25 0 0 0</pose>
       <link name="link">
         <collision name="c">
-          <geometry><cylinder><radius>0.2</radius><length>1.5</length></cylinder></geometry>
+          <geometry><cylinder><radius>0.2</radius><length>2.5</length></cylinder></geometry>
         </collision>
         <visual name="v">
-          <geometry><cylinder><radius>0.2</radius><length>1.5</length></cylinder></geometry>
+          <geometry><cylinder><radius>0.2</radius><length>2.5</length></cylinder></geometry>
           <material>
             <ambient>0.25 0.45 0.85 1</ambient>
             <diffuse>0.25 0.45 0.85 1</diffuse>
@@ -177,13 +177,13 @@
     </model>
     <model name="pylon_2">
       <static>true</static>
-      <pose>9.0 0.5 0.75 0 0 0</pose>
+      <pose>9.0 0.5 1.25 0 0 0</pose>
       <link name="link">
         <collision name="c">
-          <geometry><cylinder><radius>0.2</radius><length>1.5</length></cylinder></geometry>
+          <geometry><cylinder><radius>0.2</radius><length>2.5</length></cylinder></geometry>
         </collision>
         <visual name="v">
-          <geometry><cylinder><radius>0.2</radius><length>1.5</length></cylinder></geometry>
+          <geometry><cylinder><radius>0.2</radius><length>2.5</length></cylinder></geometry>
           <material>
             <ambient>0.25 0.45 0.85 1</ambient>
             <diffuse>0.25 0.45 0.85 1</diffuse>

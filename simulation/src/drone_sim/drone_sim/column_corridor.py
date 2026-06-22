@@ -33,7 +33,8 @@ FREE, UNKNOWN, WALL = 0, 1, 2
 WALL_H_M = 2.5
 WALL_T_M = 0.1            # 1 клетка = парити с rl-lab blind_corridor_env border
 PYLON_R = 0.2            # Ø0.4
-PYLON_H_M = 1.5
+PYLON_H_M = 2.5          # floor-to-ceiling (= wall_h): гориз. TF-веер/VL53 видят пилон
+                         # при ЛЮБОЙ hover-альте (researchbest 18:2x; убирает связку альт<1.5)
 
 # Внешний bbox + origin (SW-угол) в gz-кадре.
 BBOX = (10.2, 2.2)                  # (w, h)
