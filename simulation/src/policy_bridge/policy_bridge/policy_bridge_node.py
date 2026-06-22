@@ -35,20 +35,32 @@ from std_msgs.msg import Int32, Float32, Bool
 from nav_msgs.msg import OccupancyGrid
 from rclpy.qos import QoSProfile, DurabilityPolicy, HistoryPolicy
 
-from policy_bridge.action_gate import gate_blocks, movement_clearance_m
-from policy_bridge.am_adapter import ActiveMappingAdapter
+from policy_bridge.action_gate import (
+    action7_free_run_blocks,
+    action7_sensor_blocks,
+    gate_blocks,
+    movement_clearance_m,
+    raw_free_runs,
+)
+from policy_bridge.am_adapter import ActiveMappingAdapter, VL_MOUNT_RADIUS_M
+from policy_bridge.inference_core import InferenceCore, Pose
 from policy_bridge.display_map import build_display_map, display_coverage
 from policy_bridge.obs_builder import ObsBuilder
 from policy_bridge.world_config import WorldGeometry, load_world_geometry
 from policy_bridge.visited_grid import VisitedGridBuilder
-from policy_bridge.action_executor import ActionExecutor, InvalidActionError
+from policy_bridge.action_executor import (
+    ACTION7_WALL_MARGIN_M,
+    ActionExecutor,
+    InvalidActionError,
+)
 from policy_bridge.coverage import Coverage
 from policy_bridge.failure_modes import FailureHandler
-from policy_bridge.adaptive_speed import AdaptiveSpeedController
+from policy_bridge.adaptive_speed import AdaptiveSpeedController, classify_mode
 from policy_bridge.stuck_detector import StuckDetector
 from policy_bridge.wall_follower import WallFollower
 from policy_bridge.wall_map_builder import WallMapBuilder
 from policy_bridge.phase_controller import PhaseController, Phase
+from policy_bridge.perimeter_sweep import PerimeterSweep
 
 
 PARAM_DEFAULTS: dict[str, object] = {
@@ -68,6 +80,16 @@ PARAM_DEFAULTS: dict[str, object] = {
     # Блок 2 (Aleks 2026-06-07): mission-done по DISPLAY-карте (дорисованной).
     # Ниже parity-0.95 — display заполнена плотнее (углы/дыры<проёма закрыты).
     "display_success_threshold": 0.92,
+    # Alignment §3.1: фильтр мелких frontier-кластеров (parity-карта, в obs).
+    # v2 promote (Aleks 2026-06-08): 3 = aligned-build (env + bridge оба на 3),
+    # модель v2 (md5 40673767) дообучена с фильтром. 1 = legacy v1.5c/N6-v1.
+    "min_frontier_cluster_cells": 3,
+    # v2 promote (Aleks 2026-06-08): occupancy-free_run sensor-gate ВКЛЮЧЁН.
+    # True = маска по free_cells(ch0) > N (§3.2 v2, точное зеркало train).
+    # no-travel 0% primary-гейт взят. False = legacy RAW (action7_sensor_blocks).
+    # wall_stop_cells = N (граница).
+    "v2_sensor_mask": True,
+    "wall_stop_cells": 6,
     # TASK-059 attempt #1 RCA (2026-05-19): 0.15 m оказался слишком тесный
     # для real Gazebo (drone 0.3 m/s, VL53L0X max 2 m → no warning до впритык).
     # 0.50 m = ~1.7 cell stop distance, безопаснее.
@@ -92,15 +114,20 @@ PARAM_DEFAULTS: dict[str, object] = {
     "mode": "hybrid",          # hybrid | wall_follow_only | rl_only
     "wall_distance": 0.6,
     "perimeter_laps": 1,
+    # Стенд З3 (Aleks 2026-06-08): детерминированный облёт периметра ПОСЛЕ
+    # MISSION COMPLETE (parity-нейтрален — post-terminal). standoff до внутр.
+    # грани стены; snap курса к 90°; rect-миры. Default on для стенд-видео.
+    "perimeter_sweep": True,
+    "perimeter_standoff_m": 0.6,
     # v2 Block 3 (2026-06-06): ActionGate — шаг 0-3, который закончится ближе
     # этого к препятствию, отклоняется до исполнения (training parity: env не
     # двигает дрона в стену). Правило: gate_margin = safety floor + cell.
     # v2 run F (Aleks 08:26): 0.5 (= floor 0.4 + cell). SIM-ONLY клиренс.
     # run F checklist #1 (2026-06-07): floor 0.4 → 0.45 ⇒ gate 0.55.
     "gate_margin_m": 0.55,
-    # v1.5c deploy (2026-06-07): модельная семья.
+    # v2 promote (2026-06-08): модельная семья.
     #   sweep02       — legacy PPO Dict obs (distances+servo+visited)
-    #   activemapping — MaskablePPO Box(21,) + occupancy/frontier (AM-v1);
+    #   activemapping — MaskablePPO Box(21,) + occupancy/frontier (AM-v1/v2);
     #                   predict ОБЯЗАН получать action_masks (F1), mode
     #                   принудительно rl_only (wall-phase не в тренировке).
     "model_family": "activemapping",
@@ -165,8 +192,20 @@ class PolicyBridgeNode(Node):
         self.mode = str(self.get_parameter("mode").value)
         self.wall_distance = float(self.get_parameter("wall_distance").value)
         self.perimeter_laps = int(self.get_parameter("perimeter_laps").value)
+        # Стенд З3: post-mission облёт периметра
+        self.perimeter_sweep_enabled = bool(
+            self.get_parameter("perimeter_sweep").value
+        )
+        self.perimeter_standoff_m = float(
+            self.get_parameter("perimeter_standoff_m").value
+        )
         # v2 Block 3
         self.gate_margin_m = float(self.get_parameter("gate_margin_m").value)
+        self.v2_sensor_mask = bool(self.get_parameter("v2_sensor_mask").value)
+        self.wall_stop_cells = int(self.get_parameter("wall_stop_cells").value)
+        self.am_min_frontier = int(
+            self.get_parameter("min_frontier_cluster_cells").value
+        )
         self._gate_block_count = 0
         self._last_mapped = 0.0
         # v1.5c livelock breaker (см. NOOP_MASK_LIMIT)
@@ -176,6 +215,8 @@ class PolicyBridgeNode(Node):
         self._infeasible_actions: dict[int, float] = {}
         self._cell_stall_count = 0
         self._stall_kick_count = 0
+        self._a7_sensor_mask_count = 0   # v2 sensor gate action7 (Aleks 2026-06-08)
+        self._a7_free_run = 999          # v2: снапшот free_cells(ch0) predict→executor
         # v1.5c deploy
         self.model_family = str(self.get_parameter("model_family").value)
         if self.model_family not in ("sweep02", "activemapping"):
@@ -264,6 +305,7 @@ class PolicyBridgeNode(Node):
                 get_vl_raw_m=lambda: self.obs_builder.perimeter_distances_m,
                 get_tf_raw_m=lambda: self.obs_builder.sweep_distance_m,
                 get_servo_deg=lambda: self.executor_act.servo_deg,
+                min_frontier_cluster_cells=self.am_min_frontier,
             )
 
         self.executor_act = ActionExecutor(
@@ -287,6 +329,12 @@ class PolicyBridgeNode(Node):
             visited_update_fn=self._on_pose_update,
             # v2 run F: velocity-gated arrival (Aleks 08:26)
             get_speed_m_s=lambda: self.obs_builder.speed_m_s,
+            # v2-stub (Aleks 2026-06-08): action7 travel по occupancy free_run.
+            # default off (v2_sensor_mask=False) → текущее raw-поведение.
+            v2_sensor_mask=self.v2_sensor_mask,
+            wall_stop_cells=self.wall_stop_cells,
+            # снапшот free_cells с predict (= тот же, что маска) → нет jitter.
+            get_free_run_cells=lambda: self._a7_free_run,
         )
         # v2 Block 2: servo_angle obs = commanded angle executor'а (training
         # parity: в env servo-динамики нет). Убирает 1 kHz JointState churn.
@@ -359,6 +407,26 @@ class PolicyBridgeNode(Node):
         self._wf_last_was_rotation: bool = False  # attempt #12 RCA Cause #2:
         # rotation commands waitгают yaw_arrival с longer timeout
 
+        # ----- Стенд З3: perimeter sweep (post-mission) -----
+        # PerimeterSweep строит план облёта прямоугольника по геометрии комнаты.
+        # plan() ленивый — на первом тике с фактической позой. Arrival-логика
+        # зеркалит WF (throttle + tol + timeout), отдельные _ps_* переменные.
+        self.perimeter: PerimeterSweep | None = None
+        if self.perimeter_sweep_enabled:
+            self.perimeter = PerimeterSweep(
+                self.room_x, self.room_y,
+                standoff_m=self.perimeter_standoff_m,
+            )
+        self._ps_last_target_x: float | None = None
+        self._ps_last_target_y: float | None = None
+        self._ps_last_target_yaw: float | None = None
+        self._ps_target_set_monotonic: float | None = None
+        self._ps_arrival_skip_count = 0
+        self._ps_last_was_rotation: bool = False
+        self._ps_trans_timeout_s: float = 8.0   # ∝ длине ноги, set при emit
+        self._ps_logged_start = False
+        self._ps_logged_done = False
+
         # ----- takeoff ready signal (D-refactor 2026-05-20) -----
         # Bridge waits for /takeoff/ready True перед началом predict loop. takeoff_node
         # publishes ready после стабилизации hover, потом releases setpoint control.
@@ -375,7 +443,7 @@ class PolicyBridgeNode(Node):
         )
 
         # ----- model -----
-        self.model = self._load_model()
+        self.core = self._load_model()   # InferenceCore (Phase 1 тонкая обёртка)
 
         # ----- publishers -----
         self.action_pub = self.create_publisher(Int32, "/rl_policy/action", 10)
@@ -441,30 +509,36 @@ class PolicyBridgeNode(Node):
 
     # ---- model loading -----------------------------------------------------
 
-    def _load_model(self):
+    def _load_model(self) -> InferenceCore:
+        """Phase 1: модель + obs/mask/predict живут в InferenceCore (ROS2-free
+        либа). Нода — тонкая обёртка: читает топики, зовёт core.* . Здесь
+        только путь/логи/валидация obs-space (ROS2-сторона)."""
         if not self.model_path:
             raise RuntimeError("model_path param empty — set it via launch arg.")
         path = Path(self.model_path)
         if not path.exists():
             raise FileNotFoundError(f"model.zip not found: {path}")
-        # Late imports чтобы node мог быть импортирован без SB3 (unit тесты).
+        self.get_logger().info(
+            f"loading {self.model_family} model from {path} via InferenceCore "
+            f"(device=cpu, deterministic={self.deterministic}, "
+            f"min_frontier={self.am_min_frontier}, N={self.wall_stop_cells})"
+        )
+        core = InferenceCore(
+            str(path),
+            family=self.model_family,
+            deterministic=self.deterministic,
+            min_frontier_cluster_cells=self.am_min_frontier,
+            wall_stop_cells=self.wall_stop_cells,
+            device="cpu",
+        )
         if self.model_family == "activemapping":
-            from sb3_contrib import MaskablePPO
-            self.get_logger().info(
-                f"loading MaskablePPO (AM-v1) from {path} (device=cpu, "
-                f"deterministic={self.deterministic})"
-            )
-            model = MaskablePPO.load(str(path), device="cpu")
-            obs_shape = tuple(model.observation_space.shape)
+            obs_shape = tuple(core.model.observation_space.shape)
             if obs_shape != (21,):
                 raise ValueError(
                     f"model obs space {obs_shape} ≠ (21,) — это не "
                     "ActiveMapping-v1 модель? Проверь model_path/model_family."
                 )
-            return model
-        from stable_baselines3 import PPO
-        self.get_logger().info(f"loading PPO from {path} (device=cpu)")
-        return PPO.load(str(path), device="cpu")
+        return core
 
     def _on_pose_update(self, x_m: float, y_m: float) -> None:
         """Hook ActionExecutor'а на каждом poll'е arrival-ожидания (20 Hz):
@@ -598,6 +672,16 @@ class PolicyBridgeNode(Node):
 
         # v1.5c: миссия завершена (mapped ≥ threshold) — hover, не predict'им.
         if self._mission_complete:
+            # Стенд З3: после mission complete — детерминированный облёт
+            # периметра (parity-нейтрален). Гейт: только при flying-режиме и
+            # пока облёт не завершён. Завершён / выключен → hover.
+            if (
+                self.perimeter is not None
+                and self._takeoff_ready
+                and not self.failure.hovering
+                and not self.perimeter.complete
+            ):
+                self._perimeter_tick()
             return
 
         # D-refactor: wait для takeoff_node release control signal
@@ -754,6 +838,110 @@ class PolicyBridgeNode(Node):
                 f"wall_cells={self.wall_map_builder.wall_cells_total} · coverage {cov:.3f}"
             )
 
+    def _perimeter_tick(self) -> None:
+        """Стенд З3: один тик облёта периметра (post-mission, не RL).
+
+        plan() ленивый — на первом тике с фактической позой (ближайший угол =
+        старт). Arrival-логика зеркалит _wall_follow_tick (throttle 1s + tol +
+        timeout). rotate-waypoint → yaw-only setpoint (hold pos, как WF Cause
+        #2). Лог-строки 'PERIMETER step N' → секция в analyze_policy_run.py."""
+        if not self.obs_builder.has_received_odom:
+            return
+        pose = self.obs_builder.pose
+        ps = self.perimeter
+
+        # --- ленивый план ---
+        if not ps.planned:
+            ps.plan(pose.x_m, pose.y_m)
+            if not ps.feasible:
+                if not self._ps_logged_done:
+                    self.get_logger().warn(
+                        f"🔲 PERIMETER skip: комната {self.room_x}×{self.room_y}м "
+                        f"мала для standoff {self.perimeter_standoff_m}м (inset≤0)"
+                    )
+                    self._ps_logged_done = True
+                return
+            self.get_logger().info(
+                f"🔲 PERIMETER START: {ps.total_waypoints} waypoints · "
+                f"standoff {self.perimeter_standoff_m}м · "
+                f"корнеры ±({ps.ax:.2f},{ps.ay:.2f}) на шаге {self.step_count}"
+            )
+            self._ps_logged_start = True
+
+        PS_MIN_EMIT_INTERVAL_S = 1.0
+        ARRIVAL_TOL_POS_M = 0.25
+        ARRIVAL_TOL_YAW_RAD = math.radians(5.0)
+        # Периметровые ноги — во всю комнату (до ~14м в large), НЕ короткие
+        # wall-follow шаги. Таймаут трансляции пропорционален дистанции (иначе
+        # 8с обрезает ногу → ротация в неверной точке → рваный прямоугольник).
+        # ~0.25 м/с эффективная скорость position-setpoint + 6с запас.
+        ARRIVAL_TIMEOUT_YAW_S = 14.0
+        now_mono = time.monotonic()
+
+        # --- throttle: maintenance timer держит прошлый target пока ждём ---
+        if self._ps_target_set_monotonic is not None:
+            if now_mono - self._ps_target_set_monotonic < PS_MIN_EMIT_INTERVAL_S:
+                return
+
+        # --- arrival прошлого target → advance ---
+        if self._ps_last_target_x is not None:
+            pos_err = math.hypot(
+                pose.x_m - self._ps_last_target_x,
+                pose.y_m - self._ps_last_target_y,
+            )
+            yaw_err = abs(self._angle_diff(
+                pose.heading_rad, self._ps_last_target_yaw))
+            arrived = pos_err < ARRIVAL_TOL_POS_M and yaw_err < ARRIVAL_TOL_YAW_RAD
+            timeout_s = (
+                ARRIVAL_TIMEOUT_YAW_S if self._ps_last_was_rotation
+                else self._ps_trans_timeout_s
+            )
+            elapsed = now_mono - (self._ps_target_set_monotonic or now_mono)
+            if not arrived and elapsed < timeout_s:
+                self._ps_arrival_skip_count += 1
+                return
+            if not arrived:
+                self.get_logger().warn(
+                    f"🔲 PERIMETER arrival TIMEOUT ({elapsed:.1f}s) "
+                    f"pos_err={pos_err:.2f}м yaw_err={math.degrees(yaw_err):.1f}° "
+                    "— forcing next"
+                )
+            ps.advance()
+            self._ps_arrival_skip_count = 0
+
+        wp = ps.current()
+        if wp is None:
+            if not self._ps_logged_done:
+                self.get_logger().info(
+                    f"🔲 PERIMETER COMPLETE на шаге {self.step_count} "
+                    "— hover центра"
+                )
+                self._ps_logged_done = True
+            return
+
+        is_rotation = wp.kind == "rotate"
+        if is_rotation:
+            tx, ty = pose.x_m, pose.y_m   # hold pos, меняем только yaw
+            self._ps_trans_timeout_s = ARRIVAL_TIMEOUT_YAW_S
+        else:
+            tx, ty = wp.x, wp.y
+            # таймаут ∝ длине ноги (0.25 м/с + 6с запас), мин 8с
+            dist = math.hypot(tx - pose.x_m, ty - pose.y_m)
+            self._ps_trans_timeout_s = max(8.0, dist / 0.25 + 6.0)
+        self.executor_act.initialize_target(tx, ty, z=None, yaw=wp.yaw)
+        self._ps_last_target_x = tx
+        self._ps_last_target_y = ty
+        self._ps_last_target_yaw = wp.yaw
+        self._ps_last_was_rotation = is_rotation
+        self._ps_target_set_monotonic = now_mono
+
+        self.step_count += 1
+        self.get_logger().info(
+            f"🔲 PERIMETER step {self.step_count} · {wp.kind} {wp.tag} · "
+            f"target=({tx:.2f},{ty:.2f},yaw={math.degrees(wp.yaw):.0f}°) · "
+            f"wp {ps.index + 1}/{ps.total_waypoints}"
+        )
+
     @staticmethod
     def _angle_diff(a: float, b: float) -> float:
         d = a - b
@@ -762,6 +950,17 @@ class PolicyBridgeNode(Node):
         while d < -math.pi:
             d += 2 * math.pi
         return d
+
+    def _free_run_cells_ch0(self) -> int:
+        """§3.2 v2 (RL contract 02:05): free_cells вперёд (ch0) = floor целых
+        клеток до стены = floor(centered-front-сенсор / cell). ИСТОЧНИК = СВЕЖИЙ
+        сенсор текущего шага (НЕ accumulated occupancy — stateless, как env
+        `_free_run(occ=False)`), центр-референс (+VL_MOUNT_RADIUS, как integrate).
+        Зовётся только при v2_sensor_mask=True (default off).
+        ⚠ VERIFY-POINT против v2 parity-фикстур: (a) centered vs raw, (b) floor
+        боундари / off-by-one. Если parity красный — здесь подгон."""
+        front_centered_m = self.obs_builder.front_distance_m + VL_MOUNT_RADIUS_M
+        return int(front_centered_m / self.cell_size)
 
     def _predict_and_execute_one_step(self) -> None:
         pose = self.obs_builder.pose
@@ -793,18 +992,33 @@ class PolicyBridgeNode(Node):
         self.visited.update(pose.x_m, pose.y_m)
 
         if self.am_adapter is not None:
-            # v1.5c: §2.5 п.1 — интеграция на step boundary (снапшот obs
-            # ПОСЛЕ завершения предыдущего действия), затем obs+mask одним
-            # BFS-расчётом. predict БЕЗ action_masks запрещён (F1).
+            # v1.5c: §2.5 п.1 — интеграция occupancy на step boundary (снапшот
+            # ПОСЛЕ завершения предыдущего действия). Phase 1: occ-интеграция
+            # (stateful, ROS2-оркестрация) остаётся в am_adapter; obs/mask/
+            # predict — через InferenceCore (ROS2-free либа). predict БЕЗ
+            # action_masks запрещён (F1).
             self.am_adapter.integrate_now()
-            obs, action_mask, mapped = self.am_adapter.snapshot()
+            occ = self.am_adapter.builder.occ
+            free_mask = self.coverage.free_mask
+            pose = self.obs_builder.pose          # свежая поза (как snapshot)
+            xc = (pose.x_m + self.room_x / 2.0) / self.cell_size
+            yc = (pose.y_m + self.room_y / 2.0) / self.cell_size
+            pose_cells = Pose(xc, yc, pose.heading_rad)
+            distances = list(self.obs_builder.perimeter_distances_m) + [
+                self.obs_builder.sweep_distance_m
+            ]
+            obs = self.core.build_obs(
+                pose_cells, distances, self.executor_act.servo_deg,
+                occ, free_mask,
+            )
+            mapped = float(obs[20])               # obs[20] == mapped_ratio (§5)
+            # F1 стартовая маска (occupancy) — может быть перезаписана v2/raw ниже.
+            action_mask = self.core.build_mask(occ, pose_cells, mode="occupancy")
             # Блок 2: mission-done по DISPLAY-карте (дорисованной), не по
             # parity. Display заполнена плотнее (углы достроены, дыры < проёма
             # закрыты) → порог 0.92 ниже parity-0.95; дрон перестаёт гонять
             # за угловыми пикселями. Модель продолжает obs из parity (выше).
-            disp = build_display_map(
-                self.am_adapter.builder.occ, self.cell_size
-            )
+            disp = build_display_map(occ, self.cell_size)
             disp_cov = display_coverage(disp, self.coverage.free_mask)
             self._last_display = disp
             self._last_disp_cov = disp_cov
@@ -818,10 +1032,66 @@ class PolicyBridgeNode(Node):
                     f"{mapped:.3f}) на шаге {self.step_count} — hover"
                 )
                 return
-            if self._infeasible_actions:
-                action_mask = action_mask.copy()
-                for a in self._infeasible_actions:
+            # Sensor gate action7 (Aleks v2 2026-06-08): маскируем action7 ДО
+            # predict, если front-сенсор внутри executor's ЭФФЕКТИВНОЙ маржи
+            # (= max(ACTION7_WALL_MARGIN_M, текущий mode wall_threshold) —
+            # читаем из режима, НЕ хардкод). Рассинхрон порогов давал no-travel
+            # в зоне [0.60, mode_wt] (3 события @0.67-0.68 в N=6 acceptance).
+            # См. action_gate.action7_sensor_blocks.
+            # v2-stub (Aleks 2026-06-08): при v2_sensor_mask=True маска action7
+            # по occupancy free_run (§3.2 v2, точное зеркало train, без
+            # timing-jitter). Default False = RAW-сенсорный путь ниже (b3a1c6d).
+            perim = self.obs_builder.perimeter_distances_m
+            if self.v2_sensor_mask and perim and len(perim) >= 6:
+                # v2 §3.2 (verified 0/44 vs env action_masks): ПОЛНАЯ маска из
+                # free_run по 6 VL-каналам (centered raw+mount → клетки, занимает
+                # место F1-маски). free_run[0] снапшотим → executor travel
+                # (тот же → нет jitter). Зеркало drone_map_env sensor_mask=True.
+                # Единая формула с rl-lab SITLDroneEnv (action_gate.raw_free_runs):
+                # int((perim+mount)/cell), center-frame, ch0..5.
+                free_runs = raw_free_runs(
+                    perim, cell_size_m=self.cell_size,
+                    mount_radius_m=VL_MOUNT_RADIUS_M,
+                )
+                self._a7_free_run = free_runs[0]
+                # core.build_mask(free_runs=...) — RAW-сенсорный free_run путь
+                # (sim-runtime); env/parity путь — через grid (см. InferenceCore).
+                action_mask = self.core.build_mask(
+                    free_runs=free_runs, n_cells=self.wall_stop_cells, mode="sensor"
+                )
+                for a in self._infeasible_actions:   # stall-livelock поверх
                     action_mask[a] = False
+                if not bool(action_mask[7]):
+                    self._a7_sensor_mask_count += 1
+                    if self._a7_sensor_mask_count % 10 == 1:
+                        self.get_logger().info(
+                            f"v2 sensor-mask: action7 masked (free_run[0]="
+                            f"{free_runs[0]}≤{self.wall_stop_cells}) "
+                            f"×{self._a7_sensor_mask_count}"
+                        )
+            else:
+                # RAW путь (b3a1c6d, default): только action7-гейт по mode-wt.
+                a7_sensor_masked = False
+                a7_margin = 0.0
+                if perim and len(perim) >= 6 and bool(action_mask[7]):
+                    eff_wt = self.adaptive_speed.mode_table[
+                        classify_mode(min(perim))
+                    ].wall_threshold
+                    a7_margin = max(ACTION7_WALL_MARGIN_M, eff_wt)
+                    a7_sensor_masked = action7_sensor_blocks(perim[0], a7_margin)
+                if self._infeasible_actions or a7_sensor_masked:
+                    action_mask = action_mask.copy()
+                    for a in self._infeasible_actions:
+                        action_mask[a] = False
+                    if a7_sensor_masked and int(action_mask.sum()) > 1:
+                        action_mask[7] = False
+                        self._a7_sensor_mask_count += 1
+                        if self._a7_sensor_mask_count % 10 == 1:
+                            self.get_logger().info(
+                                f"sensor gate: action7 masked "
+                                f"(front={perim[0]:.2f}m<{a7_margin:.2f}m) "
+                                f"×{self._a7_sensor_mask_count}"
+                            )
             deterministic = self.deterministic
             if deterministic and self._cell_stall_count >= STALL_STEPS:
                 deterministic = False  # stall backstop: сэмпл из распределения
@@ -830,16 +1100,16 @@ class PolicyBridgeNode(Node):
                     f"stall backstop: {self._cell_stall_count} шагов без смены "
                     f"клетки — stochastic predict (kick #{self._stall_kick_count})"
                 )
-            action_arr, _ = self.model.predict(
-                obs, action_masks=action_mask, deterministic=deterministic
+            raw_action = self.core.predict(
+                obs, action_mask, deterministic=deterministic
             )
             self.mapped_ratio_pub.publish(Float32(data=mapped))
             self._last_mapped = mapped
             self._publish_occupancy()
         else:
             obs = self.obs_builder.build_obs(self.visited.grid)
-            action_arr, _ = self.model.predict(obs, deterministic=False)
-        raw_action_from_policy = int(action_arr)
+            raw_action = self.core.predict(obs, deterministic=False)
+        raw_action_from_policy = int(raw_action)
         self.action_raw_pub.publish(Int32(data=raw_action_from_policy))
 
         # TASK-059 attempt #8 escape v2 (rl-lab @03:18): StuckDetector v2 со

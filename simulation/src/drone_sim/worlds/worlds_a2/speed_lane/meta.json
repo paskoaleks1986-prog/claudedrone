@@ -1,0 +1,65 @@
+{
+  "schema": "world-meta/v4",
+  "world_name": "speed_lane",
+  "version": "v3",
+  "sprint": "v3_a2",
+  "task_default": null,
+  "size_m": [
+    24.0,
+    4.0
+  ],
+  "grid": [
+    40,
+    240
+  ],
+  "resolution_m": 0.1,
+  "origin_gz": [
+    -12.0,
+    -2.0
+  ],
+  "frame": "gz_centered (origin=center; SW corner = origin_gz)",
+  "cell_formula": "ix=floor((wx+w/2)/res); iy=floor((wy+h/2)/res); iy=0=south",
+  "occ_codes": {
+    "free": 0,
+    "unknown": 1,
+    "wall": 2
+  },
+  "wall_height_m": 2.5,
+  "wall_thickness_m": 0.15,
+  "spawn": [
+    -11.0,
+    0.0,
+    0.0
+  ],
+  "spawn_sw": [
+    1.0,
+    2.0
+  ],
+  "waypoints_sw": [
+    [
+      6,
+      2
+    ],
+    [
+      12,
+      2
+    ],
+    [
+      18,
+      2
+    ],
+    [
+      22,
+      2
+    ]
+  ],
+  "doors": [],
+  "counts": {
+    "free": 9044,
+    "unknown": 0,
+    "wall": 556
+  },
+  "n_boxes": 4,
+  "source": "help_scripts/gen_worlds_a2.py",
+  "spec_ref": "rl-lab HANDOFF 2026-06-16 12:18 (A.2 draft) — точные box-листы ДО train"
+}

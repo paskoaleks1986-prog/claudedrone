@@ -1,0 +1,35 @@
+# V4-A1 семант-зоны: прямой коридор 10×2м, task-1 FOLLOW_RIGHT (M1c)
+# Образец под схему v4/semantic/v4_zone_config_v1.md. Парити с BlindCorridorEnv.
+schema: v4-zones/1
+map_id: corridor_straight_m
+world: corridor_straight_m
+frame: world
+res_m: 0.1
+task: t1_follow_right
+course_dir: [1.0, 0.0]          # +x = курс к финишу (reward-only)
+
+zones:
+  - id: follow_band
+    type: FOLLOW_RIGHT
+    label: "ТОФ-ПРАВО"
+    geometry: {kind: wall_band, wall: bottom, width_m: 0.8}
+    require_sectors: [5, 4]      # §0 parity: право = env idx{5,4}
+    reaction: {on_dwell: reward, score: course_progress, lambda_drift: 3.0}
+
+  - id: forbidden
+    type: FORBIDDEN
+    label: "ЗАПРЕТ"
+    geometry: {kind: complement}
+    reaction: {on_dwell: penalty, score: soft_neg}
+
+  - id: start
+    type: START
+    label: "СТАРТ"
+    geometry: {kind: rect, x_m: [0.0, 1.0], y_m: [0.0, 2.0]}
+    reaction: {on_enter: notify}
+
+  - id: finish
+    type: FINISH
+    label: "ФИНИШ"
+    geometry: {kind: rect, x_m: [9.5, 10.0], y_m: [0.0, 2.0]}
+    reaction: {on_enter: terminate, score: finish_bonus}

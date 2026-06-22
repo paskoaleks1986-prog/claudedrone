@@ -37,6 +37,10 @@ class AutoscanNode(Node):
 
         self.declare_parameter('initial_delay_s', 5.0)
         self.declare_parameter('cooldown_s', 10.0)
+        # GUI radio-button (Aleks 2026-06-11): autostart=false → нода поднимается
+        # в STOPPED (idle), цикл стартует только по /drone/sweep/resume. Позволяет
+        # держать autoscan живой в стеке и включать mode 3 без рестарта.
+        self.declare_parameter('autostart', True)
 
         self._initial_delay = float(self.get_parameter('initial_delay_s').value)
         self._cooldown = float(self.get_parameter('cooldown_s').value)
@@ -44,7 +48,7 @@ class AutoscanNode(Node):
         self._n_triggered = 0
         self._n_completed = 0
         self._cooldown_timer = None
-        self._stopped = False
+        self._stopped = not bool(self.get_parameter('autostart').value)
 
         self.pub_start = self.create_publisher(Empty, '/drone/sweep/start', 1)
         self.pub_status = self.create_publisher(String, '/scan/status', 10)
@@ -62,8 +66,10 @@ class AutoscanNode(Node):
 
         self.get_logger().info(
             f'autoscan_node started — initial_delay={self._initial_delay}s, '
-            f'cooldown={self._cooldown}s'
+            f'cooldown={self._cooldown}s, autostart={not self._stopped}'
         )
+        if self._stopped:
+            self.pub_status.publish(String(data='STOPPED'))
 
     def _trigger(self):
         self._n_triggered += 1

@@ -63,6 +63,9 @@ class SweepStorageNode(Node):
         self.declare_parameter("range_min", 0.2)
         self.declare_parameter("range_max", 8.0)
         self.declare_parameter("dump_npz", True)
+        # GUI radio-button (Aleks 2026-06-11): loop=true → после COMPLETE автоматически
+        # стартует следующий триангл-цикл (непрерывный mode 4). Остановка — /…/stop.
+        self.declare_parameter("loop", False)
         default_dump = os.path.join(
             os.environ.get("RESEARCHBEST_ROOT", str(Path.home() / "researchbest")),
             "output_data",
@@ -82,6 +85,8 @@ class SweepStorageNode(Node):
         self.range_max = float(p("range_max").value)
         self.dump_npz = bool(p("dump_npz").value)
         self.dump_dir = Path(str(p("dump_dir").value))
+        self.loop = bool(p("loop").value)
+        self._stop_requested = False
 
         if self.output_mode not in {"laserscan", "pointcloud2"}:
             self.get_logger().warn(
@@ -130,6 +135,7 @@ class SweepStorageNode(Node):
         if self.state == State.SWEEPING:
             self.get_logger().warn("/drone/sweep/start while SWEEPING — ignoring")
             return
+        self._stop_requested = False
         self.t_start = self._now()
         self.samples.clear()
         self.state = State.SWEEPING
@@ -140,6 +146,7 @@ class SweepStorageNode(Node):
         if self.state != State.SWEEPING:
             self.get_logger().info("/drone/sweep/stop while IDLE — noop")
             return
+        self._stop_requested = True
         self.state = State.IDLE
         self.t_start = None
         self._publish_status("STOPPED")
@@ -206,6 +213,10 @@ class SweepStorageNode(Node):
         self.state = State.IDLE
         self.t_start = None
         self._publish_status("COMPLETE")
+
+        # loop (mode 4 непрерывный): сразу стартуем следующий цикл, пока не было /stop
+        if self.loop and not self._stop_requested:
+            self._on_start(Empty())
 
     def _pack_laserscan(self, theta: np.ndarray, ranges: np.ndarray) -> LaserScan:
         n = self.n_bins

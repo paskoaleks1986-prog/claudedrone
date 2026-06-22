@@ -9,9 +9,16 @@ SWEEP-02 RL policy bridge — ROS2 ноды, которые соединяют G
 
 ## Источник модели
 
-`$RL_LAB_ROOT/export/sweep02/model.zip` (canonical SWEEP-02 seed22).
-md5 `49f459fd018b0fe484ecbe51a4b0e217`. Загружается `PPO.load("model.zip",
-device="cpu")` из stable-baselines3.
+**PROD (v2 promote, Aleks 2026-06-08):**
+`$RL_LAB_ROOT/export/activemapping_v1_v2/model.zip` — ActiveMapping-v1-v2
+(MaskablePPO), md5 `40673767c00b121b27e92fdce9f4c077`, canonical seed2.
+Alignment primary-гейт взят: no-travel **0%** в SITL (parity 0/44 bit-exact).
+Дефолты launch: `model_family:=activemapping`, `v2_sensor_mask:=true`,
+`min_frontier_cluster_cells:=3`, `wall_stop_cells:=6`.
+
+Легаси (явными аргументами `model_path` + `model_family`):
+- N6-v1 `export/activemapping_v1/model.zip` (md5 `1d7d7013`, no-travel 6.5%)
+- SWEEP-02 `export/sweep02/model.zip` (md5 `49f459fd…`, `model_family:=sweep02`)
 
 Specs interface: `obs_spec.md`, `action_spec.md`, `model_card.md` рядом с моделью.
 

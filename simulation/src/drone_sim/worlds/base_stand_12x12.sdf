@@ -1,0 +1,225 @@
+<?xml version="1.0" ?>
+<sdf version="1.9">
+  <!-- base_stand_12x12 — БАЗОВЫЙ СТЕНД (Aleks 2026-06-11).
+       База lab_room_12x12 (12×12м, X,Y∈±6, стены 2.5м, свободная камера) +:
+         · 4 колонны по углам, 1.5 м от стен → центры (±4.5, ±4.5), box 0.5×0.5×2.5;
+         · центральная комната 3×3 м (внутр. стены при ±1.5): дверной проём 1.0 м
+           на 3 сторонах, ОДНА ГЛУХАЯ (со стороны красной стены, +Y);
+         · «красная стена» = ориентир (бывш. wall_north; переименована в wall_red,
+           чтобы не путать со стороной света). Материал 0.85 0.12 0.12.
+       Дрон спавнится в центре (0,0) ВНУТРИ центральной комнаты (1.5 м до внутр.
+       стен > prearm proximity 0.6 м). Выход из комнаты — через проёмы. -->
+  <world name="base_stand_12x12">
+
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <plugin filename="gz-sim-physics-system"
+            name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-scene-broadcaster-system"
+            name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-user-commands-system"
+            name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-sensors-system"
+            name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-imu-system"
+            name="gz::sim::systems::Imu"/>
+    <plugin filename="gz-sim-navsat-system"
+            name="gz::sim::systems::NavSat"/>
+
+    <!-- Geographic anchor for ArduPilot navsat/AHRS init (обязательно). SITL home. -->
+    <spherical_coordinates>
+      <latitude_deg>-35.363262</latitude_deg>
+      <longitude_deg>149.165237</longitude_deg>
+      <elevation>584</elevation>
+      <heading_deg>0</heading_deg>
+      <surface_model>EARTH_WGS84</surface_model>
+    </spherical_coordinates>
+
+    <light type="directional" name="main_light">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>1.0 1.0 1.0 1</diffuse>
+      <specular>0.5 0.5 0.5 1</specular>
+      <direction>0.1 0.1 -1</direction>
+    </light>
+
+    <!-- ── Пол 12×12 ──────────────────────────────────────────────────────── -->
+    <model name="floor">
+      <static>true</static>
+      <pose>0 0 0 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>12 12 0.05</size></box></geometry></collision>
+        <visual name="v">
+          <geometry><box><size>12 12 0.05</size></box></geometry>
+          <material>
+            <ambient>0.72 0.74 0.76 1</ambient>
+            <diffuse>0.72 0.74 0.76 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ── Внешние стены (X,Y∈±6, h=2.5) ──────────────────────────────────── -->
+    <!-- КРАСНАЯ СТЕНА (ориентир, бывш. north) при +Y. -->
+    <model name="wall_red">
+      <static>true</static>
+      <pose>0 6 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>12.3 0.15 2.5</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>12.3 0.15 2.5</size></box></geometry>
+          <material><ambient>0.85 0.12 0.12 1</ambient><diffuse>0.85 0.12 0.12 1</diffuse></material></visual>
+      </link>
+    </model>
+    <!-- Стена напротив красной (-Y). -->
+    <model name="wall_opposite">
+      <static>true</static>
+      <pose>0 -6 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>12.3 0.15 2.5</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>12.3 0.15 2.5</size></box></geometry>
+          <material><ambient>0.80 0.82 0.85 1</ambient><diffuse>0.80 0.82 0.85 1</diffuse></material></visual>
+      </link>
+    </model>
+    <!-- Боковая стена при -X. -->
+    <model name="wall_side_xneg">
+      <static>true</static>
+      <pose>-6 0 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.15 12.0 2.5</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.15 12.0 2.5</size></box></geometry>
+          <material><ambient>0.82 0.84 0.87 1</ambient><diffuse>0.82 0.84 0.87 1</diffuse></material></visual>
+      </link>
+    </model>
+    <!-- Боковая стена при +X. -->
+    <model name="wall_side_xpos">
+      <static>true</static>
+      <pose>6 0 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.15 12.0 2.5</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.15 12.0 2.5</size></box></geometry>
+          <material><ambient>0.82 0.84 0.87 1</ambient><diffuse>0.82 0.84 0.87 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <!-- ── Колонны по углам, 1.5 м от стен → (±4.5, ±4.5), box 0.5×0.5×2.5 ─── -->
+    <model name="column_xpos_ypos">
+      <static>true</static>
+      <pose>4.5 4.5 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.5 0.5 2.5</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.5 0.5 2.5</size></box></geometry>
+          <material><ambient>0.5 0.4 0.3 1</ambient><diffuse>0.5 0.4 0.3 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="column_xneg_ypos">
+      <static>true</static>
+      <pose>-4.5 4.5 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.5 0.5 2.5</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.5 0.5 2.5</size></box></geometry>
+          <material><ambient>0.5 0.4 0.3 1</ambient><diffuse>0.5 0.4 0.3 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="column_xpos_yneg">
+      <static>true</static>
+      <pose>4.5 -4.5 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.5 0.5 2.5</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.5 0.5 2.5</size></box></geometry>
+          <material><ambient>0.5 0.4 0.3 1</ambient><diffuse>0.5 0.4 0.3 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="column_xneg_yneg">
+      <static>true</static>
+      <pose>-4.5 -4.5 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.5 0.5 2.5</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.5 0.5 2.5</size></box></geometry>
+          <material><ambient>0.5 0.4 0.3 1</ambient><diffuse>0.5 0.4 0.3 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <!-- ── Центральная комната 3×3 (внутр. стены при ±1.5, h=2.5) ──────────── -->
+    <!-- Проём 1.0 м (центр стороны) на 3 сторонах; ГЛУХАЯ сторона = +Y (к красной). -->
+    <!-- ГЛУХАЯ стена (+Y, к красной), без проёма. -->
+    <model name="inner_solid_yp">
+      <static>true</static>
+      <pose>0 1.5 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>3.0 0.15 2.5</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>3.0 0.15 2.5</size></box></geometry>
+          <material><ambient>0.62 0.58 0.45 1</ambient><diffuse>0.62 0.58 0.45 1</diffuse></material></visual>
+      </link>
+    </model>
+    <!-- Сторона -Y: проём по центру, 2 сегмента по 1.0 м при x=±1.0. -->
+    <model name="inner_door_yn_a">
+      <static>true</static>
+      <pose>1.0 -1.5 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>1.0 0.15 2.5</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>1.0 0.15 2.5</size></box></geometry>
+          <material><ambient>0.70 0.68 0.55 1</ambient><diffuse>0.70 0.68 0.55 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="inner_door_yn_b">
+      <static>true</static>
+      <pose>-1.0 -1.5 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>1.0 0.15 2.5</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>1.0 0.15 2.5</size></box></geometry>
+          <material><ambient>0.70 0.68 0.55 1</ambient><diffuse>0.70 0.68 0.55 1</diffuse></material></visual>
+      </link>
+    </model>
+    <!-- Сторона +X: проём по центру, 2 сегмента по 1.0 м при y=±1.0. -->
+    <model name="inner_door_xp_a">
+      <static>true</static>
+      <pose>1.5 1.0 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.15 1.0 2.5</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.15 1.0 2.5</size></box></geometry>
+          <material><ambient>0.70 0.68 0.55 1</ambient><diffuse>0.70 0.68 0.55 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="inner_door_xp_b">
+      <static>true</static>
+      <pose>1.5 -1.0 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.15 1.0 2.5</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.15 1.0 2.5</size></box></geometry>
+          <material><ambient>0.70 0.68 0.55 1</ambient><diffuse>0.70 0.68 0.55 1</diffuse></material></visual>
+      </link>
+    </model>
+    <!-- Сторона -X: проём по центру, 2 сегмента по 1.0 м при y=±1.0. -->
+    <model name="inner_door_xn_a">
+      <static>true</static>
+      <pose>-1.5 1.0 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.15 1.0 2.5</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.15 1.0 2.5</size></box></geometry>
+          <material><ambient>0.70 0.68 0.55 1</ambient><diffuse>0.70 0.68 0.55 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="inner_door_xn_b">
+      <static>true</static>
+      <pose>-1.5 -1.0 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.15 1.0 2.5</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.15 1.0 2.5</size></box></geometry>
+          <material><ambient>0.70 0.68 0.55 1</ambient><diffuse>0.70 0.68 0.55 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <!-- Дрон — центр (0,0) ВНУТРИ центральной комнаты (1.5 м до внутр. стен). -->
+    <include>
+      <uri>model://iris_claudedrone</uri>
+      <pose>0 0 0.2 0 0 0</pose>
+    </include>
+
+  </world>
+</sdf>

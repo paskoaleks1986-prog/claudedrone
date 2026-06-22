@@ -89,6 +89,7 @@ class ObsBuilder:
         self._servo_angle_fn = None
         self._pose = Pose2D()
         self._speed_m_s = 0.0
+        self._vel_world = (0.0, 0.0)  # odom twist (vwx, vwy) — для DIRDIAG frame-проверки
         self._latest_perimeter_stamp = 0.0
         self._latest_sweep_stamp = 0.0
         self._latest_odom_stamp = 0.0
@@ -156,6 +157,7 @@ class ObsBuilder:
         # v2 run F: |v| горизонтальная для velocity-gated arrival
         tw = msg.twist.twist.linear
         self._speed_m_s = math.hypot(tw.x, tw.y)
+        self._vel_world = (float(tw.x), float(tw.y))  # мировая скорость (направление) для DIRDIAG
         # Yaw from quaternion (ZYX intrinsic — стандарт для MAVROS map frame).
         yaw = math.atan2(
             2.0 * (q.w * q.z + q.x * q.y),
@@ -192,6 +194,11 @@ class ObsBuilder:
     def speed_m_s(self) -> float:
         """v2 run F: |v| горизонтальная из odom twist (velocity-gated arrival)."""
         return self._speed_m_s
+
+    @property
+    def vel_world(self) -> tuple[float, float]:
+        """Мировая горизонт-скорость (vwx, vwy) из odom twist — направление для DIRDIAG."""
+        return self._vel_world
 
     @property
     def has_received_odom(self) -> bool:

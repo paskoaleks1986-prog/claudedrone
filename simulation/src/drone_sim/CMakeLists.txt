@@ -22,8 +22,18 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
 )
 install(PROGRAMS
+  drone_sim/distance_sensor_forwarder.py
+  RENAME distance_sensor_forwarder
+  DESTINATION lib/${PROJECT_NAME}
+)
+install(PROGRAMS
   drone_sim/sensor_monitor.py
   RENAME sensor_monitor
+  DESTINATION lib/${PROJECT_NAME}
+)
+install(PROGRAMS
+  drone_sim/zone_semantic_server.py
+  RENAME zone_semantic_server
   DESTINATION lib/${PROJECT_NAME}
 )
 install(PROGRAMS
@@ -59,6 +69,16 @@ install(PROGRAMS
 install(PROGRAMS
   drone_sim/safety_guard.py
   RENAME safety_guard
+  DESTINATION lib/${PROJECT_NAME}
+)
+install(PROGRAMS
+  drone_sim/scan_points_node.py
+  RENAME scan_points
+  DESTINATION lib/${PROJECT_NAME}
+)
+install(PROGRAMS
+  drone_sim/tfluna_sweep_adapter.py
+  RENAME tfluna_arc
   DESTINATION lib/${PROJECT_NAME}
 )
 # Ресурсы — launch, models, worlds
