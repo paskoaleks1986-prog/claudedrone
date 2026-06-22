@@ -76,6 +76,11 @@ install(PROGRAMS
   RENAME scan_points
   DESTINATION lib/${PROJECT_NAME}
 )
+install(PROGRAMS
+  drone_sim/tfluna_sweep_adapter.py
+  RENAME tfluna_arc
+  DESTINATION lib/${PROJECT_NAME}
+)
 # Ресурсы — launch, models, worlds
 install(DIRECTORY
   launch
