@@ -42,8 +42,11 @@ def test_pillar_room_free_count() -> None:
 
 @pytest.mark.skipif(not CHAMBERS.exists(), reason="free_mask.png not generated")
 def test_two_chambers_free_count() -> None:
+    # Стенд З1 (Aleks 2026-06-08): doorway 1.0→1.4м + free_mask регенерён из
+    # SDF (gen_world_free_mask.py, растеризует стены плотнее прежней rl-lab
+    # .npy). free_count 3636→3481. См. dev-log 30.
     cov = Coverage(free_mask_path=CHAMBERS, grid_size=64)
-    assert cov.free_count == 3636, f"chambers free_count expected 3636, got {cov.free_count}"
+    assert cov.free_count == 3481, f"chambers free_count expected 3481, got {cov.free_count}"
 
 
 @pytest.mark.skipif(not EMPTY.exists(), reason="free_mask.png not generated")

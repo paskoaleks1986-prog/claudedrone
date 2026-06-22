@@ -1,12 +1,13 @@
 {
   "name": "rl_room_two_chambers",
-  "description": "6.4×6.4 m, центральная стена 0.4 m thick с gap 1 m (dead-end recovery).",
+  "description": "6.4×6.4 m, центральная стена 0.4 m thick с doorway 1.4 m (Aleks 2026-06-08, было 1.0). free_mask регенерён из SDF (gen_world_free_mask.py); конвенция отличается от прежней rl-lab .npy (плотнее растеризует стены) — coverage не сравнивать 1:1 с историч. two_chambers.",
   "room_size_m": 6.4,
   "cell_size_m": 0.1,
   "grid_size": 64,
   "obstacles_count": 2,
-  "wall_cells_count": 460,
-  "free_count": 3636,
+  "doorway_width_m": 1.4,
+  "wall_cells_count": 615,
+  "free_count": 3481,
   "spawn_zone": {
     "x_range": [
       -2.5,

@@ -28,13 +28,84 @@ from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool
 
 
+class HoverStabilityMonitor:
+    """Чистый трекер стабильности hover — без ROS-зависимостей (юнит-тестируем).
+
+    Дрон считается стабильным ТОЛЬКО если z держится в полосе ±band вокруг
+    target НЕПРЕРЫВНО stabilize_s И при этом НЕ снижается быстрее descent_dz
+    за descent_window_s. Любое из условий сбрасывает окно непрерывной
+    стабильности.
+
+    Ловит баг z=2.23→0.23 (release при падении) двумя путями:
+      • band_exit — z ушёл далеко от target (поздно, но надёжно);
+      • descending — z быстро падает, ещё оставаясь в полосе (рано).
+    Чистый elapsed-таймер ловил бы «stable» прямо в падении — отсюда оба слоя.
+    """
+
+    def __init__(self, target, band, stabilize_s, descent_dz, descent_window_s):
+        self.target = target
+        self.band = band
+        self.stabilize_s = stabilize_s
+        self.descent_dz = descent_dz            # < 0; падение за окно ниже этого = reset
+        self.descent_window_s = descent_window_s
+        self.window_start = None                # старт непрерывного in-band окна
+        self.entered_at = None                  # первый tick (для max-wait safety)
+        self._hist = []                         # [(t, z)] для оценки скорости
+
+    def update(self, now, z):
+        """Один tick. Возвращает dict: stable, elapsed, band_exit, descending, dz, z_err."""
+        if self.entered_at is None:
+            self.entered_at = now
+        self._hist.append((now, z))
+        cutoff = now - (self.descent_window_s + 1.0)
+        self._hist = [(t, v) for (t, v) in self._hist if t >= cutoff]
+
+        z_err = abs(z - self.target)
+        band_exit = z_err > self.band
+
+        # скорость снижения за окно: сравниваем с самым старым сэмплом ≥ window назад
+        descending = False
+        dz = 0.0
+        for (t, v) in self._hist:                # chronological order, oldest first
+            if now - t >= self.descent_window_s:
+                dz = z - v
+                descending = dz < self.descent_dz
+                break
+
+        if self.window_start is None or band_exit or descending:
+            self.window_start = now
+        elapsed = now - self.window_start
+        return {
+            'stable': elapsed >= self.stabilize_s,
+            'elapsed': elapsed,
+            'band_exit': band_exit,
+            'descending': descending,
+            'dz': dz,
+            'z_err': z_err,
+        }
+
+    def timed_out(self, now, max_wait_s):
+        return self.entered_at is not None and (now - self.entered_at) >= max_wait_s
+
+
 class TakeoffNode(Node):
     PHASES = ('wait_connect', 'set_mode', 'arming', 'climb', 'hover', 'released')
     TARGET_ALTITUDE = 2.0       # m
     CLIMB_ARRIVAL_M = 1.8       # z >= 1.8 = climb complete (close to 2.0 target)
     CLIMB_TIMEOUT_S = 15.0      # safety: switch hover even if z not reached
     CMD_RETRY_S = 2.0           # service retry interval
-    HOVER_STABILIZE_S = 5.0     # hover stable before release to bridge
+    # EKF-settle gate (Aleks RCA 2026-06-08): после ребута D2 Gazebo IMU-плагин
+    # стартует медленнее; DISARM_DELAY=0 + ARMING_SKIPCHK=1 позволяют заармиться
+    # в первые секунды, пока гироскопы «несогласованны» и EKF-аттитюд не сошёлся
+    # → AP армится → AngErr 32-50 → crash-disarm на взлёте (3/3 рана). Ждём
+    # GUIDED_SETTLE_S после подтверждения GUIDED перед первым арм-командой —
+    # даём EKF/IMU сойтись, чтобы арм был в хорошее состояние.
+    GUIDED_SETTLE_S = 8.0
+    HOVER_STABILIZE_S = 5.0     # z must hold in-band CONTINUOUSLY this long before release
+    HOVER_Z_BAND = 0.5          # |z - TARGET_ALTITUDE| tolerance for "stable"
+    HOVER_MAX_WAIT_S = 20.0     # safety: never released past this — log ERROR, keep holding setpoint
+    HOVER_DESCENT_DZ = -0.15    # снижение ниже этого за окно = падает → reset таймера
+    HOVER_DESCENT_WINDOW_S = 2.0  # окно оценки скорости снижения
     ORIGIN_WAIT_S = 1.5         # wait after publishing origin before next phase
     ORIGIN_LAT = 51.0           # dummy origin (no real GPS, any valid coord OK)
     ORIGIN_LON = 0.0
@@ -44,12 +115,22 @@ class TakeoffNode(Node):
         super().__init__('takeoff_node')
 
         self.state = State()
+        self.pose_x = 0.0
+        self.pose_y = 0.0
         self.pose_z = 0.0
         self.phase = 'wait_connect'
         self.last_cmd_t = 0.0
         self.origin_pub_at = None   # phase=set_origin publish time
+        self.guided_at = None       # время подтверждения GUIDED (EKF-settle gate)
+        self.settle_logged = False  # один INFO-лог про ожидание settle
         self.climb_at = None        # phase=climb start time
-        self.hover_at = None
+        self.hover_mon = HoverStabilityMonitor(
+            target=self.TARGET_ALTITUDE,
+            band=self.HOVER_Z_BAND,
+            stabilize_s=self.HOVER_STABILIZE_S,
+            descent_dz=self.HOVER_DESCENT_DZ,
+            descent_window_s=self.HOVER_DESCENT_WINDOW_S,
+        )
         self.ready_published = False
         self.origin_published = False
         self.takeoff_cmd_sent = False
@@ -92,6 +173,8 @@ class TakeoffNode(Node):
         self.state = msg
 
     def odom_cb(self, msg):
+        self.pose_x = msg.pose.pose.position.x
+        self.pose_y = msg.pose.pose.position.y
         self.pose_z = msg.pose.pose.position.z
 
     def now_s(self):
@@ -116,6 +199,8 @@ class TakeoffNode(Node):
 
         if self.phase == 'set_mode':
             if self.state.mode == 'GUIDED':
+                self.guided_at = self.now_s()   # старт EKF-settle окна
+                self.settle_logged = False
                 self.to_phase('arming', f'mode={self.state.mode}')
                 return
             if self.throttled():
@@ -136,9 +221,30 @@ class TakeoffNode(Node):
                 return
             if self.state.armed:
                 # Armed → issue NAV_TAKEOFF + start setpoint stream (climb phase).
+                # Захватываем взлётную x,y и держим ИМЕННО ЕЁ в hover (а не (0,0)):
+                # спавн в pillar/др. мирах смещён от локального origin → target (0,0)
+                # гнал дрон в центр (в колонну) с креном 47° → потеря тяги → просадка.
+                # Hold-in-place убирает горизонтальную ошибку → высота держится.
+                self.target.pose.position.x = self.pose_x
+                self.target.pose.position.y = self.pose_y
+                self.get_logger().info(
+                    f'hover target = takeoff pos ({self.pose_x:.2f}, {self.pose_y:.2f}, '
+                    f'{self.TARGET_ALTITUDE}) — hold-in-place'
+                )
                 self.climb_at = self.now_s()
                 self.takeoff_cmd_sent = False
                 self.to_phase('climb', 'armed → NAV_TAKEOFF + setpoint stream')
+                return
+            # EKF-settle gate: НЕ армимся первые GUIDED_SETTLE_S после GUIDED —
+            # даём гироскопам/EKF сойтись, иначе арм в кривой аттитюд → AngErr crash.
+            settle_elapsed = self.now_s() - (self.guided_at or self.now_s())
+            if settle_elapsed < self.GUIDED_SETTLE_S:
+                if not self.settle_logged:
+                    self.get_logger().info(
+                        f'EKF-settle: ждём {self.GUIDED_SETTLE_S:.0f}s до арма '
+                        f'(гироскопы/EKF сходятся после GUIDED)'
+                    )
+                    self.settle_logged = True
                 return
             if self.throttled():
                 return
@@ -182,10 +288,29 @@ class TakeoffNode(Node):
             return
 
         if self.phase == 'hover':
-            if self.hover_at is None:
-                self.hover_at = self.now_s()
-            elapsed = self.now_s() - self.hover_at
-            if elapsed >= self.HOVER_STABILIZE_S and not self.ready_published:
+            now = self.now_s()
+            st = self.hover_mon.update(now, self.pose_z)
+            # каждое из условий сбрасывает окно стабильности — логируем причину.
+            if st['band_exit']:
+                self.get_logger().warn(
+                    f'hover: z={self.pose_z:.2f}m вне полосы '
+                    f'(|Δ|={st["z_err"]:.2f} > {self.HOVER_Z_BAND}) — сброс таймера стабильности'
+                )
+            elif st['descending']:
+                self.get_logger().warn(
+                    f'hover: дрон снижается Δz={st["dz"]:.2f}м/{self.HOVER_DESCENT_WINDOW_S}с '
+                    f'(< {self.HOVER_DESCENT_DZ}) — сброс таймера стабильности'
+                )
+            # safety: если так и не стабилизировались — НЕ отдаём плохой дрон в bridge,
+            # держим setpoint (target z) и громко логируем.
+            if self.hover_mon.timed_out(now, self.HOVER_MAX_WAIT_S) and not self.ready_published:
+                self.get_logger().error(
+                    f'hover: не стабилизировался за {self.HOVER_MAX_WAIT_S}s '
+                    f'(z={self.pose_z:.2f}m, target={self.TARGET_ALTITUDE}m) — '
+                    f'ДЕРЖУ setpoint, НЕ отдаю в bridge'
+                )
+                return
+            if st['stable'] and not self.ready_published:
                 self.ready_pub.publish(Bool(data=True))
                 self.ready_published = True
                 self.get_logger().info(
@@ -196,7 +321,7 @@ class TakeoffNode(Node):
                 return
             self.get_logger().info(
                 f'hover: mode={self.state.mode} armed={self.state.armed} '
-                f'z={self.pose_z:.2f}m elapsed={elapsed:.1f}s'
+                f'z={self.pose_z:.2f}m elapsed={st["elapsed"]:.1f}s'
             )
             return
 

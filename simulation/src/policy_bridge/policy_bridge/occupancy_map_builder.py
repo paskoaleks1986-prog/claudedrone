@@ -15,6 +15,7 @@ import math
 from collections import deque
 
 import numpy as np
+from scipy import ndimage
 
 GRID = 64
 UNKNOWN, FREE, OCCUPIED = 0, 1, 2
@@ -104,6 +105,32 @@ def update_frontiers(occ: np.ndarray) -> np.ndarray:
     return free & adj_unknown
 
 
+# §3.1 (Alignment Sprint, Aleks 2026-06-07): фильтр мелких frontier-кластеров.
+# Изолированный кластер < MIN клеток (< 0.3м) = угловой артефакт, не реальное
+# неизведанное — рейкаст его закроет. Ref Yamauchi 1997 + практика.
+# ⚠ ПАРИТЕТ: меняет frontier-маску (она в obs). min=1 → НИ-ОДНОГО-ОП,
+# bit-exact с историческим env (v1.5c обучена без фильтра, AM-4 фикстуры
+# тоже). Aligned-build = 3 на ОБЕИХ сторонах (env + bridge) после retrain.
+MIN_FRONTIER_CLUSTER_CELLS_DEFAULT = 1   # off = parity-safe; aligned = 3
+_FRONTIER_4CONN = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=bool)
+
+
+def filter_small_frontiers(mask: np.ndarray, min_cells: int) -> np.ndarray:
+    """Убрать 4-связные frontier-кластеры размером < min_cells.
+
+    min_cells ≤ 1 → возврат без изменений (parity-safe no-op). Кластеризация
+    через connected components (4-связность) — детерминированный результат,
+    эквивалент BFS из §3.1 протокола."""
+    if min_cells <= 1 or not mask.any():
+        return mask
+    labels, n = ndimage.label(mask, structure=_FRONTIER_4CONN)
+    if n == 0:
+        return mask
+    sizes = np.bincount(labels.ravel())
+    keep = np.isin(labels, np.flatnonzero(sizes >= min_cells))
+    return mask & keep
+
+
 def frontier_bfs(
     occ_free: np.ndarray, ix0: int, iy0: int
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -167,6 +194,34 @@ def frontier_directions(
     return out
 
 
+def free_run_cells(
+    occ: np.ndarray, x_cells: float, y_cells: float, heading_rad: float,
+    max_cells: int = MAX_VL_RANGE_CELLS,
+) -> int:
+    """§3.2 v2 (STUB до v2-экспорта): целые FREE-клетки луча heading вперёд.
+
+    Считает непрерывный free-пробег от (x,y) вдоль heading до первой не-FREE
+    клетки / края, той же геометрией, что integrate_pose (RAY_STEP, int()).
+    Используется action7_free_run_blocks (маска: free_cells > N) и v2-executor
+    travel (= free_cells − N). Зеркало env `_free_run`.
+
+    ⚠ STUB: точную семантику (включительно/исключительно, семплинг) ФИНАЛИЗИРОВАТЬ
+    против v2 parity-фикстур при получении export — иначе разъедется (TF-Luna).
+    """
+    dx, dy = math.cos(heading_rad), math.sin(heading_rad)
+    reached = 0
+    d = RAY_STEP
+    while d <= max_cells:
+        cx, cy = int(x_cells + dx * d), int(y_cells + dy * d)
+        if cx < 0 or cy < 0 or cx >= GRID or cy >= GRID:
+            break
+        if occ[cy, cx] != FREE:
+            break
+        reached = int(d)
+        d += RAY_STEP
+    return reached
+
+
 def mapped_ratio(occ: np.ndarray, free_mask: np.ndarray) -> float:
     """Протокол §5.1 (согласовано E3): (known ∩ free_mask) / free_count."""
     free_count = int(free_mask.sum())
@@ -208,8 +263,13 @@ class OccupancyMapBuilder:
     вызывающего предупредить).
     """
 
-    def __init__(self, *, nx: int = GRID, ny: int = GRID) -> None:
+    def __init__(
+        self, *, nx: int = GRID, ny: int = GRID,
+        min_frontier_cluster_cells: int = MIN_FRONTIER_CLUSTER_CELLS_DEFAULT,
+    ) -> None:
         self.nx, self.ny = int(nx), int(ny)
+        # §3.1: 1 = parity-safe (v1.5c, фикстуры); 3 = aligned-build (retrain)
+        self.min_frontier_cluster_cells = int(min_frontier_cluster_cells)
         self.occ = np.zeros((self.ny, self.nx), dtype=np.uint8)
         self._frontier_mask = np.zeros((self.ny, self.nx), dtype=bool)
 
@@ -239,7 +299,10 @@ class OccupancyMapBuilder:
             self.occ, x_cells, y_cells, heading_rad,
             vl_cells, servo_deg, tf_cells,
         )
-        self._frontier_mask = update_frontiers(self.occ)
+        # §3.1: фильтр мелких кластеров (no-op при min ≤ 1 → bit-exact)
+        self._frontier_mask = filter_small_frontiers(
+            update_frontiers(self.occ), self.min_frontier_cluster_cells
+        )
 
     @property
     def frontier_mask(self) -> np.ndarray:

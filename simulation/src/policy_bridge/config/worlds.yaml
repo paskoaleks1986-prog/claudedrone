@@ -13,17 +13,54 @@
 # ⚠ Модельный obs-контракт ActiveMapping-v1 (64×64 @ 0.1) НЕ растягивается:
 # в мирах больше 6.4×6.4 модель работает OOD (bridge предупреждает в логе).
 # Per-world задаётся ГЕОМЕТРИЯ bridge: safe-box, visited/coverage/occupancy гриды.
+#
+# ═══ СТАНДАРТ МИРА (Alignment Sprint Блок 1, Aleks 2026-06-07) ═══
+#   wall_height : ≥ 4.0 м  (запас над max эшелоном 3.0 + 1.0; takeoff z=2.0)
+#   spawn_pose  : центр комнаты, yaw=0° (single-room); multi-room — в камере 1
+#   grid_origin : центр bbox (0,0); для single-room совпадает со spawn
+#   room_size   : кратно 0.1 м (= grid_resolution)
+#   doorways    : ширина ≥ 1.0 м (2× габарита дрона)
+# Значения room_size/wall_height ИЗМЕРЕНЫ по SDF (не из памяти). Высоты стен
+# живут в SDF (здесь — для справки/аудита); bridge их не читает.
 
 worlds:
   rl_room_empty_6x6:
-    room_size: [6.4, 6.4]      # SDF: интерьер 6.2, bbox стен 6.4 — грид-канон rl_rooms
+    room_size: [6.4, 6.4]      # SDF bbox 6.4; wall_height 4.0 ✓; spawn центр
     grid_resolution: 0.1
   rl_room_pillar_center:
-    room_size: [6.4, 6.4]
+    room_size: [6.4, 6.4]      # wall_height 4.0 ✓ pillar 1×1×4.0; spawn зона SW
     grid_resolution: 0.1
   rl_room_two_chambers:
-    room_size: [6.4, 6.4]
+    room_size: [6.4, 6.4]      # wall_height 4.0 ✓
     grid_resolution: 0.1
+    # doorway РАСШИРЕН 1.0→1.4 м (Aleks 2026-06-08): wall_middle_{south,north}
+    # pose y=±1.9, size_y=2.4 → сегменты [-3.1,-0.7] и [0.7,3.1] → зазор
+    # [-0.7,0.7] = 1.4 м. standoff 0.6 → 0.1 зазор/сторона, проходимо.
+    # free_mask регенерён из SDF (gen_world_free_mask.py). RL не ретренит
+    # (спринт без ретрейна) — train-env разойдётся, sim-bench only.
+    doorway_width: 1.4
   indoor_room:
-    room_size: [16.0, 10.0]    # измерено по SDF 2026-06-07: bbox x ±8.0, y ±5.0 (стены 0.15)
+    # измерено по SDF: bbox x ±8.0, y ±5.0 (стены 0.15). wall_height 3.0→4.0
+    # поднято (Alignment Блок 1). multi-room: spawn (-6.5,-3.5) камера 1,
+    # grid_origin = центр bbox (0,0).
+    room_size: [16.0, 10.0]
     grid_resolution: 0.1
+    doorway_width: 3.0         # дверь-проём ≥1.4 ✓ (измерено по SDF)
+
+  # ═══ Стенд-спринт (Aleks 2026-06-08): 4 новых тестовых мира ═══
+  # bbox центрирован в (0,0); gen_stand_worlds.py + gen_world_free_mask.py.
+  # ⚠ Все НЕ 6.4×6.4 → model_canon=False (OOD): модель обучена на 64×64@0.1,
+  #   bridge логирует OOD-warn. Это осознанный тест деградации (см. dev-log 30).
+  rl_room_L_corridor:
+    room_size: [8.0, 8.0]      # L: 2 рукава 3×8 @90°; bbox 8×8 (вырез не flyable)
+    grid_resolution: 0.1       # spawn (-2.5,-2.5) локоть; corner-nav стресс
+  rl_room_multi_pillar:
+    room_size: [6.0, 6.0]      # 3 столба 0.5×0.5; spawn центр (0,0)
+    grid_resolution: 0.1
+  rl_room_large:
+    room_size: [10.0, 10.0]    # OOD: пустая 10×10 (>6.4); spawn центр (0,0)
+    grid_resolution: 0.1
+  rl_room_apartment:
+    room_size: [9.0, 9.0]      # 3 комнаты 5×5+4×4+4×4; bbox 9×9 центр (0,0)
+    grid_resolution: 0.1       # spawn комната A центр (-2,-2); multi-room
+    doorway_width: 1.4         # A|B и A|C проёмы 1.4 м

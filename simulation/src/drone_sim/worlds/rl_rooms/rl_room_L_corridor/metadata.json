@@ -1,0 +1,17 @@
+{
+  "world_name": "rl_room_L_corridor",
+  "grid": [
+    80,
+    80
+  ],
+  "resolution_m": 0.1,
+  "room_size_m": [
+    8.0,
+    8.0
+  ],
+  "free_count": 5734,
+  "wall_cells": 666,
+  "source_sdf": "src/drone_sim/worlds/rl_room_L_corridor.sdf",
+  "generator": "help_scripts/gen_world_free_mask.py",
+  "n_wall_boxes": 6
+}

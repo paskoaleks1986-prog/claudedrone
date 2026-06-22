@@ -16,6 +16,14 @@ def generate_launch_description():
     # Используется и для SDF path, и для gz_bridge `/world/<name>/...` topics.
     world_name = os.environ.get('DEFAULT_WORLD', 'indoor_room')
     world = os.path.join(pkg, 'worlds', f'{world_name}.sdf')
+    if not os.path.exists(world):
+        # вложенные наборы (worlds_v4a1/<name>/<name>.sdf, worlds_a1/a2/a3/...):
+        # flat-имя первично; gz берёт world-имя из SDF → bridge-топики совпадают.
+        import glob as _glob
+        _hits = _glob.glob(os.path.join(pkg, 'worlds', '**', f'{world_name}.sdf'),
+                           recursive=True)
+        if _hits:
+            world = _hits[0]
 
     # Путь к моделям
     models = os.path.join(pkg, 'models')
@@ -41,18 +49,49 @@ def generate_launch_description():
     # autoscan каждые cooldown_s триггерит sweep_node, который гоняет серву
     # 0→π — а в тренировке серву двигает ТОЛЬКО action 6 шагами 30°.
     # Параллельные sweep'ы делают servo_angle/distances[6] в obs бессмысленными.
+    # Aleks 2026-06-15: ДЕФОЛТ false = скан ТОЛЬКО по кнопке /drone/sweep/start (GUI
+    # мануал). true = авто-цикл (opt-in, --autoscan). RL-раны и так false.
     autoscan_arg = DeclareLaunchArgument(
         'autoscan',
-        default_value='true',
-        description='Автотриггер sweep циклов. false для policy_bridge RL-ранов (серва — у action 6).',
+        default_value='false',
+        description='Автотриггер sweep циклов. ДЕФОЛТ false = скан по кнопке (GUI мануал). '
+                    'true = авто-цикл (opt-in). RL-раны: false (серва — у action 6).',
     )
     autoscan = LaunchConfiguration('autoscan')
+
+    # SITL-RL fine-tune (Aleks 2026-06-09): safety_guard:=false для train.
+    # safety_guard — deployment-слой, которого НЕТ в train-env (drone_map_env):
+    # он аборт­ит ротации (в train mask[4,5] всегда True) → livelock, и паузит
+    # setpoint-стрим → дрон проседает/заваливается на reposition (ран TASK-RL-
+    # SITL-FT-1 умер: tilt 61.8°, re-arm fail). Защита от стен в fine-tune уже
+    # parity-консистентна: action_mask (env) + gate_blocks (sitl_comm). Деплой =
+    # true (untrusted policy). RL train передаёт false (launch.sh --no-safety-guard).
+    safety_guard_arg = DeclareLaunchArgument(
+        'safety_guard',
+        default_value='true',
+        description='Sensor-level аварийный стоп. false для RL fine-tune (паритет '
+                    'с train-env; защита = action_mask+gate_blocks). Деплой = true.',
+    )
+    safety_guard_cfg = LaunchConfiguration('safety_guard')
+
+    # scan_points (C1): /scan/record для interface scan_store (точки веера/precise по
+    # ФАКТ. углу джойнта). Aleks 2026-06-15: interface рисует веер ИЗ /scan/record, а
+    # не из /drone/sweep/result (там командные углы → выгиб). default true для GUI/мануала;
+    # RL может выключить (точки не нужны, серва у action 6).
+    scan_points_arg = DeclareLaunchArgument(
+        'scan_points',
+        default_value='true',
+        description='C1 нода /scan/record (точки по факт. углу). false для RL-ранов.',
+    )
+    scan_points_cfg = LaunchConfiguration('scan_points')
 
     return LaunchDescription([
 
         sweep_storage_arg,
         launch_gz_arg,
         autoscan_arg,
+        safety_guard_arg,
+        scan_points_arg,
 
         # Запускаем Gazebo (только если launch_gz:=true — backward compat для standalone)
         ExecuteProcess(
@@ -68,6 +107,16 @@ def generate_launch_description():
             package='drone_sim',
             executable='sensor_monitor',
             name='sensor_monitor',
+            output='screen'
+        ),
+        # DS->AP forwarder (Стенд 2026-06-08): сырые VL53/TF-Luna LaserScan →
+        # sensor_msgs/Range на /mavros/* → mavros distance_sensor → MAVLink
+        # DISTANCE_SENSOR → FC. Нужен пока в indoor.parm активны PRX1/RNGFND
+        # (иначе AP: PreArm No Data). Harmless если параметры закомментированы.
+        Node(
+            package='drone_sim',
+            executable='distance_sensor_forwarder',
+            name='distance_sensor_forwarder',
             output='screen'
         ),
         # SG90 servo command node — клемп target_angle → /drone/sg90/cmd
@@ -112,6 +161,16 @@ def generate_launch_description():
             output='screen',
             condition=IfCondition(autoscan),
         ),
+        # scan_points (C1) — /scan/record: точки веера/precise в world по ФАКТ. углу
+        # джойнта (joint_state) + per-ray поза. interface рисует веер отсюда.
+        Node(
+            package='drone_sim',
+            executable='scan_points',
+            name='scan_points_node',
+            output='screen',
+            parameters=[{'world': world_name, 'use_sim_time': True}],
+            condition=IfCondition(scan_points_cfg),
+        ),
         # Safety guard — TOF-уровневая аварийная остановка (TASK-059 attempt #4).
         # Independent reactive layer ниже policy_bridge: если ANY VL53L0X/sweep
         # читает < 0.5 м, publish zero Twist на /mavros/setpoint_velocity/cmd_vel_unstamped
@@ -144,6 +203,7 @@ def generate_launch_description():
                 'stop_threshold_floor': 0.40,
                 'check_rate_hz': 50.0,
             }],
+            condition=IfCondition(safety_guard_cfg),
         ),
         Node(
             package='ros_gz_bridge',

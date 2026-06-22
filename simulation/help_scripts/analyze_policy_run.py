@@ -19,10 +19,26 @@ import sys
 from collections import defaultdict
 
 TS = re.compile(r"\[(\d{10})\.\d+\]")
-STEP = re.compile(r"step (\d+) · action (\S+).*coverage ([0-9.]+) · escape_total=(\d+)")
+# .*? между coverage и escape_total — лог теперь содержит '· mapped X ·' между
+# ними (формат изменился; старый ` · escape_total` вплотную больше не матчился).
+STEP = re.compile(r"step (\d+) · action (\S+).*coverage ([0-9.]+).*escape_total=(\d+)")
+# любой счётчик шага (action-строки, WF-строки, 'на шаге N' в MISSION COMPLETE) —
+# для реального знаменателя no-travel (step-строки логируются разреженно).
+ANY_STEP = re.compile(r"(?:step|шаге) (\d+)")
 GATE = re.compile(r"gate: action (\d) отклонён")
 SAFETY = re.compile(r"safety still active")
 DEGRADE = re.compile(r"action 7→(\d)")
+# no-travel: action 7 у стены (front ≤ margin → travel ≤ 0.01, дрон не сдвинулся).
+# Acceptance Alignment-v1 (Aleks): no-travel ≤ 2% за полный ран (до MISSION
+# COMPLETE или 500 шагов). См. action_executor.py "no travel" warn.
+NOTRAVEL = re.compile(r"no travel")
+NOTRAVEL_ACCEPTANCE_PCT = 2.0
+# Стенд З3: детерминированная фаза облёта периметра (post-MISSION COMPLETE).
+PS_START = re.compile(r"PERIMETER START: (\d+) waypoints")
+PS_STEP = re.compile(r"PERIMETER step (\d+) · (\S+) (\S+)")
+PS_DONE = re.compile(r"PERIMETER COMPLETE")
+PS_SKIP = re.compile(r"PERIMETER skip")
+MISSION = re.compile(r"MISSION COMPLETE")
 
 
 def minute_of(line: str, t0: int) -> int | None:
@@ -49,7 +65,8 @@ def main() -> None:
         sys.exit(1)
 
     per_min: dict[int, dict[str, float]] = defaultdict(
-        lambda: {"steps": 0, "gate": 0, "degrade7": 0, "cov": 0.0, "esc": 0})
+        lambda: {"steps": 0, "gate": 0, "degrade7": 0, "cov": 0.0, "esc": 0,
+                 "notravel": 0})
     last_esc = 0
     for ln in lines:
         mn = minute_of(ln, t0)
@@ -66,6 +83,8 @@ def main() -> None:
             per_min[mn]["gate"] += 1
         if DEGRADE.search(ln):
             per_min[mn]["degrade7"] += 1
+        if NOTRAVEL.search(ln):
+            per_min[mn]["notravel"] += 1
 
     safety_per_min: dict[int, int] = defaultdict(int)
     if ros_log:
@@ -85,6 +104,22 @@ def main() -> None:
 
     total_steps = sum(int(d["steps"]) for d in per_min.values())
     total_int = sum(int(d["gate"]) + int(d["esc"]) for d in per_min.values())
+    total_notravel = sum(int(d["notravel"]) for d in per_min.values())
+
+    # ── ACCEPTANCE Alignment-v1 (Aleks): no-travel ≤ 2% за полный ран ──
+    # ВНЕ guard total_steps: короткие раны (MISSION COMPLETE < 50 шагов) не
+    # логируют ни одной step-строки → total_steps=0, но acceptance мерить надо.
+    # Знаменатель = реальный max достигнутый шаг (max из 'step N' / 'на шаге N').
+    max_step = max((int(m.group(1)) for ln in lines
+                    for m in [ANY_STEP.search(ln)] if m), default=0)
+    denom = max(max_step, 1)
+    nt_pct = 100 * total_notravel / denom
+    ok = nt_pct <= NOTRAVEL_ACCEPTANCE_PCT
+    print(f"\n=== ACCEPTANCE Alignment-v1 (no-travel) ===")
+    print(f"  no-travel: {total_notravel}/{denom} шагов = {nt_pct:.2f}% "
+          f"(цель ≤ {NOTRAVEL_ACCEPTANCE_PCT:.0f}%) {'✓ PASS' if ok else '✗ FAIL'}")
+    print(f"  (v1.5c baseline до alignment: 5-8%; aligned N=6 цель ≤2%)")
+
     if total_steps:
         print(f"\nИтого: {total_steps} логированных шагов, "
               f"{total_int} вмешательств (gate+escape) "
@@ -133,6 +168,34 @@ def main() -> None:
             print("  3. safety_guard: передай sim-ros.log вторым аргументом")
             verdict = c1 and c2
         print(f"  → {'МОДЕЛЬ ЛЕТИТ ✓' if verdict else 'политика ещё не рулит сама ✗'}")
+
+    # ---- Стенд З3: фаза облёта периметра (отдельно от RL EXPLORE) ----
+    mission_done = any(MISSION.search(ln) for ln in lines)
+    ps_started = next((m for ln in lines for m in [PS_START.search(ln)] if m), None)
+    ps_done = any(PS_DONE.search(ln) for ln in lines)
+    ps_skipped = any(PS_SKIP.search(ln) for ln in lines)
+    ps_steps = [(PS_STEP.search(ln).group(2), PS_STEP.search(ln).group(3))
+                for ln in lines if PS_STEP.search(ln)]
+    print("\n=== ФАЗА PERIMETER SWEEP (Стенд З3) ===")
+    if ps_skipped:
+        print("  ⊘ SKIP — комната мала для standoff (inset≤0)")
+    elif ps_started is None:
+        if mission_done:
+            print("  не стартовала (perimeter_sweep off, или ран оборвался "
+                  "сразу после MISSION COMPLETE)")
+        else:
+            print("  не стартовала — MISSION COMPLETE не достигнут "
+                  "(гейт ОК: облёт только после картирования)")
+    else:
+        n_wp = int(ps_started.group(1))
+        n_rot = sum(1 for k, _ in ps_steps if k == "rotate")
+        n_trans = sum(1 for k, _ in ps_steps if k == "translate")
+        n_legs = sum(1 for k, t in ps_steps if k == "translate" and t.startswith("wall"))
+        print(f"  старт: {n_wp} waypoints запланировано")
+        print(f"  выполнено шагов: {len(ps_steps)} "
+              f"(rotate={n_rot}, translate={n_trans}, стен-обойдено={n_legs}/4)")
+        print(f"  полный обход (4 стены + центр): "
+              f"{'✓ ЗАВЕРШЁН' if ps_done else '✗ оборвался (не COMPLETE)'}")
 
 
 if __name__ == "__main__":

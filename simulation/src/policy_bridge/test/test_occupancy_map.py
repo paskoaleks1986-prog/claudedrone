@@ -17,12 +17,28 @@ import pytest
 from policy_bridge.occupancy_map_builder import (
     FREE,
     GRID,
+    OCCUPIED,
     action_mask_from_occupancy,
+    free_run_cells,
     frontier_directions,
     integrate_ray,
     mapped_ratio,
     update_frontiers,
 )
+
+
+def test_free_run_cells_stub():
+    """§3.2 v2-stub: free_run считает FREE-клетки вперёд до стены/края."""
+    occ = np.zeros((GRID, GRID), dtype=np.uint8)  # всё UNKNOWN
+    occ[32, 32:40] = FREE          # коридор FREE по x от 32 (heading 0 = +x)
+    occ[32, 40] = OCCUPIED         # стена на x=40
+    # из (32,32) heading 0 (+x): FREE 33..39 → упор в OCCUPIED@40
+    run = free_run_cells(occ, 32.0, 32.0, 0.0)
+    assert 6 <= run <= 8           # ~7 клеток до стены (геометрия RAY_STEP)
+    # упор сразу в стену → 0
+    occ2 = np.zeros((GRID, GRID), dtype=np.uint8)
+    occ2[32, 33] = OCCUPIED
+    assert free_run_cells(occ2, 32.0, 32.0, 0.0) <= 1
 
 RL_LAB_ROOT = Path(os.environ.get("RL_LAB_ROOT", "/data/git/rl-lab"))
 FIXTURES_DIR = RL_LAB_ROOT / "export" / "activemapping_v1" / "fixtures"
