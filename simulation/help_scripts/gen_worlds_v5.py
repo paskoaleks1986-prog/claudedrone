@@ -24,6 +24,7 @@ import yaml
 
 SIM_ROOT = Path(__file__).resolve().parent.parent
 WALL_T = 0.15        # толщина стены, м
+WALL_HALF = WALL_T / 2   # полутолщина → centerline→ПОВЕРХНОСТЬ offset (фикс tof-parity, dev-log/48)
 WALL_H = 4.0         # высота стены (стандарт мира: > эшелон 3.0 + запас)
 RES = 0.1            # м/клетку occupancy
 
@@ -116,6 +117,108 @@ def _rasterize(segments, half_x, half_y):
     return grid, nx, ny
 
 
+# ── polyline-стены (P3-P5: волна/зигзаг/зубцы) ──────────────────────────────
+def _chain_sdf(points, prefix, color=(0.78, 0.78, 0.82)):
+    """SDF box-сегменты по centerline-полилинии (между соседними точками)."""
+    out = ""
+    for i in range(len(points) - 1):
+        ax, ay = points[i]
+        bx, by = points[i + 1]
+        L = math.hypot(bx - ax, by - ay) + WALL_T
+        yaw = math.atan2(by - ay, bx - ax)
+        out += _wall_box(f"{prefix}_{i:03d}", (ax + bx) / 2, (ay + by) / 2, L, yaw, color)
+    return out
+
+
+def _normal_to_drone(points, i):
+    """Единичная нормаль в вершине i, направленная к дрону (−x сторона)."""
+    n = len(points)
+    a = points[max(0, i - 1)]
+    b = points[min(n - 1, i + 1)]
+    tx, ty = b[0] - a[0], b[1] - a[1]
+    L = math.hypot(tx, ty) or 1.0
+    tx, ty = tx / L, ty / L
+    nx, ny = ty, -tx                      # перпендикуляр
+    if nx > 0:                            # к −x (сторона дрона)
+        nx, ny = -nx, -ny
+    return nx, ny
+
+
+def _offset_surface(points, off):
+    """Полилиния-ПОВЕРХНОСТЬ: centerline сдвинут на off к дрону вдоль локальной нормали."""
+    out = []
+    for i, (x, y) in enumerate(points):
+        nx, ny = _normal_to_drone(points, i)
+        out.append((x + off * nx, y + off * ny))
+    return out
+
+
+def _poly_followable(surf_pts):
+    return [{"type": "segment", "p1": [round(surf_pts[i][0], 4), round(surf_pts[i][1], 4)],
+             "p2": [round(surf_pts[i + 1][0], 4), round(surf_pts[i + 1][1], 4)]}
+            for i in range(len(surf_pts) - 1)]
+
+
+def _poly_arena(name, stage, center_pts, *, y_spawn=-3.5, half=5.0, color):
+    """Общая сборка polyline-арены: SDF + surface-дескриптор + спавн (center→поверхность 0.50) + occ."""
+    surf = _offset_surface(center_pts, WALL_HALF)
+    sdf = _HEADER.format(name=name)
+    sdf += _FLOOR.format(cx=0, cy=0, sx=2 * half, sy=2 * half + 2)
+    sdf += _chain_sdf(center_pts, "wall", color)
+    # спавн: от surface-точки ближайшей к y_spawn, на 0.50 к дрону вдоль нормали
+    si = min(range(len(surf)), key=lambda k: abs(surf[k][1] - y_spawn))
+    snx, sny = _normal_to_drone(center_pts, si)
+    sx, sy = surf[si][0] + 0.50 * snx, surf[si][1] + 0.50 * sny
+    spawn = dict(sx=round(sx, 3), sy=round(sy, 3), syaw=math.pi / 2)
+    sdf += _FOOTER.format(**spawn)
+    arena = {
+        "name": name, "stage": stage,
+        "spawn": [spawn["sx"], spawn["sy"], round(spawn["syaw"], 4)],
+        "finish": {"type": "line_y", "y": center_pts[-1][1] - 0.5, "desc": "прошёл длину стены"},
+        "followable": _poly_followable(surf),
+        "obstacles": _poly_followable(surf),
+        "r_usable": 1.2,
+        "note": "geometry = ПОВЕРХНОСТЬ (centerline сдвинут WALL_T/2 к дрону); rl-env читать ОТСЮДА для parity",
+    }
+    segs = [(center_pts[i][0], center_pts[i][1], center_pts[i + 1][0], center_pts[i + 1][1])
+            for i in range(len(center_pts) - 1)]
+    grid, nx, ny = _rasterize(segs, half, half + 1)
+    occ = dict(occupancy=grid, resolution=RES, origin=[-half, -(half + 1)],
+               shape=[ny, nx], cy="south_iy0")
+    return name, sdf, arena, occ
+
+
+def build_p3():
+    """P3 волна: синус-стена (кривизна меняет ЗНАК плавно). A=0.5, период 5м, y∈[-4,4]."""
+    A, T = 0.5, 5.0
+    ys = [-4.0 + 8.0 * k / 64 for k in range(65)]
+    center = [(2.0 + A * math.sin(2 * math.pi * (y + 4.0) / T), y) for y in ys]
+    return _poly_arena("p3_wave", "P3", center, color=(0.30, 0.55, 0.85))
+
+
+def build_p4():
+    """P4 зигзаг (ВЫПУКЛЫЙ БОСС): резкие углы, стена пропадает на выпуклом. Апексы к дрону."""
+    verts = [(2.4, -4.0), (2.0, -2.0), (2.4, 0.0), (2.0, 2.0), (2.4, 4.0)]  # apex@y=-2,2 (x2.0)=выпукл
+    # уплотняем рёбра точками для гладкой растеризации/нормалей
+    center = []
+    for i in range(len(verts) - 1):
+        ax, ay = verts[i]; bx, by = verts[i + 1]
+        for k in range(8):
+            t = k / 8
+            center.append((ax + t * (bx - ax), ay + t * (by - ay)))
+    center.append(verts[-1])
+    return _poly_arena("p4_zigzag", "P4", center, color=(0.85, 0.45, 0.12))
+
+
+def build_p5():
+    """P5 зубцы: высокочастотная микро-текстура (вести ОГИБАЮЩУЮ, не зубцы). Зубцы 0.12м/период 0.5."""
+    amp, per = 0.12, 0.5
+    ys = [-4.0 + 8.0 * k / 320 for k in range(321)]
+    # треугольная пила к −x (к дрону)
+    center = [(2.0 - amp * (1 - abs((((y + 4.0) / per) % 1.0) * 2 - 1)), y) for y in ys]
+    return _poly_arena("p5_serrated", "P5", center, color=(0.55, 0.35, 0.55))
+
+
 # ── определения арен ────────────────────────────────────────────────────────
 def build_p0():
     """P0: прямая стена вдоль Y (x=+2), длина 8м. Дрон спавнится на standoff center 0.50 (beam d*=0.40), нос вдоль +Y."""
@@ -192,7 +295,7 @@ def main() -> None:
     args = ap.parse_args()
     out_root = Path(args.out)
 
-    for builder in (build_p0, build_p2):
+    for builder in (build_p0, build_p2, build_p3, build_p4, build_p5):
         name, sdf, arena, occ = builder()
         d = out_root / name
         d.mkdir(parents=True, exist_ok=True)
