@@ -26,6 +26,8 @@ from std_msgs.msg import Float32MultiArray, MultiArrayDimension
 
 from drone_sim.geometry import DroneGeometry
 
+import random
+
 N_BEAMS = 6
 
 
@@ -37,8 +39,18 @@ class TofRingNode(Node):
         self.tof_min = g.tof_min_m
         self.declare_parameter("out_topic", "/krot/tof_ring")
         self.declare_parameter("rate_hz", g.control_hz)
+        # ── ToF sim2real шум/дропаут (DR, off по умолчанию; модель research dev-log/83) ──
+        # σ = max(noise_sigma_floor_m, noise_sigma_frac·d); p_dropout → SENTINEL (clip), НЕ skip
+        # (включает §6 LOST-рефлекс + §2 validity). gz gpu_lidar чист → инжектим здесь.
+        self.declare_parameter("noise_sigma_frac", 0.0)      # research: 0.03 (3%)
+        self.declare_parameter("noise_sigma_floor_m", 0.015)  # research: 15мм
+        self.declare_parameter("p_dropout", 0.0)             # research: 0.03, DR[0.03,0.15]→0.3
         out_topic = self.get_parameter("out_topic").value
         rate = float(self.get_parameter("rate_hz").value)
+        self.noise_frac = float(self.get_parameter("noise_sigma_frac").value)
+        self.noise_floor = float(self.get_parameter("noise_sigma_floor_m").value)
+        self.p_dropout = float(self.get_parameter("p_dropout").value)
+        self._noise_on = self.noise_frac > 0.0 or self.p_dropout > 0.0
 
         # no-hit инициализация = clip (сенсор жив, чисто до предела)
         self._beams = [self.clip] * N_BEAMS
@@ -56,8 +68,20 @@ class TofRingNode(Node):
         self.create_timer(1.0 / rate, self._publish)
         self.get_logger().info(
             f"tof_ring_node: /drone/vl53l0x/ch0..5 → {out_topic} @ {rate:.0f}Hz "
-            f"(canon {g.sensor_angles_deg}, clip {self.clip}m)"
+            f"(canon {g.sensor_angles_deg}, clip {self.clip}m"
+            + (f"; NOISE σfrac={self.noise_frac} σfloor={self.noise_floor} "
+               f"p_drop={self.p_dropout})" if self._noise_on else ")")
         )
+
+    def _noisy(self, d: float) -> float:
+        """ToF sim2real: dropout→SENTINEL(clip); иначе +Гаусс σ=max(floor,frac·d), реклип."""
+        if random.random() < self.p_dropout:
+            return self.clip                       # invalid-return → sentinel (no-hit), включает LOST
+        sigma = max(self.noise_floor, self.noise_frac * d)
+        d = d + random.gauss(0.0, sigma)
+        if d >= self.clip:
+            return self.clip
+        return self.tof_min if d < self.tof_min else d
 
     def _scan_cb(self, msg: LaserScan, ch: int) -> None:
         if not msg.ranges:
@@ -76,7 +100,8 @@ class TofRingNode(Node):
         dim.size = N_BEAMS
         dim.stride = N_BEAMS
         msg.layout.dim = [dim]
-        msg.data = [float(b) for b in self._beams]
+        beams = self._beams if not self._noise_on else [self._noisy(b) for b in self._beams]
+        msg.data = [float(b) for b in beams]
         self._pub.publish(msg)
 
 
