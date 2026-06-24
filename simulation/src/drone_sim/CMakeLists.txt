@@ -66,12 +66,38 @@ install(PROGRAMS
   RENAME tfluna_arc
   DESTINATION lib/${PROJECT_NAME}
 )
-# Ресурсы — launch, models, worlds
+# ── v5-krot Этап-1 мосты ──
+install(PROGRAMS
+  drone_sim/tof_ring_node.py
+  RENAME tof_ring_node
+  DESTINATION lib/${PROJECT_NAME}
+)
+install(PROGRAMS
+  drone_sim/wall_gt_node.py
+  RENAME wall_gt_node
+  DESTINATION lib/${PROJECT_NAME}
+)
+install(PROGRAMS
+  drone_sim/yaw_slave_node.py
+  RENAME yaw_slave_node
+  DESTINATION lib/${PROJECT_NAME}
+)
+install(PROGRAMS
+  drone_sim/vel_setpoint_mux.py
+  RENAME vel_setpoint_mux
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+# Ресурсы — launch, models, worlds, config
 install(DIRECTORY
   launch
   models
   worlds
   DESTINATION share/${PROJECT_NAME}
+)
+install(FILES
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../config/drone_geometry.yaml
+  DESTINATION share/${PROJECT_NAME}/config
 )
 
 if(BUILD_TESTING)
