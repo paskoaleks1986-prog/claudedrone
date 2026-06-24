@@ -298,8 +298,8 @@ cmd_ros() {
     # И DEFAULT_WORLD проброс — чтобы drone.launch.py читал world из env.
     local launch_gz_val extra_args=""
     if (( WANT_GZ )); then launch_gz_val=false; else launch_gz_val=true; fi
-    # autoscan передаём ЯВНО всегда (дефолт false=button-only; --autoscan → true)
-    if (( AUTOSCAN )); then extra_args+=" autoscan:=true"; else extra_args+=" autoscan:=false"; fi
+    # v5-krot: autoscan-нода срезана (stage-1 пилот) — drone.launch.py больше НЕ
+    # объявляет autoscan:=; флаги --autoscan/--no-autoscan = deprecated no-op.
     if (( NO_SAFETY_GUARD )); then extra_args+=" safety_guard:=false"; fi
     cat <<EOF
 cd '$WS_DIR'

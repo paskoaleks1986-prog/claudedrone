@@ -118,23 +118,27 @@ def _rasterize(segments, half_x, half_y):
 
 # ── определения арен ────────────────────────────────────────────────────────
 def build_p0():
-    """P0: прямая стена вдоль Y (x=+2), длина 8м. Дрон спавнится на standoff 0.35, нос вдоль +Y."""
+    """P0: прямая стена вдоль Y (x=+2), длина 8м. Дрон спавнится на standoff center 0.50 (beam d*=0.40), нос вдоль +Y."""
     name = "p0_straight_wall"
     wall_x, y0, y1 = 2.0, -4.0, 4.0
     length = y1 - y0
+    # ⚠ стена = box толщиной WALL_T, центр wall_x → ПОВЕРХНОСТЬ (грань, что видит ToF/коллизия)
+    # на стороне дрона = wall_x − WALL_T/2. GT/дескриптор/спавн от ПОВЕРХНОСТИ, не центра
+    # (иначе d_perp завышен на полтолщины 0.075 → tof рассинхрон gz↔rl-env, см. dev-log/48).
+    face_x = wall_x - WALL_T / 2
     sdf = _HEADER.format(name=name)
     sdf += _FLOOR.format(cx=0, cy=0, sx=8.0, sy=10.0)
     # стена вдоль Y: yaw=π/2 (box длиной length повёрнут вдоль Y)
     sdf += _wall_box("wall_main", wall_x, (y0 + y1) / 2, length, math.pi / 2,
                      color=(0.85, 0.12, 0.12))
-    spawn = dict(sx=wall_x - 0.35, sy=y0 + 0.5, syaw=math.pi / 2)   # standoff слева, нос +Y
+    spawn = dict(sx=face_x - 0.50, sy=y0 + 0.5, syaw=math.pi / 2)   # center→ПОВЕРХНОСТЬ 0.50 (beam d*=0.40), нос +Y
     sdf += _FOOTER.format(**spawn)
     arena = {
         "name": name, "stage": "P0",
         "spawn": [round(spawn["sx"], 3), round(spawn["sy"], 3), round(spawn["syaw"], 4)],
         "finish": {"type": "line_y", "y": y1 - 0.5, "desc": "прошёл длину стены"},
-        "followable": [{"type": "segment", "p1": [wall_x, y0], "p2": [wall_x, y1]}],
-        "obstacles": [{"type": "segment", "p1": [wall_x, y0], "p2": [wall_x, y1]}],
+        "followable": [{"type": "segment", "p1": [face_x, y0], "p2": [face_x, y1]}],
+        "obstacles": [{"type": "segment", "p1": [face_x, y0], "p2": [face_x, y1]}],
         "r_usable": 1.2,
     }
     segs = [(wall_x, y0, wall_x, y1)]
@@ -148,6 +152,8 @@ def build_p2():
     """P2 цирк: замкнутая круглая арена R=4.5м (полигон-аппрокс 36 сегм). Дрон у стены, нос по касательной."""
     name = "p2_circus"
     R, nseg = 4.5, 36
+    # ПОВЕРХНОСТЬ кольца (внутр. грань) = R − WALL_T/2 → GT/дескриптор/спавн от неё
+    face_r = R - WALL_T / 2
     sdf = _HEADER.format(name=name)
     sdf += _FLOOR.format(cx=0, cy=0, sx=2 * R + 1.5, sy=2 * R + 1.5)
     # кольцо box-сегментов (полигон-аппрокс окружности radius R)
@@ -157,15 +163,15 @@ def build_p2():
         cx, cy = R * math.cos(a), R * math.sin(a)
         yaw = a + math.pi / 2                       # касательная
         sdf += _wall_box(f"wall_{k:02d}", cx, cy, seg_len, yaw)
-    spawn = dict(sx=R - 0.35, sy=0.0, syaw=math.pi / 2)   # у стены справа (восток), нос по касат +Y
+    spawn = dict(sx=face_r - 0.50, sy=0.0, syaw=math.pi / 2)   # center→ПОВЕРХНОСТЬ 0.50 (beam d*=0.40) у стены, нос по касат +Y
     sdf += _FOOTER.format(**spawn)
     arena = {
         "name": name, "stage": "P2",
         "spawn": [round(spawn["sx"], 3), round(spawn["sy"], 3), round(spawn["syaw"], 4)],
         "finish": {"type": "loop_angle", "budget_rad": 2 * math.pi,
                    "desc": "обошёл периметр (накопл. угол 2π) = пересёк финиш-линию"},
-        "followable": [{"type": "circle", "center": [0.0, 0.0], "radius": R, "inside": True}],
-        "obstacles": [{"type": "circle", "center": [0.0, 0.0], "radius": R, "inside": True}],
+        "followable": [{"type": "circle", "center": [0.0, 0.0], "radius": face_r, "inside": True}],
+        "obstacles": [{"type": "circle", "center": [0.0, 0.0], "radius": face_r, "inside": True}],
         "r_usable": 1.2,
     }
     # occupancy: кольцо

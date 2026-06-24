@@ -362,7 +362,7 @@
     </model>
     <include>
       <uri>model://iris_claudedrone</uri>
-      <pose>4.15 0.0 0.2 0 0 1.5707963267948966</pose>
+      <pose>3.925 0.0 0.2 0 0 1.5707963267948966</pose>
     </include>
   </world>
 </sdf>

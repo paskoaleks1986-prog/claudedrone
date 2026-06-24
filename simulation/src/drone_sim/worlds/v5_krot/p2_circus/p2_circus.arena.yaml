@@ -1,7 +1,7 @@
 name: p2_circus
 stage: P2
 spawn:
-- 4.15
+- 3.925
 - 0.0
 - 1.5708
 finish:
@@ -13,13 +13,13 @@ followable:
   center:
   - 0.0
   - 0.0
-  radius: 4.5
+  radius: 4.425
   inside: true
 obstacles:
 - type: circle
   center:
   - 0.0
   - 0.0
-  radius: 4.5
+  radius: 4.425
   inside: true
 r_usable: 1.2

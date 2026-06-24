@@ -1,7 +1,7 @@
 name: p0_straight_wall
 stage: P0
 spawn:
-- 1.65
+- 1.425
 - -3.5
 - 1.5708
 finish:
@@ -11,17 +11,17 @@ finish:
 followable:
 - type: segment
   p1:
-  - 2.0
+  - 1.925
   - -4.0
   p2:
-  - 2.0
+  - 1.925
   - 4.0
 obstacles:
 - type: segment
   p1:
-  - 2.0
+  - 1.925
   - -4.0
   p2:
-  - 2.0
+  - 1.925
   - 4.0
 r_usable: 1.2

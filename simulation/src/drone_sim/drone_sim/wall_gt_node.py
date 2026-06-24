@@ -12,7 +12,7 @@
 ВЫХОД (proposal-имя, согласовать с interface):
     /krot/wall_gt   std_msgs/Float32MultiArray, 12 float:
       [0]=x [1]=y [2]=yaw [3]=vx [4]=vy           ← истинная поза+скорость (мир)
-      [5]=d_perp(знаковый, += дрон на свободной стороне)
+      [5]=d_perp(ЦЕНТР→стена GT; standoff-петля конвертит beam=d_perp−sensor_ring_r; LOCK a8ac4d0)
       [6]=t_x [7]=t_y    ← касательная (unit, мир)
       [8]=n_x [9]=n_y    ← нормаль (unit, мир, стена→дрон)
       [10]=validity (1.0 если followable-стена в range R_usable иначе 0.0)
@@ -147,7 +147,11 @@ class WallGtNode(Node):
             nx, ny = nx / nlen, ny / nlen
         else:
             nx, ny = 0.0, 0.0
-        d_perp = dist          # знак: + (дрон снаружи стены по нормали); абс-дист до поверхности
+        # d_perp = ЦЕНТР→стена (GT, БЕЗ конверсии) — контракт-LOCK a8ac4d0 (research 15:4x):
+        # wall_gt отдаёт CENTER, потребитель standoff-петли конвертит в BEAM сам:
+        #   d_perp_beam = d_perp_center − sensor_ring_r (= 0.10)  ПЕРЕД сравнением с d* (beam).
+        # Так нет двойного вычитания; collision (min_obs ниже) — тоже center < prop_tip.
+        d_perp = dist
         validity = 1.0 if dist <= self.r_usable else 0.0
 
         # min_obstacle_dist по ВСЕМ препятствиям

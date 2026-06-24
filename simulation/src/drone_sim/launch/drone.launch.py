@@ -45,20 +45,6 @@ def generate_launch_description():
     )
     launch_gz = LaunchConfiguration('launch_gz')
 
-    # v2 Block 2 (2026-06-06): для RL-ранов autoscan:=false ОБЯЗАТЕЛЕН.
-    # autoscan каждые cooldown_s триггерит sweep_node, который гоняет серву
-    # 0→π — а в тренировке серву двигает ТОЛЬКО action 6 шагами 30°.
-    # Параллельные sweep'ы делают servo_angle/distances[6] в obs бессмысленными.
-    # Aleks 2026-06-15: ДЕФОЛТ false = скан ТОЛЬКО по кнопке /drone/sweep/start (GUI
-    # мануал). true = авто-цикл (opt-in, --autoscan). RL-раны и так false.
-    autoscan_arg = DeclareLaunchArgument(
-        'autoscan',
-        default_value='false',
-        description='Автотриггер sweep циклов. ДЕФОЛТ false = скан по кнопке (GUI мануал). '
-                    'true = авто-цикл (opt-in). RL-раны: false (серва — у action 6).',
-    )
-    autoscan = LaunchConfiguration('autoscan')
-
     # SITL-RL fine-tune (Aleks 2026-06-09): safety_guard:=false для train.
     # safety_guard — deployment-слой, которого НЕТ в train-env (drone_map_env):
     # он аборт­ит ротации (в train mask[4,5] всегда True) → livelock, и паузит
@@ -89,7 +75,6 @@ def generate_launch_description():
 
         sweep_storage_arg,
         launch_gz_arg,
-        autoscan_arg,
         safety_guard_arg,
         scan_points_arg,
 
@@ -151,15 +136,6 @@ def generate_launch_description():
                 'dump_dir': '/tmp/sweep_dumps/sim',
             }],
             condition=IfCondition(sweep_storage),
-        ),
-        # Autoscan — независимый триггер sweep'ов с cooldown.
-        # Отключаем для RL-ранов (autoscan:=false): серва принадлежит action 6.
-        Node(
-            package='drone_sim',
-            executable='autoscan',
-            name='autoscan_node',
-            output='screen',
-            condition=IfCondition(autoscan),
         ),
         # scan_points (C1) — /scan/record: точки веера/precise в world по ФАКТ. углу
         # джойнта (joint_state) + per-ray поза. interface рисует веер отсюда.
