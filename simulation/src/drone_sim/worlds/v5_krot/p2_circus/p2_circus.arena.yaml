@@ -1,0 +1,25 @@
+name: p2_circus
+stage: P2
+spawn:
+- 4.15
+- 0.0
+- 1.5708
+finish:
+  type: loop_angle
+  budget_rad: 6.283185307179586
+  desc: обошёл периметр (накопл. угол 2π) = пересёк финиш-линию
+followable:
+- type: circle
+  center:
+  - 0.0
+  - 0.0
+  radius: 4.5
+  inside: true
+obstacles:
+- type: circle
+  center:
+  - 0.0
+  - 0.0
+  radius: 4.5
+  inside: true
+r_usable: 1.2
