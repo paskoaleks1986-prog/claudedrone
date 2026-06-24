@@ -39,13 +39,19 @@ def generate_launch_description():
     follow_dir_arg = DeclareLaunchArgument(
         'follow_dir', default_value='1', description='нос-слейв направление вдоль стены (+1/-1)')
     hold_alt_arg = DeclareLaunchArgument(
-        'hold_alt', default_value='2.0', description='высота hold (м) для vel_setpoint_mux fallback')
+        'hold_alt', default_value='2.0', description='высота hold (м) для vel_setpoint_mux')
+    latch_alt_arg = DeclareLaunchArgument(
+        'latch_alt', default_value='true',
+        description='true=mux латчит alt из odom (был на земле→держит землю). '
+                    'false=держит hold_alt → mux САМ взлетает на hold_alt в GUIDED+armed '
+                    '(airborne closed-loop, БЕЗ takeoff_node — не запускать оба, конфликт setpoint).')
     arena = LaunchConfiguration('arena')
     follow_dir = LaunchConfiguration('follow_dir')
     hold_alt = LaunchConfiguration('hold_alt')
+    latch_alt = LaunchConfiguration('latch_alt')
 
     return LaunchDescription([
-        arena_arg, follow_dir_arg, hold_alt_arg,
+        arena_arg, follow_dir_arg, hold_alt_arg, latch_alt_arg,
         Node(package='drone_sim', executable='tof_ring_node',
              name='tof_ring_node', output='screen'),
         Node(package='drone_sim', executable='wall_gt_node',
@@ -56,5 +62,6 @@ def generate_launch_description():
              parameters=[{'follow_dir': ParameterValue(follow_dir, value_type=int)}]),
         Node(package='drone_sim', executable='vel_setpoint_mux',
              name='vel_setpoint_mux', output='screen',
-             parameters=[{'hold_alt': ParameterValue(hold_alt, value_type=float)}]),
+             parameters=[{'hold_alt': ParameterValue(hold_alt, value_type=float),
+                          'latch_alt_from_odom': ParameterValue(latch_alt, value_type=bool)}]),
     ])
