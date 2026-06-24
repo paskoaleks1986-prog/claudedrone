@@ -45,15 +45,25 @@ def generate_launch_description():
         description='true=mux латчит alt из odom (был на земле→держит землю). '
                     'false=держит hold_alt → mux САМ взлетает на hold_alt в GUIDED+armed '
                     '(airborne closed-loop, БЕЗ takeoff_node — не запускать оба, конфликт setpoint).')
+    tof_noise_arg = DeclareLaunchArgument(
+        'tof_noise_frac', default_value='0.0',
+        description='ToF-DR: σ доля (research 0.03). 0=off')
+    tof_pdrop_arg = DeclareLaunchArgument(
+        'tof_p_dropout', default_value='0.0',
+        description='ToF-DR: p дропаута→sentinel (research 0.03, DR→0.3). 0=off')
     arena = LaunchConfiguration('arena')
     follow_dir = LaunchConfiguration('follow_dir')
     hold_alt = LaunchConfiguration('hold_alt')
     latch_alt = LaunchConfiguration('latch_alt')
+    tof_noise = LaunchConfiguration('tof_noise_frac')
+    tof_pdrop = LaunchConfiguration('tof_p_dropout')
 
     return LaunchDescription([
-        arena_arg, follow_dir_arg, hold_alt_arg, latch_alt_arg,
+        arena_arg, follow_dir_arg, hold_alt_arg, latch_alt_arg, tof_noise_arg, tof_pdrop_arg,
         Node(package='drone_sim', executable='tof_ring_node',
-             name='tof_ring_node', output='screen'),
+             name='tof_ring_node', output='screen',
+             parameters=[{'noise_sigma_frac': ParameterValue(tof_noise, value_type=float),
+                          'p_dropout': ParameterValue(tof_pdrop, value_type=float)}]),
         Node(package='drone_sim', executable='wall_gt_node',
              name='wall_gt_node', output='screen',
              parameters=[{'arena': arena}]),
