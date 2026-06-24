@@ -30,6 +30,7 @@
 from __future__ import annotations
 
 import math
+import glob
 from pathlib import Path
 
 import rclpy
@@ -40,6 +41,36 @@ from nav_msgs.msg import Odometry
 from std_msgs.msg import Float32MultiArray
 
 from drone_sim.geometry import DroneGeometry
+
+
+def _resolve_arena(arena: str) -> str:
+    """Принять ПУТЬ или ИМЯ арены → полный путь к <name>.arena.yaml. Громкая ошибка иначе.
+
+    Робастность (gotcha rl-lab 20:3x): `arena:=p0_straight_wall` (имя) раньше тихо валил ноду
+    → publisher=0. Теперь имя резолвится через installed share, и при провале — внятный SystemExit.
+    """
+    if arena and Path(arena).is_file():
+        return arena
+    tried = [arena]
+    if arena:
+        try:
+            from ament_index_python.packages import get_package_share_directory
+            share = get_package_share_directory("drone_sim")
+            cands = [
+                f"{share}/worlds/v5_krot/{arena}/{arena}.arena.yaml",
+                *glob.glob(f"{share}/worlds/**/{arena}.arena.yaml", recursive=True),
+                *glob.glob(f"{share}/worlds/**/{arena}/{arena}.arena.yaml", recursive=True),
+            ]
+            tried += cands
+            for c in cands:
+                if Path(c).is_file():
+                    return c
+        except Exception:  # noqa: BLE001 — share-lookup опционален
+            pass
+    raise SystemExit(
+        "wall_gt_node: arena-дескриптор не найден. Передай ПОЛНЫЙ путь к <name>.arena.yaml "
+        f"или ИМЯ арены (резолвится в share). Пробовал: {[t for t in tried if t]}"
+    )
 
 
 def _yaw_from_quat(q) -> float:
@@ -89,9 +120,7 @@ class WallGtNode(Node):
         self.declare_parameter("pose_topic", "/mavros/local_position/odom")
         self.declare_parameter("out_topic", "/krot/wall_gt")
         self.declare_parameter("rate_hz", g.control_hz)
-        arena_path = self.get_parameter("arena").value
-        if not arena_path or not Path(arena_path).exists():
-            raise SystemExit(f"wall_gt_node: --arena дескриптор не найден: '{arena_path}'")
+        arena_path = _resolve_arena(self.get_parameter("arena").value)
         spec = yaml.safe_load(Path(arena_path).read_text())
         self.followable = spec.get("followable", [])
         self.obstacles = spec.get("obstacles", self.followable)
