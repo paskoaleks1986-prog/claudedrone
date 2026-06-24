@@ -22,7 +22,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import Float32MultiArray, MultiArrayDimension
+from std_msgs.msg import Float32MultiArray, MultiArrayDimension, Empty
 
 from drone_sim.geometry import DroneGeometry
 
@@ -42,15 +42,21 @@ class TofRingNode(Node):
         # ── ToF sim2real шум/дропаут (DR, off по умолчанию; модель research dev-log/83) ──
         # σ = max(noise_sigma_floor_m, noise_sigma_frac·d); p_dropout → SENTINEL (clip), НЕ skip
         # (включает §6 LOST-рефлекс + §2 validity). gz gpu_lidar чист → инжектим здесь.
+        # КАНОН модели = research dev-log/83 (единый источник, как drone_geometry — оба инжектят 1-в-1)
         self.declare_parameter("noise_sigma_frac", 0.0)      # research: 0.03 (3%)
         self.declare_parameter("noise_sigma_floor_m", 0.015)  # research: 15мм
         self.declare_parameter("p_dropout", 0.0)             # research: 0.03, DR[0.03,0.15]→0.3
+        self.declare_parameter("bias_max_m", 0.0)            # research: U[−15,+15]мм per-episode
         out_topic = self.get_parameter("out_topic").value
         rate = float(self.get_parameter("rate_hz").value)
         self.noise_frac = float(self.get_parameter("noise_sigma_frac").value)
         self.noise_floor = float(self.get_parameter("noise_sigma_floor_m").value)
         self.p_dropout = float(self.get_parameter("p_dropout").value)
-        self._noise_on = self.noise_frac > 0.0 or self.p_dropout > 0.0
+        self.bias_max = float(self.get_parameter("bias_max_m").value)
+        self._noise_on = self.noise_frac > 0.0 or self.p_dropout > 0.0 or self.bias_max > 0.0
+        self._bias = random.uniform(-self.bias_max, self.bias_max) if self.bias_max > 0 else 0.0
+        # per-episode bias: resample по сигналу (rl шлёт Empty на reset эпизода). Иначе = per-run.
+        self.create_subscription(Empty, "/krot/noise_reset", self._resample_bias, 10)
 
         # no-hit инициализация = clip (сенсор жив, чисто до предела)
         self._beams = [self.clip] * N_BEAMS
@@ -70,15 +76,21 @@ class TofRingNode(Node):
             f"tof_ring_node: /drone/vl53l0x/ch0..5 → {out_topic} @ {rate:.0f}Hz "
             f"(canon {g.sensor_angles_deg}, clip {self.clip}m"
             + (f"; NOISE σfrac={self.noise_frac} σfloor={self.noise_floor} "
-               f"p_drop={self.p_dropout})" if self._noise_on else ")")
+               f"p_drop={self.p_dropout} bias_max={self.bias_max} (canon dev-log/83))"
+               if self._noise_on else ")")
         )
 
+    def _resample_bias(self, _msg: Empty) -> None:
+        """per-episode bias resample (rl шлёт на reset эпизода) — канон dev-log/83."""
+        if self.bias_max > 0:
+            self._bias = random.uniform(-self.bias_max, self.bias_max)
+
     def _noisy(self, d: float) -> float:
-        """ToF sim2real: dropout→SENTINEL(clip); иначе +Гаусс σ=max(floor,frac·d), реклип."""
+        """ToF sim2real (канон dev-log/83): dropout→SENTINEL(clip); иначе +bias +Гаусс σ=max(floor,frac·d)."""
         if random.random() < self.p_dropout:
             return self.clip                       # invalid-return → sentinel (no-hit), включает LOST
         sigma = max(self.noise_floor, self.noise_frac * d)
-        d = d + random.gauss(0.0, sigma)
+        d = d + self._bias + random.gauss(0.0, sigma)
         if d >= self.clip:
             return self.clip
         return self.tof_min if d < self.tof_min else d
