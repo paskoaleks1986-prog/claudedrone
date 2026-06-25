@@ -5,9 +5,16 @@ v5-krot Этап-1. РАЗВЯЗКА: пилот (RL) публикует ЧИС�
 отдельный yaw_slave_node. Этот mux сводит их в ОДИН PositionTarget и шлёт в ArduPilot.
 Так RL структурно НЕ может управлять носом (контракт §3: yaw вне политики).
 
-ВХОД (proposal-имена, согласовать с interface):
+ВХОД (имена финализированы interface 2026-06-25):
     /krot/cmd_vel_world   geometry_msgs/Twist — (linear.x, linear.y) МИР-скорость м/с (RL-пилот)
     /krot/yaw_cmd         std_msgs/Float64    — абсолютный yaw носа в МИРЕ, рад (yaw_slave)
+
+CMD-TIMEOUT FAILSAFE (env-контракт rl-lab 2026-06-25, вариант b): cmd_vel латчится
+между шагами, НО при разрыве стрима (RL stall/crash/pause) > cmd_timeout_s mux зануляет
+латераль (vx=vy=0); vz alt-hold держит дрон НА МЕСТЕ. Слепой wall-follower НЕ должен
+flyaway в стену на гэпе. N=200мс = 4× периода RL (control_hz=20). Per-step семантика:
+«нет свежей команды → нет движения» (а не «продолжай последнюю»). В норме RL стримит
+20Гц непрерывно → timeout не играет (чистый failsafe).
 ВЫХОД:
     /mavros/setpoint_raw/local  mavros_msgs/PositionTarget
       FRAME_LOCAL_NED: VX,VY = мир-скорость (клип v_max), VZ = alt-hold, YAW = нос.
@@ -55,12 +62,16 @@ class VelSetpointMux(Node):
         self.declare_parameter("rate_hz", g.control_hz)
         self.declare_parameter("alt_kp", 1.0)      # P-gain alt-hold (vz = kp·err)
         self.declare_parameter("vz_max", 0.5)      # клип |vz| alt-hold, м/с
+        self.declare_parameter("cmd_timeout_s", 0.2)  # failsafe: гэп cmd_vel > N → vx=vy=0 (rl-lab b)
 
         self.hold_alt = float(self.get_parameter("hold_alt").value)
         self._latch = bool(self.get_parameter("latch_alt_from_odom").value)
         self._alt_latched = not self._latch
         self.alt_kp = float(self.get_parameter("alt_kp").value)
         self.vz_max = float(self.get_parameter("vz_max").value)
+        self._cmd_timeout_ns = int(float(self.get_parameter("cmd_timeout_s").value) * 1e9)
+        self._last_cmd_ns = None    # None = команды ещё не было → латераль 0
+        self._failsafe_active = False  # edge-детект для лога
 
         self._vx = self._vy = 0.0
         self._yaw = 0.0
@@ -93,6 +104,7 @@ class VelSetpointMux(Node):
             k = self.v_max / sp
             vx, vy = vx * k, vy * k
         self._vx, self._vy = vx, vy
+        self._last_cmd_ns = self.get_clock().now().nanoseconds
 
     def _yaw_cb(self, m: Float64) -> None:
         self._yaw = float(m.data)
@@ -109,13 +121,25 @@ class VelSetpointMux(Node):
     def _publish(self) -> None:
         if not self._alt_latched or not self._have_odom:
             return
+        # cmd-timeout failsafe (rl-lab b): нет свежей cmd_vel > N → зануляем латераль,
+        # vz alt-hold держит дрон на месте (НЕ flyaway в стену на разрыве стрима).
+        now_ns = self.get_clock().now().nanoseconds
+        stale = (self._last_cmd_ns is None or
+                 (now_ns - self._last_cmd_ns) > self._cmd_timeout_ns)
+        vx, vy = (0.0, 0.0) if stale else (self._vx, self._vy)
+        if stale and not self._failsafe_active and self._last_cmd_ns is not None:
+            self._failsafe_active = True
+            self.get_logger().warn("cmd_vel timeout → латераль FAILSAFE 0 (стрим прерван)")
+        elif not stale and self._failsafe_active:
+            self._failsafe_active = False
+            self.get_logger().info("cmd_vel восстановлен → failsafe снят")
         # alt-hold через velocity.z (position.z НЕ работает с velocity-xy на AP, см. RCA).
         vz = self.alt_kp * (self.hold_alt - self._z)
         vz = max(-self.vz_max, min(self.vz_max, vz))
         m = PT()
         m.coordinate_frame = PT.FRAME_LOCAL_NED
         m.type_mask = TYPE_MASK
-        m.velocity.x, m.velocity.y, m.velocity.z = self._vx, self._vy, vz
+        m.velocity.x, m.velocity.y, m.velocity.z = vx, vy, vz
         m.yaw = self._yaw if self._have_yaw else 0.0
         self._pub.publish(m)
 
