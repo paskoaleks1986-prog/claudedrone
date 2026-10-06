@@ -214,6 +214,10 @@ MIT — see [LICENSE](LICENSE).
 
 ## Author
 
+## Website: 
+https://claudedrone.paskos.es/
+https://claudedrone-team-docs.paskos.es/
+
 **Aleksandr Pasko** — robotics engineer based in Portugal. Building claudedrone as an exploration of low-cost autonomous navigation for industrial use cases.
 
 - GitHub: [@paskoaleks1986-prog](https://github.com/paskoaleks1986-prog)
