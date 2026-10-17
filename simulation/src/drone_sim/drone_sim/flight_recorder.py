@@ -133,6 +133,8 @@ class FlightRecorder(Node):
             self._files[name], self._writers[name] = f, w
             self._counts[name] = 0
 
+        self._last_t: dict[str, float] = {}
+        self._t_clamped = 0
         self._last_ekf: tuple[float, float, float] | None = None
         self._vx = self._vy = 0.0
         self._yaw_cmd: float | None = None
@@ -189,6 +191,15 @@ class FlightRecorder(Node):
     def _row(self, stream: str, row: list) -> None:
         if not self._enabled:
             return
+        # v2: t монотонен в каждом файле. Откат часов (два publisher'а /clock, рестарт
+        # моста) прижимаем к последнему t потока и считаем — в лог при закрытии.
+        t = float(row[0])
+        last = self._last_t.get(stream)
+        if last is not None and t < last:
+            row[0] = f"{last:.3f}"
+            self._t_clamped += 1
+        else:
+            self._last_t[stream] = t
         self._writers[stream].writerow(row)
         self._counts[stream] += 1
 
@@ -264,9 +275,9 @@ class FlightRecorder(Node):
         if self._files:
             self.get_logger().info(
                 "закрыто: " + " ".join(f"{k}={self._counts[k]}" for k in STREAMS) +
-                f" (эпизодов {self._ep})")
+                f" (эпизодов {self._ep}, t-откатов прижато {self._t_clamped})")
             self._index_append({"status": "closed", "episodes": self._ep,
-                                "rows": dict(self._counts),
+                                "rows": dict(self._counts), "t_clamped": self._t_clamped,
                                 "ended": time.strftime("%Y-%m-%dT%H:%M:%S")})
         self._files, self._writers = {}, {}
 

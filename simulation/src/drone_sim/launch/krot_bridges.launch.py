@@ -108,10 +108,12 @@ def generate_launch_description():
              name='crash_contacts_bridge', output='screen',
              arguments=['/drone/crash_contacts@ros_gz_interfaces/msg/Contacts[gz.msgs.Contacts']),
         Node(package='drone_sim', executable='collision_node',
-             name='collision_node', output='screen'),
+             name='collision_node', output='screen', respawn=True, respawn_delay=2.0),
         # reset эпизода (TASK-100): /krot/episode_reset → переспавн+взлёт → /krot/episode_ready
+        # respawn — страховка автономного трейна: упавший reset_node поднимается сам
+        # (живой-но-глухой случай закрыт discovery на loopback + gz CLI killpg)
         Node(package='drone_sim', executable='reset_node',
-             name='reset_node', output='screen',
+             name='reset_node', output='screen', respawn=True, respawn_delay=2.0,
              parameters=[{'world': os.environ.get('DEFAULT_WORLD', ''),
                           'hold_alt_m': ParameterValue(hold_alt, value_type=float)}]),
         # полётные логи (TASK-104): gt/odom/cmd/tof/events per эпизод, t = sim-time

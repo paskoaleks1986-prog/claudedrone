@@ -35,9 +35,12 @@ re-takeoff после FORCE disarm на земле — это НЕ пост-LAND
 from __future__ import annotations
 
 import math
+import os
+import signal
 import subprocess
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
@@ -161,12 +164,30 @@ class ResetNode(Node):
         self.ready_pub.publish(Bool(data=False))
         self._to("idle")
 
+    @staticmethod
+    def _gz_cli(args: list[str], timeout_s: float) -> str:
+        """gz CLI с ЖЁСТКИМ потолком времени. `gz` — ruby-обёртка с детьми; у
+        subprocess.run(timeout=) по таймауту убивается только обёртка, а внук держит
+        pipe → communicate() ждёт вечно → единственный поток executor'а встаёт
+        (подписки видны, callback'и мертвы). Своя группа процессов + killpg."""
+        p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                             text=True, start_new_session=True)
+        try:
+            out, _ = p.communicate(timeout=timeout_s)
+            return out or ""
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            p.communicate()
+            raise
+
     def _gz_world(self) -> str:
         if self._world:
             return self._world
         try:
-            out = subprocess.run(["gz", "topic", "-l"], capture_output=True,
-                                 text=True, timeout=10).stdout
+            out = self._gz_cli(["gz", "topic", "-l"], 10.0)
             for line in out.splitlines():
                 if line.startswith("/world/") and "/clock" in line:
                     self._world = line.split("/")[2]
@@ -183,12 +204,11 @@ class ResetNode(Node):
         req = (f'name: "iris_claudedrone" position {{ x: {x} y: {y} z: {self.z_ground} }} '
                f'orientation {{ z: {math.sin(yaw / 2)} w: {math.cos(yaw / 2)} }}')
         try:
-            r = subprocess.run(
+            out = self._gz_cli(
                 ["gz", "service", "-s", f"/world/{w}/set_pose",
                  "--reqtype", "gz.msgs.Pose", "--reptype", "gz.msgs.Boolean",
-                 "--timeout", "3000", "--req", req],
-                capture_output=True, text=True, timeout=10)
-            return "true" in r.stdout
+                 "--timeout", "3000", "--req", req], 10.0)
+            return "true" in out
         except Exception as e:  # noqa: BLE001
             self.get_logger().error(f"gz set_pose: {e}")
             return False
@@ -317,10 +337,13 @@ def main() -> None:
     node = ResetNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
-        rclpy.shutdown()
+        try:
+            rclpy.shutdown()
+        except Exception:
+            pass        # контекст уже закрыт внешним shutdown'ом (rcl_shutdown already called)
 
 
 if __name__ == "__main__":

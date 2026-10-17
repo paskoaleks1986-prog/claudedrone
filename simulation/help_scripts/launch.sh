@@ -463,9 +463,16 @@ exec ros2 launch drone_sim krot_bridges.launch.py $kargs
 EOF
 }
 
+# Discovery стенда — ТОЛЬКО loopback (live 2026-10-17): D2 в сети через USB-Wi-Fi,
+# multicast-discovery DDS и gz-transport шёл через неё; Wi-Fi моргнул 16:14:54 →
+# «Network is unreachable» у parameter_bridge, новые участники не находят друг друга
+# (подписка видна, данных нет: reset_node «мёртв», /clock не доходит). Смешанный режим
+# (процессы rl-lab/interface без этих env) проверен — совместим в обе стороны.
+STAND_NET_ENV="export ROS_AUTOMATIC_DISCOVERY_RANGE=${ROS_AUTOMATIC_DISCOVERY_RANGE:-LOCALHOST} GZ_IP=${GZ_IP:-127.0.0.1};"
+
 # Wrap a command-string into a bash -lc string, optionally tee'd to a log.
 wrap_pane() {
-    local name="$1" body="$2"
+    local name="$1" body="$STAND_NET_ENV $2"
     if (( LOG_PANES )); then
         local logf="$LOG_DIR/${SESSION}-${name}.log"
         printf 'bash -lc %q' "{ $body ; } 2>&1 | tee -a '$logf'"
@@ -617,7 +624,10 @@ fi
 PANES=()
 (( WANT_GZ ))     && PANES+=("gz|$(cmd_gz)")
 (( WANT_SITL ))   && PANES+=("sitl|$(cmd_sitl)")
-(( WANT_BRIDGE )) && PANES+=("bridge|$(cmd_bridge)")
+# /clock даёт gz_bridge из drone.launch (-ros); вторая панель-мост = ДВА publisher'а
+# /clock → сообщения вперемешку → ROS-время прыгает назад 0.1-0.3с (рекордер писал t
+# немонотонно, валидатор rl-lab поймал 24 прыжка). Панель — только без -ros.
+(( WANT_BRIDGE && ! WANT_ROS )) && PANES+=("bridge|$(cmd_bridge)")
 (( WANT_ROS ))    && PANES+=("ros|$(cmd_ros)")
 (( MAVROS ))      && PANES+=("mavros|$(cmd_mavros)")
 (( MANUAL ))      && PANES+=("manual|$(cmd_manual)")
