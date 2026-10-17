@@ -36,6 +36,10 @@ simulation/log/
 # ─── Logs ─────────────────────────────────────
 *.log
 
+# MAVLink телеметрия/замеры — НЕ в публичный репо (грант Aleks 2026-07-30: software/ = только код)
+*.tlog
+*.tlog.raw
+
 # ─── Claude Code agent instructions (local only) ─
 .claude/
 CLAUDE.md

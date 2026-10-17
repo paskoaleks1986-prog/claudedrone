@@ -1,0 +1,5 @@
+# krot H.1 PC-side tooling — ставит Aleks в .venv (см. README)
+esptool
+pymavlink
+pyserial
+# mavproxy — глобально (уже стоит); mavlink-router — отдельная установка (H.1.4)
