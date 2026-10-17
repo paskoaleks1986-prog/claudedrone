@@ -115,5 +115,6 @@ def generate_launch_description():
              condition=IfCondition(record),
              parameters=[{'use_sim_time': True,
                           'world': os.environ.get('DEFAULT_WORLD', ''),
-                          'run_id': ParameterValue(run_id, value_type=str)}]),
+                          'run_id': ParameterValue(run_id, value_type=str),
+                          'hold_alt_m': ParameterValue(hold_alt, value_type=float)}]),
     ])
