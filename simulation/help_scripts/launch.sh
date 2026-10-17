@@ -172,8 +172,31 @@ fi
 
 command -v tmux >/dev/null || { echo "tmux not installed" >&2; exit 1; }
 
-# Владение (G-0022): живой стенд с этим именем у ДРУГОГО агента не сносим.
 ME="$(stand_owner)"
+
+# ПРОТОКОЛ «ОДИН СТЕНД» (Aleks 2026-10-17, заметка в G-0024): на D2 живёт ОДИН
+# gz-стенд, у него один владелец (lock = триггер «чей стенд»). Параллельные стенды
+# пробовали — не взлетели (mavros/топики/порты; live 10-17: второй стенд — /clock
+# не доходит до ROS, FDM-порт делился). Параллель = исследование (тикет в KB),
+# только явным STAND_PARALLEL=1 в тестовом режиме. Обучение не должно простаивать.
+if (( WANT_GZ && ! RESTART_SITL )) && [[ -z "${STAND_PARALLEL:-}" ]]; then
+    others=$(stand_list | awk -v s="$SESSION" '$1 != s')
+    if [[ -n "$others" ]]; then
+        echo "ERROR: на D2 уже живёт стенд — протокол «один стенд» (Aleks 2026-10-17):" >&2
+        echo "$others" | sed 's/^/  /' >&2
+        echo "  Договорись с владельцем о передаче (HANDOFF), он гасит свой: kill_sim_stack.sh -s <его сессия>." >&2
+        echo "  Параллельный запуск — только исследование: STAND_PARALLEL=1 (тестовый режим, не для обучения)." >&2
+        exit 3
+    fi
+    if pgrep -f "^gz sim " >/dev/null && [[ -z "$(stand_list)" ]]; then
+        echo "ERROR: на D2 крутится gz sim БЕЗ lock'а (старый запуск/чужой скрипт):" >&2
+        pgrep -af "^gz sim " | cut -c1-120 | sed 's/^/  /' >&2
+        echo "  Выясни владельца (HANDOFF) — не сноси вслепую. Сироты без владельца: kill_sim_stack.sh (без -s)." >&2
+        exit 3
+    fi
+fi
+
+# Владение (G-0022): живой стенд с этим именем у ДРУГОГО агента не сносим.
 if (( ! RESTART_SITL )) && stand_alive "$SESSION"; then
     holder="$(stand_lock_get "$SESSION" owner)"
     if [[ -n "$holder" && "$holder" != "$ME" && -z "${STAND_FORCE:-}" ]]; then
