@@ -21,6 +21,7 @@ import os
 import glob
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -54,12 +55,23 @@ def generate_launch_description():
         description='true=mux латчит alt из odom (был на земле→держит землю). '
                     'false=держит hold_alt → mux САМ взлетает на hold_alt в GUIDED+armed '
                     '(airborne closed-loop, БЕЗ takeoff_node — не запускать оба, конфликт setpoint).')
+    record_arg = DeclareLaunchArgument(
+        'record', default_value='true',
+        description='true=flight_recorder пишет gt/odom/cmd/tof/events per эпизод '
+                    '(TASK-104; выключение НЕ рекомендуется — трекинг = дефолт каждого '
+                    'рана, директива Aleks 2026-06-09)')
+    run_id_arg = DeclareLaunchArgument(
+        'run_id', default_value='',
+        description='каталог рана рекордера (<sprint>/<model>/<ep> по формату rl-lab); '
+                    '""=временная метка')
     tof_noise_arg = DeclareLaunchArgument(
         'tof_noise_frac', default_value='0.0',
         description='ToF-DR: σ доля (research 0.03). 0=off')
     tof_pdrop_arg = DeclareLaunchArgument(
         'tof_p_dropout', default_value='0.0',
         description='ToF-DR: p дропаута→sentinel (research 0.03, DR→0.3). 0=off')
+    record = LaunchConfiguration('record')
+    run_id = LaunchConfiguration('run_id')
     arena = LaunchConfiguration('arena')
     follow_dir = LaunchConfiguration('follow_dir')
     hold_alt = LaunchConfiguration('hold_alt')
@@ -69,6 +81,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         arena_arg, follow_dir_arg, hold_alt_arg, latch_alt_arg, tof_noise_arg, tof_pdrop_arg,
+        record_arg, run_id_arg,
         Node(package='drone_sim', executable='tof_ring_node',
              name='tof_ring_node', output='screen',
              parameters=[{'noise_sigma_frac': ParameterValue(tof_noise, value_type=float),
@@ -94,4 +107,13 @@ def generate_launch_description():
              name='reset_node', output='screen',
              parameters=[{'world': os.environ.get('DEFAULT_WORLD', ''),
                           'hold_alt_m': ParameterValue(hold_alt, value_type=float)}]),
+        # полётные логи (TASK-104): gt/odom/cmd/tof/events per эпизод, t = sim-time
+        # (/clock бриджится базовым стеком drone.launch; топики /krot/* без header —
+        # штамп на приёме). Границы эпизодов = /krot/episode_reset.
+        Node(package='drone_sim', executable='flight_recorder',
+             name='flight_recorder', output='screen',
+             condition=IfCondition(record),
+             parameters=[{'use_sim_time': True,
+                          'world': os.environ.get('DEFAULT_WORLD', ''),
+                          'run_id': ParameterValue(run_id, value_type=str)}]),
     ])

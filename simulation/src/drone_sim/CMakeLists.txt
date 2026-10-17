@@ -105,6 +105,12 @@ install(PROGRAMS
   RENAME reset_node
   DESTINATION lib/${PROJECT_NAME}
 )
+# ── полётные CSV-логи gt/odom/cmd/tof/events per эпизод (TASK-104, K-SIM-0003) ──
+install(PROGRAMS
+  drone_sim/flight_recorder.py
+  RENAME flight_recorder
+  DESTINATION lib/${PROJECT_NAME}
+)
 
 # Ресурсы — launch, models, worlds, config
 install(DIRECTORY
