@@ -70,8 +70,15 @@ def generate_launch_description():
     tof_pdrop_arg = DeclareLaunchArgument(
         'tof_p_dropout', default_value='0.0',
         description='ToF-DR: p дропаута→sentinel (research 0.03, DR→0.3). 0=off')
+    model_arg = DeclareLaunchArgument(
+        'model', default_value='', description='id модели/политики → run_meta + index.jsonl')
+    train_log_arg = DeclareLaunchArgument(
+        'train_log', default_value='',
+        description='путь к логам обучения rl-lab этого рана → index.jsonl (связка с интерфейсом)')
     record = LaunchConfiguration('record')
     run_id = LaunchConfiguration('run_id')
+    model = LaunchConfiguration('model')
+    train_log = LaunchConfiguration('train_log')
     arena = LaunchConfiguration('arena')
     follow_dir = LaunchConfiguration('follow_dir')
     hold_alt = LaunchConfiguration('hold_alt')
@@ -81,7 +88,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         arena_arg, follow_dir_arg, hold_alt_arg, latch_alt_arg, tof_noise_arg, tof_pdrop_arg,
-        record_arg, run_id_arg,
+        record_arg, run_id_arg, model_arg, train_log_arg,
         Node(package='drone_sim', executable='tof_ring_node',
              name='tof_ring_node', output='screen',
              parameters=[{'noise_sigma_frac': ParameterValue(tof_noise, value_type=float),
@@ -116,5 +123,7 @@ def generate_launch_description():
              parameters=[{'use_sim_time': True,
                           'world': os.environ.get('DEFAULT_WORLD', ''),
                           'run_id': ParameterValue(run_id, value_type=str),
+                          'model': ParameterValue(model, value_type=str),
+                          'train_log': ParameterValue(train_log, value_type=str),
                           'hold_alt_m': ParameterValue(hold_alt, value_type=float)}]),
     ])

@@ -87,6 +87,7 @@ finish_session() {
   stand_tmux "$TMUX_SESSION" kill-server 2>/dev/null || true
   tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
   stand_lock_rm "$TMUX_SESSION"
+  rm -rf "$STAND_LOCK_DIR/models-$TMUX_SESSION"     # per-instance копия модели (G-0024)
   echo "kill_sim_stack: стенд '$TMUX_SESSION' снят (сокет $(stand_sock "$TMUX_SESSION"), lock удалён)"
 }
 

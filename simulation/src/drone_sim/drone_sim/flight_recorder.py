@@ -94,6 +94,7 @@ class FlightRecorder(Node):
         p("world", "")                  # ""=env DEFAULT_WORLD → автодетект gz topic -l
         p("model", "")                  # id модели/политики — в run_meta (v2 §2)
         p("hold_alt_m", 0.0)            # эшелон рана — в run_meta (0.0 = не передан)
+        p("train_log", "")              # путь к логам обучения rl-lab этого рана (связка в индексе)
         p("enable", True)               # старт включённым (krot-профиль); runtime-гейт топиком
         p("flush_period_s", 1.0)        # v2: flush ≥1/сек (crash-защита записи)
         gp = lambda n: self.get_parameter(n).value
@@ -109,6 +110,18 @@ class FlightRecorder(Node):
             n += 1
         self._root = root
         os.makedirs(self._root, exist_ok=True)
+        # Индекс ранов — связка «логи обучения ↔ логи интерфейса» (Aleks 2026-10-17):
+        # <out_root>/index.jsonl, append-only; строка status=open при старте и
+        # status=closed при закрытии (последняя по run_dir = актуальная). Конвертер
+        # interface читает индекс, не ищет по папкам; train_log — логи rl-lab рана.
+        self._index_path = os.path.join(str(gp("out_root")), "index.jsonl")
+        self._index_base = {
+            "run_id": run_id, "run_dir": os.path.relpath(self._root, str(gp("out_root"))),
+            "abs_dir": self._root, "world": world, "model": str(gp("model")),
+            "hold_alt": float(gp("hold_alt_m")), "train_log": str(gp("train_log")),
+            "format": "csv_record_format_v2", "vel_frame": "world",
+            "started": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        self._index_append({"status": "open"})
 
         self._files: dict[str, object] = {}
         self._writers: dict[str, csv.writer] = {}
@@ -155,6 +168,13 @@ class FlightRecorder(Node):
             f"enable={self._enabled}; нарезка эпизодов — по events)")
 
     # ── файлы ──
+    def _index_append(self, extra: dict) -> None:
+        try:
+            with open(self._index_path, "a") as f:
+                f.write(json.dumps({**self._index_base, **extra}, ensure_ascii=False) + "\n")
+        except OSError as e:
+            self.get_logger().warn(f"index.jsonl не записан: {e}")
+
     def _flush(self) -> None:
         for f in self._files.values():
             try:
@@ -245,6 +265,9 @@ class FlightRecorder(Node):
             self.get_logger().info(
                 "закрыто: " + " ".join(f"{k}={self._counts[k]}" for k in STREAMS) +
                 f" (эпизодов {self._ep})")
+            self._index_append({"status": "closed", "episodes": self._ep,
+                                "rows": dict(self._counts),
+                                "ended": time.strftime("%Y-%m-%dT%H:%M:%S")})
         self._files, self._writers = {}, {}
 
 

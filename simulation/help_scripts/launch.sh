@@ -263,6 +263,33 @@ fi
 
 mkdir -p "$LOG_DIR"
 
+# ── FDM-порт per-instance (G-0024) ───────────────────────────────────────────
+# SITL -I N шлёт физику (JSON FDM) на UDP 9002+10N, а ArduPilotPlugin слушает
+# <fdm_port_in> из model.sdf (9002). Для N>0 кладём копию модели с портом N
+# первой в GZ_SIM_RESOURCE_PATH (оригинал не трогаем; файлы — симлинки).
+FDM_PORT=$((9002 + 10 * SITL_INSTANCE))
+if (( WANT_GZ && ! RESTART_SITL )); then
+    if ss -lun 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${FDM_PORT}\$"; then
+        echo "ERROR: UDP $FDM_PORT (FDM SITL_INSTANCE=$SITL_INSTANCE) уже занят другим gz — физика двух стендов перемешается." >&2
+        echo "  Живые стенды: $(stand_list | cut -d' ' -f1-2 | paste -sd, -)" >&2
+        echo "  Другой SITL_INSTANCE (+GZ_PARTITION/ROS_DOMAIN_ID) в ENV_FILE, либо погасить свой стенд." >&2
+        exit 1
+    fi
+    if (( SITL_INSTANCE != 0 )); then
+        MODEL_SRC="$WS_DIR/src/drone_sim/models/iris_claudedrone"
+        MODEL_OVR="$STAND_LOCK_DIR/models-$SESSION"
+        rm -rf "$MODEL_OVR"; mkdir -p "$MODEL_OVR"
+        cp -rs "$MODEL_SRC" "$MODEL_OVR/"
+        rm -f "$MODEL_OVR/iris_claudedrone/model.sdf"
+        sed "s|<fdm_port_in>9002</fdm_port_in>|<fdm_port_in>$FDM_PORT</fdm_port_in>|" \
+            "$MODEL_SRC/model.sdf" > "$MODEL_OVR/iris_claudedrone/model.sdf"
+        grep -q "<fdm_port_in>$FDM_PORT<" "$MODEL_OVR/iris_claudedrone/model.sdf" \
+            || { echo "ERROR: не смог выставить fdm_port_in=$FDM_PORT в копии модели" >&2; exit 1; }
+        GZ_RESOURCE_EXTRA="$MODEL_OVR${GZ_RESOURCE_EXTRA:+:$GZ_RESOURCE_EXTRA}"
+        echo "[launch] SITL_INSTANCE=$SITL_INSTANCE → модель с fdm_port_in=$FDM_PORT ($MODEL_OVR)"
+    fi
+fi
+
 # ── command builders (each runs inside a fresh shell in tmux pane) ───────────
 GZ_FLAGS=""
 (( GZ_RUN )) && GZ_FLAGS="$GZ_FLAGS -r"
@@ -394,6 +421,11 @@ cmd_krot() {
     # krot_bridges ПОСЛЕ готовности mavros (reset_node/mux без FCU бессмысленны).
     # Внутри панели стенда → живёт и умирает вместе со стендом, teardown сессии
     # его снимает (раньше мосты гонялись отдельным фоном агента — сироты/G-0022).
+    # Пустой `<arg>:=` ros2 launch отвергает (malformed) → только заданные.
+    local kargs="latch_alt:=true hold_alt:=${KROT_HOLD_ALT:-1.0}"
+    [[ -n "${KROT_RUN_ID:-}" ]]    && kargs+=" run_id:=${KROT_RUN_ID}"
+    [[ -n "${KROT_MODEL:-}" ]]     && kargs+=" model:=${KROT_MODEL}"
+    [[ -n "${KROT_TRAIN_LOG:-}" ]] && kargs+=" train_log:=${KROT_TRAIN_LOG}"
     cat <<EOF
 cd '$WS_DIR'
 source '$ROS_SETUP'
@@ -404,7 +436,7 @@ if [[ -f install/setup.bash ]]; then source install/setup.bash; fi
 echo "[krot] жду /mavros/state …"
 for _i in \$(seq 1 90); do ros2 topic list 2>/dev/null | grep -q '^/mavros/state\$' && break; sleep 2; done
 echo "[krot] krot_bridges world=$WORLD run_id=${KROT_RUN_ID:-<auto>} hold_alt=${KROT_HOLD_ALT:-1.0}"
-exec ros2 launch drone_sim krot_bridges.launch.py latch_alt:=true hold_alt:=${KROT_HOLD_ALT:-1.0} run_id:='${KROT_RUN_ID:-}'
+exec ros2 launch drone_sim krot_bridges.launch.py $kargs
 EOF
 }
 
@@ -586,7 +618,7 @@ FIRST_RUN=$(wrap_pane "$FIRST_NAME" "$FIRST_BODY")
 eval "$SCOPE_RUN tmux -L '$STOCK' new-session -d -s '$SESSION' -n main $FIRST_RUN"
 MODE=$( (( HEADLESS )) && echo headless || echo headed )
 stand_lock_write "$SESSION" "owner=$ME" "mode=$MODE" "world=$WORLD" \
-    "sitl_instance=$SITL_INSTANCE" "mavlink_port=$MAVLINK_PORT" \
+    "sitl_instance=$SITL_INSTANCE" "mavlink_port=$MAVLINK_PORT" "fdm_port=$FDM_PORT" \
     "gz_partition=$GZ_PARTITION" "ros_domain_id=$ROS_DOMAIN_ID" \
     "socket=$STOCK" "started=$(date '+%F %T')"
 stand_tmux "$SESSION" select-pane -t "$SESSION:main.0" -T "$FIRST_NAME"
