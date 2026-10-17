@@ -51,6 +51,7 @@ import subprocess
 import time
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
@@ -256,11 +257,14 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _sig)
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass            # внешний Ctrl-C/launch-shutdown — штатно; CSV закрываем ниже
     finally:
-        node.close()
-        rclpy.shutdown()
+        node.close()    # close НЕ зависит от rclpy-контекста (чистый file I/O)
+        try:
+            rclpy.shutdown()
+        except Exception:
+            pass        # контекст уже закрыт внешним shutdown'ом (rcl_shutdown already called)
 
 
 if __name__ == "__main__":
