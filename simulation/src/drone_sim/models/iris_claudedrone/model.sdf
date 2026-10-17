@@ -926,12 +926,28 @@
       <!-- TF LUNA ВПЕРЁД (sweep-сенсор) перенесён на sg90_arm —
            см. ниже link sg90_arm. Здесь больше не объявляется. -->
 
-      <!-- VL53L0X x6 — периметр 360° -->
-      <!-- VL0 — 0° ПЕРЕД -->
+      <!-- VL53L0X x6 — периметр 360°.
+           ⚠ Конвенция осей (сверено по rotor_0 FR @ y=-0.22, TASK-096):
+           ENU body: x+ = нос, y+ = ЛЕВО, yaw CCW+. Прежние комментарии
+           путали право/лево — исправлены 2026-10-17.
+           Раскраска корпусов и лучей (директива Aleks 2026-10-17, единая с
+           interface GUI): ch0 нос=СИНИЙ · ch1 перед-лево=ФИОЛЕТОВЫЙ ·
+           ch2 зад-лево=ОРАНЖЕВЫЙ · ch3 хвост=КРАСНЫЙ · ch4 зад-право=ЖЁЛТЫЙ ·
+           ch5 перед-право=ЗЕЛЁНЫЙ. Позы визуалов = позы сенсоров. -->
+      <!-- VL0 — 0° НОС (синий) -->
+      <visual name="vl53l0x_0_body">
+        <pose>0.1 0 0 0 0 0</pose>
+        <geometry><box><size>0.02 0.015 0.01</size></box></geometry>
+        <material>
+          <ambient>0 0 1 1</ambient><diffuse>0 0 1 1</diffuse>
+          <emissive>0 0 0.3 1</emissive>
+        </material>
+      </visual>
       <sensor name="vl53l0x_0" type="gpu_lidar">
         <pose>0.1 0 0 0 0 0</pose>
         <topic>/drone/vl53l0x/ch0</topic>
         <update_rate>10</update_rate>
+        <visualize>true</visualize>
         <lidar>
           <scan>
             <horizontal>
@@ -944,11 +960,20 @@
         </lidar>
       </sensor>
 
-      <!-- VL1 — 60° ПЕРЕД-ПРАВО -->
+      <!-- VL1 — 60° ПЕРЕД-ЛЕВО (фиолетовый; y+ = лево) -->
+      <visual name="vl53l0x_1_body">
+        <pose>0.05 0.087 0 0 0 1.0472</pose>
+        <geometry><box><size>0.02 0.015 0.01</size></box></geometry>
+        <material>
+          <ambient>0.6 0 0.8 1</ambient><diffuse>0.6 0 0.8 1</diffuse>
+          <emissive>0.18 0 0.24 1</emissive>
+        </material>
+      </visual>
       <sensor name="vl53l0x_1" type="gpu_lidar">
         <pose>0.05 0.087 0 0 0 1.0472</pose>
         <topic>/drone/vl53l0x/ch1</topic>
         <update_rate>10</update_rate>
+        <visualize>true</visualize>
         <lidar>
           <scan>
             <horizontal>
@@ -961,11 +986,20 @@
         </lidar>
       </sensor>
 
-      <!-- VL2 — 120° ЗАД-ПРАВО -->
+      <!-- VL2 — 120° ЗАД-ЛЕВО (оранжевый) -->
+      <visual name="vl53l0x_2_body">
+        <pose>-0.05 0.087 0 0 0 2.0944</pose>
+        <geometry><box><size>0.02 0.015 0.01</size></box></geometry>
+        <material>
+          <ambient>1 0.5 0 1</ambient><diffuse>1 0.5 0 1</diffuse>
+          <emissive>0.3 0.15 0 1</emissive>
+        </material>
+      </visual>
       <sensor name="vl53l0x_2" type="gpu_lidar">
         <pose>-0.05 0.087 0 0 0 2.0944</pose>
         <topic>/drone/vl53l0x/ch2</topic>
         <update_rate>10</update_rate>
+        <visualize>true</visualize>
         <lidar>
           <scan>
             <horizontal>
@@ -978,11 +1012,20 @@
         </lidar>
       </sensor>
 
-      <!-- VL3 — 180° ЗАД -->
+      <!-- VL3 — 180° ХВОСТ (красный) -->
+      <visual name="vl53l0x_3_body">
+        <pose>-0.1 0 0 0 0 3.1416</pose>
+        <geometry><box><size>0.02 0.015 0.01</size></box></geometry>
+        <material>
+          <ambient>1 0 0 1</ambient><diffuse>1 0 0 1</diffuse>
+          <emissive>0.3 0 0 1</emissive>
+        </material>
+      </visual>
       <sensor name="vl53l0x_3" type="gpu_lidar">
         <pose>-0.1 0 0 0 0 3.1416</pose>
         <topic>/drone/vl53l0x/ch3</topic>
         <update_rate>10</update_rate>
+        <visualize>true</visualize>
         <lidar>
           <scan>
             <horizontal>
@@ -995,11 +1038,20 @@
         </lidar>
       </sensor>
 
-      <!-- VL4 — 240° ЗАД-ЛЕВО -->
+      <!-- VL4 — 240° ЗАД-ПРАВО (жёлтый; y− = право) -->
+      <visual name="vl53l0x_4_body">
+        <pose>-0.05 -0.087 0 0 0 4.1888</pose>
+        <geometry><box><size>0.02 0.015 0.01</size></box></geometry>
+        <material>
+          <ambient>1 1 0 1</ambient><diffuse>1 1 0 1</diffuse>
+          <emissive>0.3 0.3 0 1</emissive>
+        </material>
+      </visual>
       <sensor name="vl53l0x_4" type="gpu_lidar">
         <pose>-0.05 -0.087 0 0 0 4.1888</pose>
         <topic>/drone/vl53l0x/ch4</topic>
         <update_rate>10</update_rate>
+        <visualize>true</visualize>
         <lidar>
           <scan>
             <horizontal>
@@ -1012,11 +1064,20 @@
         </lidar>
       </sensor>
 
-      <!-- VL5 — 300° ПЕРЕД-ЛЕВО -->
+      <!-- VL5 — 300° ПЕРЕД-ПРАВО (зелёный) -->
+      <visual name="vl53l0x_5_body">
+        <pose>0.05 -0.087 0 0 0 5.2360</pose>
+        <geometry><box><size>0.02 0.015 0.01</size></box></geometry>
+        <material>
+          <ambient>0 0.8 0 1</ambient><diffuse>0 0.8 0 1</diffuse>
+          <emissive>0 0.24 0 1</emissive>
+        </material>
+      </visual>
       <sensor name="vl53l0x_5" type="gpu_lidar">
         <pose>0.05 -0.087 0 0 0 5.2360</pose>
         <topic>/drone/vl53l0x/ch5</topic>
         <update_rate>10</update_rate>
+        <visualize>true</visualize>
         <lidar>
           <scan>
             <horizontal>
