@@ -10,9 +10,14 @@ v5-krot Этап-1. Sim-сторона obs-фида: собирает 6 луче
 ВЫХОД (proposal-имя, согласовать с interface):
     /krot/tof_ring            std_msgs/Float32MultiArray, 6 float, МЕТРЫ, клип [tof_min, tof_clip]
                               no-hit (inf / > clip) → tof_clip (sentinel «чисто до предела»)
+    /krot/tof_ring_raw        то же, но клип [tof_min, tof_range_max] (ФИЗИЧЕСКАЯ дальность
+                              2.0м = SDF/паспорт VL53) — для картографа/GUI (Aleks 2026-10-17:
+                              «все значения сенсоров»; 1.2 остаётся порогом препятствия).
+                              no-hit → tof_range_max. АДДИТИВНО: канон-канал бит-в-бит прежний.
 
 PARITY: порядок лучей = sensor_angles_deg из drone_geometry.yaml. RL обязан читать в ЭТОМ
 порядке. Клип/sentinel — единая конвенция sim↔rl (контракт §2: no-return→1.0 после норм).
+RL-канал считается из raw при публикации: min(raw, tof_clip) — поведение не изменилось.
 """
 from __future__ import annotations
 
@@ -36,8 +41,10 @@ class TofRingNode(Node):
         super().__init__("tof_ring_node")
         g = DroneGeometry.load()
         self.clip = g.tof_clip_m
+        self.range_max = g.tof_range_max_m   # физическая дальность (raw-канал)
         self.tof_min = g.tof_min_m
         self.declare_parameter("out_topic", "/krot/tof_ring")
+        self.declare_parameter("raw_topic", "/krot/tof_ring_raw")
         self.declare_parameter("rate_hz", g.control_hz)
         # ── ToF sim2real шум/дропаут (DR, off по умолчанию; модель research dev-log/83) ──
         # σ = max(noise_sigma_floor_m, noise_sigma_frac·d); p_dropout → SENTINEL (clip), НЕ skip
@@ -48,6 +55,7 @@ class TofRingNode(Node):
         self.declare_parameter("p_dropout", 0.0)             # research: 0.03, DR[0.03,0.15]→0.3
         self.declare_parameter("bias_max_m", 0.0)            # research: U[−15,+15]мм per-episode
         out_topic = self.get_parameter("out_topic").value
+        raw_topic = self.get_parameter("raw_topic").value
         rate = float(self.get_parameter("rate_hz").value)
         self.noise_frac = float(self.get_parameter("noise_sigma_frac").value)
         self.noise_floor = float(self.get_parameter("noise_sigma_floor_m").value)
@@ -58,8 +66,9 @@ class TofRingNode(Node):
         # per-episode bias: resample по сигналу (rl шлёт Empty на reset эпизода). Иначе = per-run.
         self.create_subscription(Empty, "/krot/noise_reset", self._resample_bias, 10)
 
-        # no-hit инициализация = clip (сенсор жив, чисто до предела)
-        self._beams = [self.clip] * N_BEAMS
+        # храним RAW (физический клип); no-hit инициализация = range_max
+        # (сенсор жив, чисто до физического предела)
+        self._beams_raw = [self.range_max] * N_BEAMS
 
         sensor_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -71,10 +80,12 @@ class TofRingNode(Node):
                 lambda m, c=ch: self._scan_cb(m, c), sensor_qos,
             )
         self._pub = self.create_publisher(Float32MultiArray, out_topic, 10)
+        self._pub_raw = self.create_publisher(Float32MultiArray, raw_topic, 10)
         self.create_timer(1.0 / rate, self._publish)
         self.get_logger().info(
-            f"tof_ring_node: /drone/vl53l0x/ch0..5 → {out_topic} @ {rate:.0f}Hz "
-            f"(canon {g.sensor_angles_deg}, clip {self.clip}m"
+            f"tof_ring_node: /drone/vl53l0x/ch0..5 → {out_topic} (clip {self.clip}m) "
+            f"+ {raw_topic} (физ. {self.range_max}m) @ {rate:.0f}Hz "
+            f"(canon {g.sensor_angles_deg}"
             + (f"; NOISE σfrac={self.noise_frac} σfloor={self.noise_floor} "
                f"p_drop={self.p_dropout} bias_max={self.bias_max} (canon dev-log/83))"
                if self._noise_on else ")")
@@ -86,35 +97,45 @@ class TofRingNode(Node):
             self._bias = random.uniform(-self.bias_max, self.bias_max)
 
     def _noisy(self, d: float) -> float:
-        """ToF sim2real (канон dev-log/83): dropout→SENTINEL(clip); иначе +bias +Гаусс σ=max(floor,frac·d)."""
+        """ToF sim2real (канон dev-log/83) на RAW-уровне: dropout→SENTINEL(range_max);
+        иначе +bias +Гаусс σ=max(floor,frac·d). Канон-канал клипнет до tof_clip сам —
+        dropout в нём остаётся прежним sentinel'ом clip (LOST-рефлекс не задет)."""
         if random.random() < self.p_dropout:
-            return self.clip                       # invalid-return → sentinel (no-hit), включает LOST
+            return self.range_max                  # invalid-return → sentinel (no-hit)
         sigma = max(self.noise_floor, self.noise_frac * d)
         d = d + self._bias + random.gauss(0.0, sigma)
-        if d >= self.clip:
-            return self.clip
+        if d >= self.range_max:
+            return self.range_max
         return self.tof_min if d < self.tof_min else d
 
     def _scan_cb(self, msg: LaserScan, ch: int) -> None:
         if not msg.ranges:
             return
         d = float(msg.ranges[0])
-        if math.isnan(d) or not math.isfinite(d) or d > self.clip:
-            d = self.clip          # no-hit → sentinel
+        if math.isnan(d) or not math.isfinite(d) or d > self.range_max:
+            d = self.range_max     # no-hit → sentinel «чисто до физического предела»
         elif d < self.tof_min:
             d = self.tof_min
-        self._beams[ch] = d
+        self._beams_raw[ch] = d
 
-    def _publish(self) -> None:
+    @staticmethod
+    def _make_msg(beams: list[float]) -> Float32MultiArray:
         msg = Float32MultiArray()
         dim = MultiArrayDimension()
         dim.label = "beam_canon_0_60_120_180_240_300_deg"
         dim.size = N_BEAMS
         dim.stride = N_BEAMS
         msg.layout.dim = [dim]
-        beams = self._beams if not self._noise_on else [self._noisy(b) for b in self._beams]
         msg.data = [float(b) for b in beams]
-        self._pub.publish(msg)
+        return msg
+
+    def _publish(self) -> None:
+        raw = self._beams_raw if not self._noise_on \
+            else [self._noisy(b) for b in self._beams_raw]
+        # канон (RL): min(raw, clip) — бит-в-бит прежнее поведение (>clip → sentinel clip)
+        canon = [min(b, self.clip) for b in raw]
+        self._pub.publish(self._make_msg(canon))
+        self._pub_raw.publish(self._make_msg(raw))
 
 
 def main() -> None:

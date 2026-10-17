@@ -36,6 +36,7 @@ class DroneGeometry:
     sensor_ring_r: float
     sensor_angles_deg: list[float]
     tof_clip_m: float
+    tof_range_max_m: float
     tof_min_m: float
     margin: float
     clear: float
@@ -91,6 +92,8 @@ class DroneGeometry:
             sensor_ring_r=float(g["sensor_ring_r"]),
             sensor_angles_deg=[float(a) for a in g["sensor_angles_deg"]],
             tof_clip_m=float(g["tof_clip_m"]),
+            # физическая дальность; fallback = clip для старых копий yaml (rl-lab)
+            tof_range_max_m=float(g.get("tof_range_max_m", g["tof_clip_m"])),
             tof_min_m=float(g["tof_min_m"]),
             margin=float(g["margin"]),
             clear=float(g["clear"]),

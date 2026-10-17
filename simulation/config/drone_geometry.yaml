@@ -28,7 +28,12 @@ geometry:
   sensor_angles_deg: [0, 60, 120, 180, 240, 300]   # [SIM*] раскладка 6 лучей VL53 (body-frame).
                               #        ЗАМЕР: iris_claudedrone vl53l0x_0..5 yaw 0/1.0472/2.0944/3.1416/4.1888/5.2360.
                               #        index0 = +x (нос/0°), CCW по 60°. PARITY sim↔rl ОБЯЗАТЕЛЬНА.
-  tof_clip_m:     1.2         # клип дальности ToF в obs (контракт §2.1). SDF range max=2.0 — клип в софте.
+  tof_clip_m:     1.2         # ПОРОГ ПРЕПЯТСТВИЯ / клип ToF в obs (контракт §2.1, LOST>1.2,
+                              #   нормировка RL) — НЕ трогать без ретрейна. Клип в софте.
+  tof_range_max_m: 2.0        # [SIM] ФИЗИЧЕСКАЯ дальность VL53L0X (= SDF range max, паспорт).
+                              #   Raw-канал /krot/tof_ring_raw для картографа/GUI (Aleks 2026-10-17:
+                              #   «все значения сенсоров до физической дальности; 1.2 — порог
+                              #   препятствия»). RL-канал /krot/tof_ring по-прежнему клипится tof_clip_m.
   tof_min_m:      0.03        # [SIM*] физ. min VL53 (SDF range min=0.03).
 
   # ── safety/standoff буферы (P0-tunable) ─────────────────────────────────
