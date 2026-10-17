@@ -21,6 +21,8 @@
             name="gz::sim::systems::Imu"/>
     <plugin filename="gz-sim-navsat-system"
             name="gz::sim::systems::NavSat"/>
+    <plugin filename="gz-sim-contact-system"
+            name="gz::sim::systems::Contact"/>
 
     <!-- Geographic anchor for ArduPilot navsat/AHRS init (обязательно). SITL home. -->
     <spherical_coordinates>

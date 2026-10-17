@@ -38,7 +38,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from geometry_msgs.msg import Twist
 from mavros_msgs.msg import PositionTarget
 from nav_msgs.msg import Odometry
-from std_msgs.msg import Float64
+from std_msgs.msg import Bool as BoolMsg, Float64
 
 from drone_sim.geometry import DroneGeometry
 
@@ -63,6 +63,10 @@ class VelSetpointMux(Node):
         self.declare_parameter("alt_kp", 1.0)      # P-gain alt-hold (vz = kp·err)
         self.declare_parameter("vz_max", 0.5)      # клип |vz| alt-hold, м/с
         self.declare_parameter("cmd_timeout_s", 0.2)  # failsafe: гэп cmd_vel > N → vx=vy=0 (rl-lab b)
+        # gate-топик (TASK-100): false = полная ТИШИНА setpoint'ов (reset_node глушит mux
+        # на время переспавна/NAV_TAKEOFF — стрим давит climb, память takeoff_before_mux).
+        # Никто не шлёт → true (прежнее поведение, аддитивно).
+        self.declare_parameter("gate_topic", "/krot/mux_gate")
 
         self.hold_alt = float(self.get_parameter("hold_alt").value)
         self._latch = bool(self.get_parameter("latch_alt_from_odom").value)
@@ -83,6 +87,9 @@ class VelSetpointMux(Node):
                                 history=HistoryPolicy.KEEP_LAST, depth=10)
         self.create_subscription(Twist, self.get_parameter("cmd_vel_topic").value,
                                  self._vel_cb, 10)
+        self._gate_open = True
+        self.create_subscription(BoolMsg, self.get_parameter("gate_topic").value,
+                                 self._gate_cb, 10)
         self.create_subscription(Float64, self.get_parameter("yaw_topic").value,
                                  self._yaw_cb, 10)
         # odom нужен ВСЕГДА (alt-hold через velocity.z требует текущий z).
@@ -110,6 +117,17 @@ class VelSetpointMux(Node):
         self._yaw = float(m.data)
         self._have_yaw = True
 
+    def _gate_cb(self, m: BoolMsg) -> None:
+        if m.data != self._gate_open:
+            self.get_logger().info(
+                f"vel_setpoint_mux: gate {'ОТКРЫТ — стримлю' if m.data else 'ЗАКРЫТ — тишина (reset/takeoff)'}")
+        self._gate_open = bool(m.data)
+        if m.data:
+            # свежий эпизод: сбрасываем залатченный hold_alt (odom-latch возьмёт новую высоту)
+            if self._latch:
+                self._alt_latched = False
+            self._last_cmd_ns = None
+
     def _odom_cb(self, m: Odometry) -> None:
         self._z = float(m.pose.pose.position.z)
         self._have_odom = True
@@ -119,6 +137,8 @@ class VelSetpointMux(Node):
             self.get_logger().info(f"vel_setpoint_mux: hold_alt latched = {self.hold_alt:.2f}m")
 
     def _publish(self) -> None:
+        if not self._gate_open:
+            return     # reset_node глушит стрим (ТИШИНА при переспавне/NAV_TAKEOFF)
         if not self._alt_latched or not self._have_odom:
             return
         # cmd-timeout failsafe (rl-lab b): нет свежей cmd_vel > N → зануляем латераль,

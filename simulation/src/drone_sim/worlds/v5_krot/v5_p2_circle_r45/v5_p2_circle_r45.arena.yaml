@@ -1,9 +1,11 @@
-name: p2_circus
+name: v5_p2_circle_r45
 stage: P2
 spawn:
-- 3.925
+- 4.0
 - 0.0
 - 1.5708
+spawn_note: зазор центра от стены 0.50 = d*(0.40)+ring(0.10), у стены, нос по касательной
+  +Y
 finish:
   type: loop_angle
   budget_rad: 6.283185307179586
@@ -13,13 +15,14 @@ followable:
   center:
   - 0.0
   - 0.0
-  radius: 4.425
+  radius: 4.5
   inside: true
 obstacles:
 - type: circle
   center:
   - 0.0
   - 0.0
-  radius: 4.425
+  radius: 4.5
   inside: true
 r_usable: 1.2
+note: geometry = ПОВЕРХНОСТЬ = env Circle R=4.5 БИТ-В-БИТ

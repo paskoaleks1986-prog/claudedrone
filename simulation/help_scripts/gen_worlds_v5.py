@@ -6,10 +6,20 @@
     <name>.arena.yaml   — GT-дескриптор для wall_gt_node (followable-стены + obstacles + r_usable)
     <name>.occupancy.npz — растеризованная карта (occupancy uint8, resolution, origin) — карта-удобство
 
-Арены (контракт v2 §7 / sprint §6 / research ответ 12:4x п.6):
-    P0  прямая стена ≥8м — калибровка: контракт end-to-end, reward из пары верен, oracle-парити
-    P2  цирк (замкнутая круглая арена R~4.5м) — периметр, финиш=обход
-P1 = мир P0 + эпизод-параметры (рамп d*[0.25..0.55] + рандом носа) — отдельный SDF не нужен.
+Арены — ЗЕРКАЛА 2D-арен rl-lab Этапа-1, НЕЙМИНГ rl-lab (TASK-098, слово Aleks
+2026-10-17; формулы = wall_follow_env.py::_build_stage, бит-в-бит):
+    v5_p0_straight    прямая стена x=2, y∈[−4,4] (8м)
+    v5_p2_circle_r45  замкнутый круг R=4.5, дрон ВНУТРИ, финиш=обход 2π
+    v5_p3_sine_l0     синус A=0.3, T=8.0 (p3_level=0), базовая 8м
+    v5_p3_sine_l1     синус A=0.5, T=5.0 (p3_level=1)
+    v5_p4_zigzag_120  зигзаг T=3, L=2.5, грань 30° от вертикали → углы 120°
+                      (ТОЛЬКО 120° — ратификация Aleks 10-17, K-RL-0008)
+    p5_serrated       зубцы-микротекстура (вне набора rl-lab, задел)
+P1 = мир v5_p0_straight + эпизод-параметры (рамп d* + рандом носа) — отдельный SDF не нужен.
+
+PARITY ПОВЕРХНОСТИ: env-формула задаёт линию СТЕНЫ (что видит дрон). В gz стена = box
+толщиной WALL_T, поэтому centerline сдвинут на WALL_T/2 ОТ дрона, а ПОВЕРХНОСТЬ
+(грань к дрону) = env-линия ТОЧНО. Дескриптор/спавн — от поверхности (dev-log/48).
 
 Usage: python3 help_scripts/gen_worlds_v5.py [--out worlds/v5_krot]
 """
@@ -44,6 +54,7 @@ _HEADER = """<?xml version="1.0" ?>
     </plugin>
     <plugin filename="gz-sim-imu-system" name="gz::sim::systems::Imu"/>
     <plugin filename="gz-sim-navsat-system" name="gz::sim::systems::NavSat"/>
+    <plugin filename="gz-sim-contact-system" name="gz::sim::systems::Contact"/>
     <spherical_coordinates>
       <latitude_deg>-35.363262</latitude_deg>
       <longitude_deg>149.165237</longitude_deg>
@@ -159,26 +170,37 @@ def _poly_followable(surf_pts):
             for i in range(len(surf_pts) - 1)]
 
 
-def _poly_arena(name, stage, center_pts, *, y_spawn=-3.5, half=5.0, color):
-    """Общая сборка polyline-арены: SDF + surface-дескриптор + спавн (center→поверхность 0.50) + occ."""
-    surf = _offset_surface(center_pts, WALL_HALF)
+def _poly_arena(name, stage, surf_pts, *, y_spawn=None, half=5.0, color, finish_y=None):
+    """Общая сборка polyline-арены из ENV-ПОВЕРХНОСТИ (линия env-формулы = что видит дрон).
+
+    centerline box'ов = поверхность, сдвинутая на WALL_T/2 ОТ дрона → физическая грань
+    к дрону совпадает с env-линией ТОЧНО (parity). Дескриптор/спавн — от поверхности.
+    Спавн: зазор центра 0.50 (= d*0.40 + sensor_ring 0.10, правило rl-lab d*+0.10).
+    """
+    center_pts = _offset_surface(surf_pts, -WALL_HALF)   # от дрона на полутолщину
+    surf = surf_pts
     sdf = _HEADER.format(name=name)
     sdf += _FLOOR.format(cx=0, cy=0, sx=2 * half, sy=2 * half + 2)
     sdf += _chain_sdf(center_pts, "wall", color)
-    # спавн: от surface-точки ближайшей к y_spawn, на 0.50 к дрону вдоль нормали
+    # спавн: у начала стены (правило rl-lab), на 0.50 к дрону вдоль нормали
+    if y_spawn is None:
+        y_spawn = surf[0][1] + 0.5
     si = min(range(len(surf)), key=lambda k: abs(surf[k][1] - y_spawn))
-    snx, sny = _normal_to_drone(center_pts, si)
+    snx, sny = _normal_to_drone(surf_pts, si)
     sx, sy = surf[si][0] + 0.50 * snx, surf[si][1] + 0.50 * sny
     spawn = dict(sx=round(sx, 3), sy=round(sy, 3), syaw=math.pi / 2)
     sdf += _FOOTER.format(**spawn)
     arena = {
         "name": name, "stage": stage,
         "spawn": [spawn["sx"], spawn["sy"], round(spawn["syaw"], 4)],
-        "finish": {"type": "line_y", "y": center_pts[-1][1] - 0.5, "desc": "прошёл длину стены"},
+        "spawn_note": "зазор центра от стены 0.50 = d*(0.40)+ring(0.10), старт у начала стены, нос +Y",
+        "finish": {"type": "line_y",
+                   "y": finish_y if finish_y is not None else surf[-1][1] - 0.5,
+                   "desc": "прошёл длину стены"},
         "followable": _poly_followable(surf),
         "obstacles": _poly_followable(surf),
         "r_usable": 1.2,
-        "note": "geometry = ПОВЕРХНОСТЬ (centerline сдвинут WALL_T/2 к дрону); rl-env читать ОТСЮДА для parity",
+        "note": "geometry = ПОВЕРХНОСТЬ = env-линия rl-lab БИТ-В-БИТ (centerline сдвинут WALL_T/2 ОТ дрона); rl-env читать ОТСЮДА для parity",
     }
     segs = [(center_pts[i][0], center_pts[i][1], center_pts[i + 1][0], center_pts[i + 1][1])
             for i in range(len(center_pts) - 1)]
@@ -188,63 +210,87 @@ def _poly_arena(name, stage, center_pts, *, y_spawn=-3.5, half=5.0, color):
     return name, sdf, arena, occ
 
 
-def build_p3():
-    """P3 волна: синус-стена (кривизна меняет ЗНАК плавно). A=0.5, период 5м, y∈[-4,4]."""
-    A, T = 0.5, 5.0
-    ys = [-4.0 + 8.0 * k / 64 for k in range(65)]
-    center = [(2.0 + A * math.sin(2 * math.pi * (y + 4.0) / T), y) for y in ys]
-    return _poly_arena("p3_wave", "P3", center, color=(0.30, 0.55, 0.85))
+def _build_p3_level(lvl: int):
+    """P3 синус — формула env бит-в-бит (_build_p3_sine): A=0.3+0.2·lvl, T=8−3·lvl,
+    xs = 2 + A·sin(2π·y/T), ys = linspace(−4, 4, 49) (N=48 сегментов). Финиш y=L−0.5=3.5."""
+    A = 0.3 + 0.2 * lvl
+    T = 8.0 - 3.0 * lvl
+    L, N = 4.0, 48
+    ys = [-L + 2 * L * k / N for k in range(N + 1)]
+    surf = [(2.0 + A * math.sin(2 * math.pi * y / T), y) for y in ys]
+    return _poly_arena(f"v5_p3_sine_l{lvl}", "P3", surf,
+                       y_spawn=-L + 0.5, finish_y=L - 0.5,
+                       color=(0.30, 0.55, 0.85))
+
+
+def build_p3_l0():
+    return _build_p3_level(0)
+
+
+def build_p3_l1():
+    return _build_p3_level(1)
 
 
 def build_p4():
-    """P4 зигзаг (ВЫПУКЛЫЙ БОСС): резкие углы, стена пропадает на выпуклом. Апексы к дрону."""
-    verts = [(2.4, -4.0), (2.0, -2.0), (2.4, 0.0), (2.0, 2.0), (2.4, 4.0)]  # apex@y=-2,2 (x2.0)=выпукл
-    # уплотняем рёбра точками для гладкой растеризации/нормалей
-    center = []
+    """P4 зигзаг 120° — формула env бит-в-бит (_build_p4_zigzag, lvl=0): T=3, L=2.5,
+    θ=30° от вертикали (угол стены 180−2θ=120°), A=tanθ·T/4≈0.433; вершины ys=−L+k·T/2,
+    чёт=+A (выпуклый, апекс ОТ дрона), нечёт=−A (вогнутый). ТОЛЬКО 120° (K-RL-0008).
+    Финиш y=L−0.5=2.0. Спавн y=−L+T/4 (середина первой грани, x пересекает wall_x0)."""
+    T, L, wall_x0 = 3.0, 2.5, 2.0
+    theta = math.radians(30.0)
+    A = math.tan(theta) * T / 4.0
+    n_vert = int(2 * L / (T / 2)) + 2
+    verts = [(wall_x0 + (A if k % 2 == 0 else -A), -L + k * (T / 2))
+             for k in range(n_vert)]
+    # уплотняем рёбра для нормалей/растеризации (вершины остаются точными)
+    surf = []
     for i in range(len(verts) - 1):
         ax, ay = verts[i]; bx, by = verts[i + 1]
         for k in range(8):
             t = k / 8
-            center.append((ax + t * (bx - ax), ay + t * (by - ay)))
-    center.append(verts[-1])
-    return _poly_arena("p4_zigzag", "P4", center, color=(0.85, 0.45, 0.12))
+            surf.append((ax + t * (bx - ax), ay + t * (by - ay)))
+    surf.append(verts[-1])
+    return _poly_arena("v5_p4_zigzag_120", "P4", surf,
+                       y_spawn=-L + T / 4.0, finish_y=L - 0.5,
+                       color=(0.85, 0.45, 0.12))
 
 
 def build_p5():
-    """P5 зубцы: высокочастотная микро-текстура (вести ОГИБАЮЩУЮ, не зубцы). Зубцы 0.12м/период 0.5."""
+    """P5 зубцы: высокочастотная микро-текстура (вести ОГИБАЮЩУЮ, не зубцы). Зубцы 0.12м/период 0.5.
+    Вне набора rl-lab (задел) — surf-конвенция та же."""
     amp, per = 0.12, 0.5
     ys = [-4.0 + 8.0 * k / 320 for k in range(321)]
     # треугольная пила к −x (к дрону)
-    center = [(2.0 - amp * (1 - abs((((y + 4.0) / per) % 1.0) * 2 - 1)), y) for y in ys]
-    return _poly_arena("p5_serrated", "P5", center, color=(0.55, 0.35, 0.55))
+    surf = [(2.0 - amp * (1 - abs((((y + 4.0) / per) % 1.0) * 2 - 1)), y) for y in ys]
+    return _poly_arena("p5_serrated", "P5", surf, y_spawn=-3.5, color=(0.55, 0.35, 0.55))
 
 
 # ── определения арен ────────────────────────────────────────────────────────
 def build_p0():
-    """P0: прямая стена вдоль Y (x=+2), длина 8м. Дрон спавнится на standoff center 0.50 (beam d*=0.40), нос вдоль +Y."""
-    name = "p0_straight_wall"
-    wall_x, y0, y1 = 2.0, -4.0, 4.0
+    """P0: прямая стена вдоль Y, ПОВЕРХНОСТЬ x=2.0 = env-линия (x=2, y∈[−4,4], 8м).
+    Box-centerline = 2.0 + WALL_T/2 (от дрона). Спавн center-зазор 0.50 (d*0.40+ring0.10), нос +Y."""
+    name = "v5_p0_straight"
+    face_x, y0, y1 = 2.0, -4.0, 4.0            # env: стена x=2 ТОЧНО (поверхность)
     length = y1 - y0
-    # ⚠ стена = box толщиной WALL_T, центр wall_x → ПОВЕРХНОСТЬ (грань, что видит ToF/коллизия)
-    # на стороне дрона = wall_x − WALL_T/2. GT/дескриптор/спавн от ПОВЕРХНОСТИ, не центра
-    # (иначе d_perp завышен на полтолщины 0.075 → tof рассинхрон gz↔rl-env, см. dev-log/48).
-    face_x = wall_x - WALL_T / 2
+    wall_cx = face_x + WALL_T / 2              # centerline box'а — от дрона
     sdf = _HEADER.format(name=name)
     sdf += _FLOOR.format(cx=0, cy=0, sx=8.0, sy=10.0)
     # стена вдоль Y: yaw=π/2 (box длиной length повёрнут вдоль Y)
-    sdf += _wall_box("wall_main", wall_x, (y0 + y1) / 2, length, math.pi / 2,
+    sdf += _wall_box("wall_main", wall_cx, (y0 + y1) / 2, length, math.pi / 2,
                      color=(0.85, 0.12, 0.12))
-    spawn = dict(sx=face_x - 0.50, sy=y0 + 0.5, syaw=math.pi / 2)   # center→ПОВЕРХНОСТЬ 0.50 (beam d*=0.40), нос +Y
+    spawn = dict(sx=face_x - 0.50, sy=y0 + 0.5, syaw=math.pi / 2)
     sdf += _FOOTER.format(**spawn)
     arena = {
         "name": name, "stage": "P0",
         "spawn": [round(spawn["sx"], 3), round(spawn["sy"], 3), round(spawn["syaw"], 4)],
+        "spawn_note": "зазор центра от стены 0.50 = d*(0.40)+ring(0.10), старт у начала стены, нос +Y",
         "finish": {"type": "line_y", "y": y1 - 0.5, "desc": "прошёл длину стены"},
         "followable": [{"type": "segment", "p1": [face_x, y0], "p2": [face_x, y1]}],
         "obstacles": [{"type": "segment", "p1": [face_x, y0], "p2": [face_x, y1]}],
         "r_usable": 1.2,
+        "note": "geometry = ПОВЕРХНОСТЬ = env-линия rl-lab x=2.0 БИТ-В-БИТ",
     }
-    segs = [(wall_x, y0, wall_x, y1)]
+    segs = [(wall_cx, y0, wall_cx, y1)]
     grid, nx, ny = _rasterize(segs, 4.0, 5.0)
     occ = dict(occupancy=grid, resolution=RES, origin=[-4.0, -5.0],
                shape=[ny, nx], cy="south_iy0")
@@ -252,11 +298,11 @@ def build_p0():
 
 
 def build_p2():
-    """P2 цирк: замкнутая круглая арена R=4.5м (полигон-аппрокс 36 сегм). Дрон у стены, нос по касательной."""
-    name = "p2_circus"
-    R, nseg = 4.5, 36
-    # ПОВЕРХНОСТЬ кольца (внутр. грань) = R − WALL_T/2 → GT/дескриптор/спавн от неё
-    face_r = R - WALL_T / 2
+    """P2 круг: замкнутая арена, внутренняя ПОВЕРХНОСТЬ R=4.5 = env Circle(R=4.5) ТОЧНО
+    (env сэмплит R∈[4,5]; для gz фикс 4.5 — слово rl-lab). Полигон 36 сегм, дрон ВНУТРИ."""
+    name = "v5_p2_circle_r45"
+    face_r, nseg = 4.5, 36                      # env: радиус стены (внутр. грань)
+    R = face_r + WALL_T / 2                     # centerline кольца — от дрона наружу
     sdf = _HEADER.format(name=name)
     sdf += _FLOOR.format(cx=0, cy=0, sx=2 * R + 1.5, sy=2 * R + 1.5)
     # кольцо box-сегментов (полигон-аппрокс окружности radius R)
@@ -266,16 +312,18 @@ def build_p2():
         cx, cy = R * math.cos(a), R * math.sin(a)
         yaw = a + math.pi / 2                       # касательная
         sdf += _wall_box(f"wall_{k:02d}", cx, cy, seg_len, yaw)
-    spawn = dict(sx=face_r - 0.50, sy=0.0, syaw=math.pi / 2)   # center→ПОВЕРХНОСТЬ 0.50 (beam d*=0.40) у стены, нос по касат +Y
+    spawn = dict(sx=face_r - 0.50, sy=0.0, syaw=math.pi / 2)
     sdf += _FOOTER.format(**spawn)
     arena = {
         "name": name, "stage": "P2",
         "spawn": [round(spawn["sx"], 3), round(spawn["sy"], 3), round(spawn["syaw"], 4)],
+        "spawn_note": "зазор центра от стены 0.50 = d*(0.40)+ring(0.10), у стены, нос по касательной +Y",
         "finish": {"type": "loop_angle", "budget_rad": 2 * math.pi,
                    "desc": "обошёл периметр (накопл. угол 2π) = пересёк финиш-линию"},
         "followable": [{"type": "circle", "center": [0.0, 0.0], "radius": face_r, "inside": True}],
         "obstacles": [{"type": "circle", "center": [0.0, 0.0], "radius": face_r, "inside": True}],
         "r_usable": 1.2,
+        "note": "geometry = ПОВЕРХНОСТЬ = env Circle R=4.5 БИТ-В-БИТ",
     }
     # occupancy: кольцо
     segs = []
@@ -295,7 +343,7 @@ def main() -> None:
     args = ap.parse_args()
     out_root = Path(args.out)
 
-    for builder in (build_p0, build_p2, build_p3, build_p4, build_p5):
+    for builder in (build_p0, build_p2, build_p3_l0, build_p3_l1, build_p4, build_p5):
         name, sdf, arena, occ = builder()
         d = out_root / name
         d.mkdir(parents=True, exist_ok=True)

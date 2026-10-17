@@ -1,14 +1,20 @@
-"""krot_bridges.launch.py — v5-krot Этап-1 мосты (4 ноды) поверх живого стека.
+"""krot_bridges.launch.py — v5-krot Этап-1 мосты поверх живого стека.
 
 Запускать ПОВЕРХ launch.sh (gz+SITL+mavros+gz_bridge уже подняты). Поднимает:
     tof_ring_node     — /drone/vl53l0x/ch0..5 → /krot/tof_ring (obs-фид RL)
+                        + /krot/tof_ring_raw (физ. 2.0м, картограф/GUI — TASK-097)
     wall_gt_node      — поза(odom)+arena → /krot/wall_gt (privileged GT критик+reward)
     yaw_slave_node    — wall_gt t̂ → /krot/yaw_cmd (нос слейв)
     vel_setpoint_mux  — /krot/cmd_vel_world(RL)+yaw → /mavros/setpoint_raw/local
+    contacts_bridge   — gz /drone/crash_contacts → ROS (crash-ring, TASK-099)
+    collision_node    — contacts → /krot/collision Bool (краш-детект обучения)
 
 Arena-дескриптор резолвится по DEFAULT_WORLD (или аргумент arena:=<path>).
+⚠ GZ_PARTITION обязан совпадать со стеком (launch.sh ставит его из .env_simulation,
+обычно 'sim') — иначе contacts-мост и reset_node (gz service set_pose) НЕ видят
+gz-транспорт: reset падает «gz set_pose не прошёл» (грабля e2e 2026-10-17).
 Пример:
-    DEFAULT_WORLD=p0_straight_wall ros2 launch drone_sim krot_bridges.launch.py
+    GZ_PARTITION=sim DEFAULT_WORLD=v5_p0_straight ros2 launch drone_sim krot_bridges.launch.py
     ros2 launch drone_sim krot_bridges.launch.py follow_dir:=1
 """
 import os
@@ -31,7 +37,7 @@ def _resolve_arena(pkg, world):
 
 def generate_launch_description():
     pkg = get_package_share_directory('drone_sim')
-    world = os.environ.get('DEFAULT_WORLD', 'p0_straight_wall')
+    world = os.environ.get('DEFAULT_WORLD', 'v5_p0_straight')
 
     arena_arg = DeclareLaunchArgument(
         'arena', default_value=_resolve_arena(pkg, world),
@@ -74,4 +80,15 @@ def generate_launch_description():
              name='vel_setpoint_mux', output='screen',
              parameters=[{'hold_alt': ParameterValue(hold_alt, value_type=float),
                           'latch_alt_from_odom': ParameterValue(latch_alt, value_type=bool)}]),
+        # crash-детект (TASK-099): gz contact-sensor → ROS → /krot/collision
+        Node(package='ros_gz_bridge', executable='parameter_bridge',
+             name='crash_contacts_bridge', output='screen',
+             arguments=['/drone/crash_contacts@ros_gz_interfaces/msg/Contacts[gz.msgs.Contacts']),
+        Node(package='drone_sim', executable='collision_node',
+             name='collision_node', output='screen'),
+        # reset эпизода (TASK-100): /krot/episode_reset → переспавн+взлёт → /krot/episode_ready
+        Node(package='drone_sim', executable='reset_node',
+             name='reset_node', output='screen',
+             parameters=[{'world': os.environ.get('DEFAULT_WORLD', ''),
+                          'hold_alt_m': ParameterValue(hold_alt, value_type=float)}]),
     ])

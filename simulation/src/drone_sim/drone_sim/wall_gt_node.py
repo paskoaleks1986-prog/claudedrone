@@ -46,7 +46,7 @@ from drone_sim.geometry import DroneGeometry
 def _resolve_arena(arena: str) -> str:
     """Принять ПУТЬ или ИМЯ арены → полный путь к <name>.arena.yaml. Громкая ошибка иначе.
 
-    Робастность (gotcha rl-lab 20:3x): `arena:=p0_straight_wall` (имя) раньше тихо валил ноду
+    Робастность (gotcha rl-lab 20:3x): `arena:=v5_p0_straight` (имя) раньше тихо валил ноду
     → publisher=0. Теперь имя резолвится через installed share, и при провале — внятный SystemExit.
     """
     if arena and Path(arena).is_file():

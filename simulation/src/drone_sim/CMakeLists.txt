@@ -93,6 +93,18 @@ install(PROGRAMS
   RENAME teleop
   DESTINATION lib/${PROJECT_NAME}
 )
+# ── crash-детект обучения: crash-ring contacts → /krot/collision (TASK-099) ──
+install(PROGRAMS
+  drone_sim/collision_node.py
+  RENAME collision_node
+  DESTINATION lib/${PROJECT_NAME}
+)
+# ── reset эпизода обучения: переспавн + возврат в полёт (TASK-100) ──
+install(PROGRAMS
+  drone_sim/reset_node.py
+  RENAME reset_node
+  DESTINATION lib/${PROJECT_NAME}
+)
 
 # Ресурсы — launch, models, worlds, config
 install(DIRECTORY

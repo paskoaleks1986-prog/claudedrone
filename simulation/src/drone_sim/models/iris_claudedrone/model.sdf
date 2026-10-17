@@ -1098,6 +1098,42 @@
       <child>sensors_link</child>
     </joint>
 
+    <!-- ============================================================
+         CRASH-RING (TASK-099, задание rl-lab по слову Aleks 2026-10-17):
+         невидимый collision-цилиндр R = prop_tip (motor_arm 0.256 + prop_radius
+         0.063 = 0.319, канон drone_geometry.yaml) на высоте винтов. У винтов iris
+         collision НЕТ — раньше они проходили сквозь стену (дыра физики); кольцо
+         даёт честный физконтакт «винт коснулся» + contact-sensor для /krot/collision
+         (краш-детект обучения: «истина от физдвижка», не ToF/EKF-прокси).
+         Требует в мире: <plugin gz-sim-contact-system> (генератор + indoor_room).
+    ============================================================ -->
+    <link name="crash_ring_link">
+      <pose>0 0 0.216 0 0 0</pose>
+      <inertial>
+        <mass>0.001</mass>
+        <inertia>
+          <ixx>0.000001</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.000001</iyy><iyz>0</iyz>
+          <izz>0.000001</izz>
+        </inertia>
+      </inertial>
+      <collision name="crash_ring_col">
+        <geometry><cylinder><radius>0.319</radius><length>0.03</length></cylinder></geometry>
+      </collision>
+      <sensor name="crash_contact" type="contact">
+        <contact>
+          <collision>crash_ring_col</collision>
+          <topic>/drone/crash_contacts</topic>
+        </contact>
+        <update_rate>50</update_rate>
+        <always_on>true</always_on>
+      </sensor>
+    </link>
+    <joint name="crash_ring_joint" type="fixed">
+      <parent>iris_with_standoffs::base_link</parent>
+      <child>crash_ring_link</child>
+    </joint>
+
 <!-- ============================================================
          SG90 SERVO — поворотная платформа для TF-Luna
          Корпус наверху дрона, ось вращения вертикальна
