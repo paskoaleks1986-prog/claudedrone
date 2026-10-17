@@ -43,10 +43,15 @@ from std_msgs.msg import Bool as BoolMsg, Float64
 from drone_sim.geometry import DroneGeometry
 
 PT = PositionTarget
-# используем VX, VY, VZ, YAW; игнор ВСЮ позицию (incl PZ) + accel + yaw_rate.
+# используем VX, VY, VZ, YAW_RATE; игнор ВСЮ позицию (incl PZ) + accel + АБСОЛЮТНЫЙ YAW.
 # 🛑 PZ ОБЯЗАН быть игнорирован — иначе AP не входит в velocity-режим (см. docstring RCA).
+# 🛑 RCA 2026-10-17 (TASK-100 e2e, live): маска VEL+YAW (=2503, yaw активен) после
+# NAV_TAKEOFF НЕ исполняет латераль на 4.8-dev — дрон стоит (v≈0.04 м/с «ползёт»);
+# та же команда с маской VEL+YAW_RATE (=1479) едет честные 0.3 м/с. Поэтому yaw
+# доносим НЕ абсолютным полем, а P-контуром yaw_rate = clamp(Kp·wrap(yaw_cmd − yaw)):
+# /krot/yaw_cmd (yaw_slave) сохраняет семантику «нос-слейв», контракт rl-lab не задет.
 TYPE_MASK = (PT.IGNORE_PX | PT.IGNORE_PY | PT.IGNORE_PZ |
-             PT.IGNORE_AFX | PT.IGNORE_AFY | PT.IGNORE_AFZ | PT.IGNORE_YAW_RATE)
+             PT.IGNORE_AFX | PT.IGNORE_AFY | PT.IGNORE_AFZ | PT.IGNORE_YAW)
 
 
 class VelSetpointMux(Node):
@@ -62,6 +67,8 @@ class VelSetpointMux(Node):
         self.declare_parameter("rate_hz", g.control_hz)
         self.declare_parameter("alt_kp", 1.0)      # P-gain alt-hold (vz = kp·err)
         self.declare_parameter("vz_max", 0.5)      # клип |vz| alt-hold, м/с
+        self.declare_parameter("yaw_kp", 2.0)      # P-gain yaw-hold (yaw_rate = kp·wrap(err))
+        self.declare_parameter("yaw_rate_max", 1.0)  # клип |yaw_rate|, рад/с
         self.declare_parameter("cmd_timeout_s", 0.2)  # failsafe: гэп cmd_vel > N → vx=vy=0 (rl-lab b)
         # gate-топик (TASK-100): false = полная ТИШИНА setpoint'ов (reset_node глушит mux
         # на время переспавна/NAV_TAKEOFF — стрим давит climb, память takeoff_before_mux).
@@ -73,6 +80,8 @@ class VelSetpointMux(Node):
         self._alt_latched = not self._latch
         self.alt_kp = float(self.get_parameter("alt_kp").value)
         self.vz_max = float(self.get_parameter("vz_max").value)
+        self.yaw_kp = float(self.get_parameter("yaw_kp").value)
+        self.yaw_rate_max = float(self.get_parameter("yaw_rate_max").value)
         self._cmd_timeout_ns = int(float(self.get_parameter("cmd_timeout_s").value) * 1e9)
         self._last_cmd_ns = None    # None = команды ещё не было → латераль 0
         self._failsafe_active = False  # edge-детект для лога
@@ -81,6 +90,7 @@ class VelSetpointMux(Node):
         self._yaw = 0.0
         self._have_yaw = False
         self._z = 0.0
+        self._yaw_odom = 0.0
         self._have_odom = False
 
         sensor_qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -130,6 +140,9 @@ class VelSetpointMux(Node):
 
     def _odom_cb(self, m: Odometry) -> None:
         self._z = float(m.pose.pose.position.z)
+        q = m.pose.pose.orientation
+        self._yaw_odom = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                                    1.0 - 2.0 * (q.y * q.y + q.z * q.z))
         self._have_odom = True
         if not self._alt_latched:
             self.hold_alt = self._z
@@ -160,7 +173,13 @@ class VelSetpointMux(Node):
         m.coordinate_frame = PT.FRAME_LOCAL_NED
         m.type_mask = TYPE_MASK
         m.velocity.x, m.velocity.y, m.velocity.z = vx, vy, vz
-        m.yaw = self._yaw if self._have_yaw else 0.0
+        # yaw-hold P-контуром через yaw_rate (RCA 2026-10-17: абсолютный yaw в маске
+        # глушит латераль). Нет yaw_cmd → держим текущий (rate 0 при err 0).
+        if self._have_yaw:
+            err = (self._yaw - self._yaw_odom + math.pi) % (2 * math.pi) - math.pi
+            m.yaw_rate = max(-self.yaw_rate_max, min(self.yaw_rate_max, self.yaw_kp * err))
+        else:
+            m.yaw_rate = 0.0
         self._pub.publish(m)
 
 
