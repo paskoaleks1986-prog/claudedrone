@@ -45,7 +45,10 @@ def generate_launch_description():
     follow_dir_arg = DeclareLaunchArgument(
         'follow_dir', default_value='1', description='нос-слейв направление вдоль стены (+1/-1)')
     hold_alt_arg = DeclareLaunchArgument(
-        'hold_alt', default_value='2.0', description='высота hold (м) для vel_setpoint_mux')
+        'hold_alt', default_value='1.0',
+        description='высота hold (м): mux + reset_node (NAV_TAKEOFF). Default 1.0 — '
+                    'кап обучения >1.5м = краш (правило Aleks, приёмка rl-lab B6); '
+                    'reset_node перечитывает свой hold_alt_m на каждом цикле (param set работает).')
     latch_alt_arg = DeclareLaunchArgument(
         'latch_alt', default_value='true',
         description='true=mux латчит alt из odom (был на земле→держит землю). '

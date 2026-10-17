@@ -72,6 +72,11 @@ Presets:
   --layout        = -gz
   --sim           = -gz -r -sitl -bridge
   --full          = -gz -r -sitl -bridge -ros
+  --krot-train    = --full --mavros --no-safety-guard — тренинг-профиль v5-krot
+                  (G-0018: safety_guard стримит avoidance 50Гц у стены 0.3-0.5м —
+                  штатной зоны wall-follow — срывает NAV_TAKEOFF reset-цикла и
+                  перехватывает управление у политики; в тренинге guard ВЫКЛ,
+                  паритет с train-env. Деплой = guard ON.)
 
 Env:
   ENV_FILE        override path to .env_simulation
@@ -111,6 +116,8 @@ while [[ $# -gt 0 ]]; do
         --layout)    WANT_GZ=1; shift ;;
         --sim)       WANT_GZ=1; GZ_RUN=1; WANT_SITL=1; WANT_BRIDGE=1; shift ;;
         --full)      WANT_GZ=1; GZ_RUN=1; WANT_SITL=1; WANT_BRIDGE=1; WANT_ROS=1; shift ;;
+        --krot-train) WANT_GZ=1; GZ_RUN=1; WANT_SITL=1; WANT_BRIDGE=1; WANT_ROS=1
+                      MAVROS=1; NO_SAFETY_GUARD=1; shift ;;
         -h|--help)   usage; exit 0 ;;
         *) echo "Unknown flag: $1" >&2; usage; exit 2 ;;
     esac

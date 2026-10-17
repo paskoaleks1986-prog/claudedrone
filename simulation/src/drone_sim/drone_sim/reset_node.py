@@ -55,7 +55,10 @@ class ResetNode(Node):
         super().__init__("reset_node")
         p = self.declare_parameter
         p("world", "")                   # имя gz-мира; "" = автодетект
-        p("hold_alt_m", 2.0)             # высота возврата в полёт (= hold_alt mux)
+        p("hold_alt_m", 1.0)             # высота возврата в полёт (= hold_alt mux).
+                                         # Default 1.0 — кап обучения: >1.5м = краш
+                                         # (правило Aleks, приёмка rl-lab B6).
+                                         # Перечитывается КАЖДЫЙ reset (см. _reset_cb).
         p("z_ground_m", 0.2)             # z телепорта (как спавн в мирах)
         p("ground_settle_s", 2.5)        # пауза после телепорта (физика+EKF на земле)
         p("guided_settle_s", 8.0)        # EKF-settle до арма (afe2aa1)
@@ -120,8 +123,20 @@ class ResetNode(Node):
         if self.phase != "idle":
             self.get_logger().warn(f"episode_reset проигнорирован: reset уже идёт (phase={self.phase})")
             return
+        # B6 (приёмка rl-lab): hold_alt_m перечитывается на КАЖДОМ reset —
+        # `ros2 param set /reset_node hold_alt_m X` действует со следующего цикла.
+        self.hold_alt = float(self.get_parameter("hold_alt_m").value)
+        # G-0018: safety_guard базового стека молча срывает NAV_TAKEOFF (climb
+        # timeout) и перехватывает управление у стены 0.3-0.5м — штатной зоны
+        # wall-follow. Ловушку делаем ГРОМКОЙ: тренинг-стек = launch.sh --krot-train.
+        if self.count_publishers("/safety/active") > 0:
+            self.get_logger().error(
+                "safety_guard АКТИВЕН (publisher на /safety/active) — сорвёт NAV_TAKEOFF "
+                "и перехватит управление у стены (G-0018). Тренинг-стек поднимать "
+                "`launch.sh --krot-train` (guard выкл, паритет с train-env).")
         self.target = m
-        self.get_logger().info(f"→ RESET эпизода: поза ({m.x:.2f}, {m.y:.2f}, θ={m.theta:.2f})")
+        self.get_logger().info(
+            f"→ RESET эпизода: поза ({m.x:.2f}, {m.y:.2f}, θ={m.theta:.2f}), alt={self.hold_alt}м")
         self.gate_pub.publish(Bool(data=False))          # mux — тишина
         self.disarm_sent = False
         self.teleported = False
