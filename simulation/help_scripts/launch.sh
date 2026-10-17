@@ -7,6 +7,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${ENV_FILE:-$SCRIPT_DIR/../../../.env_simulation}"
+# Изоляция стендов (TASK-107, G-0022): свой tmux-сокет stand-<session>, свой
+# systemd-scope, lock владельца. Все tmux-вызовы ниже — через stand_tmux.
+source "$SCRIPT_DIR/stand_lib.sh"
 
 # ── flags ────────────────────────────────────────────────────────────────────
 WANT_GZ=0
@@ -34,6 +37,7 @@ NO_SAFETY_GUARD=0   # SITL-RL: safety_guard:=false для fine-tune (парит�
 AUTO_NODE=""
 RESTART_SITL=0  # gz-alive hard_reset: рестарт ТОЛЬКО sitl+mavros панелей живой сессии
 TELEOP=0        # панель teleop_node — владелец /drone/* (TASK-094)
+KROT=0          # панель krot_bridges (tof/wall_gt/mux/collision/reset/recorder) — --krot-train
 
 usage() {
     cat <<'EOF'
@@ -72,7 +76,10 @@ Presets:
   --layout        = -gz
   --sim           = -gz -r -sitl -bridge
   --full          = -gz -r -sitl -bridge -ros
-  --krot-train    = --full --mavros --no-safety-guard — тренинг-профиль v5-krot
+  --krot-train    = --full --mavros --no-safety-guard + панель krot (krot_bridges:
+                  tof/wall_gt/mux/collision/reset + flight_recorder; run_id из env
+                  KROT_RUN_ID=<sprint>/<model>/<session>) — тренинг-профиль v5-krot.
+                  Окно Gazebo: БЕЗ --headless (headed), обучение: с --headless.
                   (G-0018: safety_guard стримит avoidance 50Гц у стены 0.3-0.5м —
                   штатной зоны wall-follow — срывает NAV_TAKEOFF reset-цикла и
                   перехватывает управление у политики; в тренинге guard ВЫКЛ,
@@ -117,7 +124,7 @@ while [[ $# -gt 0 ]]; do
         --sim)       WANT_GZ=1; GZ_RUN=1; WANT_SITL=1; WANT_BRIDGE=1; shift ;;
         --full)      WANT_GZ=1; GZ_RUN=1; WANT_SITL=1; WANT_BRIDGE=1; WANT_ROS=1; shift ;;
         --krot-train) WANT_GZ=1; GZ_RUN=1; WANT_SITL=1; WANT_BRIDGE=1; WANT_ROS=1
-                      MAVROS=1; NO_SAFETY_GUARD=1; shift ;;
+                      MAVROS=1; NO_SAFETY_GUARD=1; KROT=1; shift ;;
         -h|--help)   usage; exit 0 ;;
         *) echo "Unknown flag: $1" >&2; usage; exit 2 ;;
     esac
@@ -165,14 +172,24 @@ fi
 
 command -v tmux >/dev/null || { echo "tmux not installed" >&2; exit 1; }
 
+# Владение (G-0022): живой стенд с этим именем у ДРУГОГО агента не сносим.
+ME="$(stand_owner)"
+if (( ! RESTART_SITL )) && stand_alive "$SESSION"; then
+    holder="$(stand_lock_get "$SESSION" owner)"
+    if [[ -n "$holder" && "$holder" != "$ME" && -z "${STAND_FORCE:-}" ]]; then
+        echo "ERROR: стенд '$SESSION' занят агентом '$holder' (mode=$(stand_lock_get "$SESSION" mode), с $(stand_lock_get "$SESSION" started))." >&2
+        echo "  Другое имя: -s <session> (+ SITL_INSTANCE/GZ_PARTITION/ROS_DOMAIN_ID), либо договориться с '$holder'." >&2
+        echo "  Живые стенды: bash $SCRIPT_DIR/stand_lib.sh list" >&2
+        exit 3
+    fi
+fi
+
 # Repeat-launch (напр. crash-recovery full relaunch, hard_reset sitl_only=False):
-# снести предыдущую ОДНОИМЁННУЮ сессию + её SITL-orphans ДО port-pre-flight, иначе
-# старый arducopter держит MAVLINK_PORT → ложный abort. (restart-sitl сюда не идёт.)
-if (( WANT_SITL && ! RESTART_SITL )) && tmux has-session -t "$SESSION" 2>/dev/null; then
-    echo "[launch] repeat-launch: сношу старую сессию $SESSION + SITL orphans (порт $MAVLINK_PORT)"
-    tmux kill-session -t "$SESSION" 2>/dev/null || true
-    pkill -KILL -f "arducopter.*-I${SITL_INSTANCE}\$"      2>/dev/null || true
-    pkill -KILL -f "mavproxy\.py.*:${MAVLINK_PORT} "        2>/dev/null || true
+# снести предыдущую ОДНОИМЁННУЮ (свою) сессию + её SITL-orphans ДО port-pre-flight,
+# иначе старый arducopter держит MAVLINK_PORT → ложный abort. (restart-sitl сюда не идёт.)
+if (( WANT_SITL && ! RESTART_SITL )) && stand_alive "$SESSION"; then
+    echo "[launch] repeat-launch: сношу СВОЮ старую сессию $SESSION (только её дерево процессов)"
+    bash "$SCRIPT_DIR/kill_sim_stack.sh" 4 -s "$SESSION" || true
     for _i in 1 2 3 4 5; do
         ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${MAVLINK_PORT}\$" || break
         sleep 1
@@ -263,7 +280,8 @@ export GZ_PARTITION='$GZ_PARTITION'
 # eglinfo подтвердил: NVIDIA EGL (GBM) рабочий, нужно лишь не дать GLVND выбрать Mesa.
 export __EGL_VENDOR_LIBRARY_FILENAMES='/usr/share/glvnd/egl_vendor.d/10_nvidia.json'
 export __GLX_VENDOR_LIBRARY_NAME='nvidia'
-echo "[gz] world=$WORLD_PATH flags=$GZ_FLAGS partition=$GZ_PARTITION egl=nvidia"
+$( (( HEADLESS )) || printf "export DISPLAY='%s'\nexport XAUTHORITY='%s'\n" "${DISPLAY:-:0}" "${XAUTHORITY:-$HOME/.Xauthority}")
+echo "[gz] world=$WORLD_PATH flags=$GZ_FLAGS partition=$GZ_PARTITION egl=nvidia display=\${DISPLAY:-none}"
 exec gz sim '$WORLD_PATH'$GZ_FLAGS
 EOF
 }
@@ -372,6 +390,24 @@ exec ros2 run '$LAUNCH_PKG' '$node'
 EOF
 }
 
+cmd_krot() {
+    # krot_bridges ПОСЛЕ готовности mavros (reset_node/mux без FCU бессмысленны).
+    # Внутри панели стенда → живёт и умирает вместе со стендом, teardown сессии
+    # его снимает (раньше мосты гонялись отдельным фоном агента — сироты/G-0022).
+    cat <<EOF
+cd '$WS_DIR'
+source '$ROS_SETUP'
+export GZ_PARTITION='$GZ_PARTITION'
+export ROS_DOMAIN_ID='$ROS_DOMAIN_ID'
+export DEFAULT_WORLD='$WORLD'
+if [[ -f install/setup.bash ]]; then source install/setup.bash; fi
+echo "[krot] жду /mavros/state …"
+for _i in \$(seq 1 90); do ros2 topic list 2>/dev/null | grep -q '^/mavros/state\$' && break; sleep 2; done
+echo "[krot] krot_bridges world=$WORLD run_id=${KROT_RUN_ID:-<auto>} hold_alt=${KROT_HOLD_ALT:-1.0}"
+exec ros2 launch drone_sim krot_bridges.launch.py latch_alt:=true hold_alt:=${KROT_HOLD_ALT:-1.0} run_id:='${KROT_RUN_ID:-}'
+EOF
+}
+
 # Wrap a command-string into a bash -lc string, optionally tee'd to a log.
 wrap_pane() {
     local name="$1" body="$2"
@@ -404,12 +440,12 @@ wrap_pane() {
 #     (свежий mavros против готового FCU → полные стримы → odom 9.7Hz). Проверено live.
 # ⚠ Архитектура: панели — один window 'main', tiled, каждая exec'ает процесс →
 #   'send-keys C-c; UP ENTER' не сработает (после exec панель закрывается). Чистый
-#   примитив = tmux respawn-pane -k (kill+restart команды в той же панели).
+#   примитив = stand_tmux "$SESSION" respawn-pane -k (kill+restart команды в той же панели).
 if (( RESTART_SITL )); then
-    if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+    if ! stand_tmux "$SESSION" has-session -t "$SESSION" 2>/dev/null; then
         echo "ERROR: session '$SESSION' not found — нечего рестартить" >&2; exit 1
     fi
-    panes=$(tmux list-panes -t "$SESSION:main" -F '#{pane_index} #{pane_title}' 2>/dev/null)
+    panes=$(stand_tmux "$SESSION" list-panes -t "$SESSION:main" -F '#{pane_index} #{pane_title}' 2>/dev/null)
     sitl_idx=$(awk '$2=="sitl"{print $1; exit}'   <<<"$panes")
     mavros_idx=$(awk '$2=="mavros"{print $1; exit}' <<<"$panes")
     if [[ -z "$sitl_idx" ]]; then
@@ -437,11 +473,11 @@ if (( RESTART_SITL )); then
     #    котором свежий sim_vehicle ещё спит (его cmdline = bash/sleep, НЕ матчит pkill
     #    ниже), пока мы реапим осиротевших детей старого SITL и ждём порты + reset.
     sitl_body="sleep 6; $(cmd_sitl)"
-    tmux respawn-pane -k -t "$SESSION:main.$sitl_idx" "$(wrap_pane sitl "$sitl_body")"
+    stand_tmux "$SESSION" respawn-pane -k -t "$SESSION:main.$sitl_idx" "$(wrap_pane sitl "$sitl_body")"
     # чистим scrollback панели — иначе capture-pane (шаг 4) увидит СТАРЫЙ маркер
     # "is using GPS" от прошлого boot'а и решит, что SITL готов мгновенно (live-баг
     # 2026-06-09: mavros респавнился до готовности FCU → connected:false навсегда).
-    tmux clear-history -t "$SESSION:main.$sitl_idx" 2>/dev/null || true
+    stand_tmux "$SESSION" clear-history -t "$SESSION:main.$sitl_idx" 2>/dev/null || true
 
     # 2. orphan-kill: respawn-pane -k реапит только foreground панели (sim_vehicle.py),
     #    но её дети — arducopter + mavproxy — остаются orphan'ами и держат порты
@@ -497,7 +533,7 @@ if (( RESTART_SITL )); then
         echo "[restart-sitl] жду flight-готовности SITL (маркер '$ready_marker' в панели)…"
         ready=0
         for _i in $(seq 1 45); do          # до ~90s fallback (выходит сразу при маркере)
-            if tmux capture-pane -t "$SESSION:main.$sitl_idx" -p -S -250 2>/dev/null | grep -q "$ready_marker"; then
+            if stand_tmux "$SESSION" capture-pane -t "$SESSION:main.$sitl_idx" -p -S -250 2>/dev/null | grep -q "$ready_marker"; then
                 ready=1; break
             fi
             sleep 2
@@ -508,7 +544,7 @@ if (( RESTART_SITL )); then
             echo "[restart-sitl] ⚠ flight-ready не подтверждён за таймаут — всё равно respawn MAVROS"
         fi
         # 5. respawn MAVROS против ГОТОВОГО FCU → негоциирует SET_MESSAGE_INTERVAL → odom.
-        tmux respawn-pane -k -t "$SESSION:main.$mavros_idx" "$(wrap_pane mavros "$(cmd_mavros)")"
+        stand_tmux "$SESSION" respawn-pane -k -t "$SESSION:main.$mavros_idx" "$(wrap_pane mavros "$(cmd_mavros)")"
     else
         echo "[restart-sitl] ⚠ нет 'mavros' панели — пропускаю restart mavros (odom не поднимется)"
     fi
@@ -517,9 +553,9 @@ if (( RESTART_SITL )); then
 fi
 
 # ── tmux session ─────────────────────────────────────────────────────────────
-if tmux has-session -t "$SESSION" 2>/dev/null; then
+if stand_tmux "$SESSION" has-session -t "$SESSION" 2>/dev/null; then
     echo "[launch] killing existing tmux session: $SESSION"
-    tmux kill-session -t "$SESSION"
+    stand_tmux "$SESSION" kill-session -t "$SESSION"
 fi
 
 # Build the ordered list of (name, body) pairs in the requested layout order.
@@ -533,32 +569,48 @@ PANES=()
 (( MONITOR ))     && PANES+=("monitor|$(cmd_monitor)")
 [[ -n "$AUTO_NODE" ]] && PANES+=("auto|$(cmd_auto "$AUTO_NODE")")
 (( TELEOP ))      && PANES+=("teleop|$(cmd_auto teleop)")
+(( KROT ))        && PANES+=("krot|$(cmd_krot)")
 
 FIRST_NAME="${PANES[0]%%|*}"
 FIRST_BODY="${PANES[0]#*|}"
 
+STOCK="$(stand_sock "$SESSION")"
+# tmux-сервер стенда — в СВОЁМ systemd-scope, не в cgroup вызывающей Claude-сессии
+# (её рестарт/выход иначе убивает сервер = все панели; проба 2026-10-17). Нет
+# systemd-run → обычный запуск (сокет всё равно свой).
+SCOPE_RUN=""
+if systemd-run --user --scope --quiet --collect true >/dev/null 2>&1; then
+    SCOPE_RUN="systemd-run --user --scope --quiet --collect --unit=stand-${SESSION}-$$"
+fi
 FIRST_RUN=$(wrap_pane "$FIRST_NAME" "$FIRST_BODY")
-eval "tmux new-session -d -s '$SESSION' -n main $FIRST_RUN"
-tmux select-pane -t "$SESSION:main.0" -T "$FIRST_NAME"
+eval "$SCOPE_RUN tmux -L '$STOCK' new-session -d -s '$SESSION' -n main $FIRST_RUN"
+MODE=$( (( HEADLESS )) && echo headless || echo headed )
+stand_lock_write "$SESSION" "owner=$ME" "mode=$MODE" "world=$WORLD" \
+    "sitl_instance=$SITL_INSTANCE" "mavlink_port=$MAVLINK_PORT" \
+    "gz_partition=$GZ_PARTITION" "ros_domain_id=$ROS_DOMAIN_ID" \
+    "socket=$STOCK" "started=$(date '+%F %T')"
+stand_tmux "$SESSION" select-pane -t "$SESSION:main.0" -T "$FIRST_NAME"
 
 for entry in "${PANES[@]:1}"; do
     pname="${entry%%|*}"
     pbody="${entry#*|}"
     PRUN=$(wrap_pane "$pname" "$pbody")
-    eval "tmux split-window -t '$SESSION:main' $PRUN"
-    tmux select-pane -t "$SESSION:main" -T "$pname"
-    tmux select-layout -t "$SESSION:main" tiled >/dev/null
+    eval "tmux -L '$STOCK' split-window -t '$SESSION:main' $PRUN"
+    stand_tmux "$SESSION" select-pane -t "$SESSION:main" -T "$pname"
+    stand_tmux "$SESSION" select-layout -t "$SESSION:main" tiled >/dev/null
 done
 
-tmux select-layout -t "$SESSION:main" tiled >/dev/null
-tmux set-option -t "$SESSION" pane-border-status top >/dev/null
-tmux set-option -t "$SESSION" mouse on >/dev/null
+stand_tmux "$SESSION" select-layout -t "$SESSION:main" tiled >/dev/null
+stand_tmux "$SESSION" set-option -t "$SESSION" pane-border-status top >/dev/null
+stand_tmux "$SESSION" set-option -t "$SESSION" mouse on >/dev/null
 
-echo "[launch] session=$SESSION panes=${#PANES[@]} world=$WORLD params=$PARAMS"
+echo "[launch] session=$SESSION owner=$ME mode=$MODE panes=${#PANES[@]} world=$WORLD params=$PARAMS"
 (( LOG_PANES )) && echo "[launch] logs: $LOG_DIR/${SESSION}-*.log"
+(( HEADLESS )) && echo "[launch] HEADLESS: окна Gazebo НЕ будет (только физика+сенсоры)." \
+               || echo "[launch] HEADED: окно Gazebo на DISPLAY=${DISPLAY:-:0}."
+echo "[launch] смотреть панели:  tmux -L $STOCK attach -t $SESSION"
+echo "[launch] погасить СВОЙ стенд: bash $SCRIPT_DIR/kill_sim_stack.sh -s $SESSION"
 
-if (( DETACHED )); then
-    echo "[launch] detached. Attach with: tmux attach -t $SESSION"
-else
-    exec tmux attach -t "$SESSION"
+if (( ! DETACHED )); then
+    exec tmux -L "$STOCK" attach -t "$SESSION"
 fi
