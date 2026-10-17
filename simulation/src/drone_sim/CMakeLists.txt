@@ -87,6 +87,12 @@ install(PROGRAMS
   RENAME vel_setpoint_mux
   DESTINATION lib/${PROJECT_NAME}
 )
+# ── teleop v1-контракт /drone/* (TASK-094, K-SIM-0001) ──
+install(PROGRAMS
+  drone_sim/teleop_node.py
+  RENAME teleop
+  DESTINATION lib/${PROJECT_NAME}
+)
 
 # Ресурсы — launch, models, worlds, config
 install(DIRECTORY

@@ -33,6 +33,7 @@ AUTOSCAN=0   # button-only ДЕФОЛТ (Aleks 2026-06-15): авто-цикл sw
 NO_SAFETY_GUARD=0   # SITL-RL: safety_guard:=false для fine-tune (паритет с train-env)
 AUTO_NODE=""
 RESTART_SITL=0  # gz-alive hard_reset: рестарт ТОЛЬКО sitl+mavros панелей живой сессии
+TELEOP=0        # панель teleop_node — владелец /drone/* (TASK-094)
 
 usage() {
     cat <<'EOF'
@@ -62,6 +63,8 @@ Modifiers:
   --no-autoscan   autoscan:=false (дефолт; явный для совместимости — скан по кнопке)
   --no-safety-guard  drone.launch.py safety_guard:=false (RL fine-tune: паритет с train-env)
   --auto NAME     extra pane: ros2 run drone_sim NAME
+  --teleop        extra pane: ros2 run drone_sim teleop — владелец teleop-контракта
+                  /drone/* для interface GUI (TASK-094). Требует --mavros.
   --restart-sitl  gz-alive hard_reset: рестарт ТОЛЬКО sitl+mavros в живой -s сессии
                   (gz не трогается → нет EGL-цикла; поза дрона ← gz WorldControl reset)
 
@@ -103,6 +106,7 @@ while [[ $# -gt 0 ]]; do
         --no-autoscan) AUTOSCAN=0; shift ;;
         --no-safety-guard) NO_SAFETY_GUARD=1; shift ;;
         --auto)      AUTO_NODE="${2:?--auto needs a node name}"; shift 2 ;;
+        --teleop)    TELEOP=1; shift ;;
         --restart-sitl) RESTART_SITL=1; WANT_SITL=1; MAVROS=1; shift ;;
         --layout)    WANT_GZ=1; shift ;;
         --sim)       WANT_GZ=1; GZ_RUN=1; WANT_SITL=1; WANT_BRIDGE=1; shift ;;
@@ -521,6 +525,7 @@ PANES=()
 (( MANUAL ))      && PANES+=("manual|$(cmd_manual)")
 (( MONITOR ))     && PANES+=("monitor|$(cmd_monitor)")
 [[ -n "$AUTO_NODE" ]] && PANES+=("auto|$(cmd_auto "$AUTO_NODE")")
+(( TELEOP ))      && PANES+=("teleop|$(cmd_auto teleop)")
 
 FIRST_NAME="${PANES[0]%%|*}"
 FIRST_BODY="${PANES[0]#*|}"
